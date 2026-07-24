@@ -58,7 +58,7 @@ class ShellCommand:
 
 
 class KernelBuilder:
-KERNEL_CONFIG_TEMPLATE = """
+    KERNEL_CONFIG_TEMPLATE = """
 # === KernelSU Config ===
 CONFIG_KSU=y
 CONFIG_KPM=n
