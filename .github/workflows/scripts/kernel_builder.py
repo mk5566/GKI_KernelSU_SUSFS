@@ -5,7 +5,6 @@ import re
 from pathlib import Path
 from typing import Optional, Callable
 from dataclasses import dataclass, field
-
 from config import (BuildConfig, KSU_REPO_CONFIG, SUSFS_REPO_CONFIG, SUKISU_PATCH_REPO_CONFIG,
                    ANYKERNEL_CONFIG, KERNEL_PATCHES_CONFIG, BBG_CONFIG, TOOLCHAIN_CONFIG,
                    LEGACY_FIXES, OP8E_PATCH_URL, KPM_PATCH_URL)
@@ -302,6 +301,7 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
                 self._chdir(common_dir)
                 self._run_cmd(f"patch -p1 --fuzz=3 < {patch_file}", check=False)
                 self._chdir(self.work_dir)
+
     def apply_sukisu_patches(self):
         logger.info("=== 应用 SukiSU 补丁 ===")
         self._chdir(self.work_dir / "common")
@@ -385,7 +385,6 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
                 for marker in markers
                 if marker not in content
             ]
-
             if missing:
                 raise RuntimeError(
                     f"LZ4KD patch validation failed for {path}: "
@@ -463,9 +462,7 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
             self._configure_zram()
             self._configure_bazel()
 
-        if self.config.set_default_bbr:
-            with open(config_file, "a") as f:
-                f.write("CONFIG_DEFAULT_BBR=y\n")
+        # BBR is always enabled via KERNEL_CONFIG_TEMPLATE
 
         build_config = self.work_dir / "common/build.config.gki"
         if build_config.exists():
@@ -493,7 +490,6 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
 
         with open(config_file, "a") as f:
             f.write(self.ZRAM_CONFIG_COMMON)
-            f.write("CONFIG_ZRAM_DEF_COMP_LZ4KD=y\n")
 
     def _configure_bazel(self):
         modules_bzl = self.work_dir / "common/modules.bzl"
@@ -601,16 +597,16 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
         logger.info("=== 显示内核配置列表 ===")
         self._chdir(self.work_dir)
         config_file = self.work_dir / "common/arch/arm64/configs/gki_defconfig"
-        
+
         if not config_file.exists():
             logger.warning(f"配置文件不存在: {config_file}")
             return
-        
+
         with open(config_file, "r") as f:
             lines = f.readlines()
-        
+
         config_lines = [line.strip() for line in lines if line.strip().startswith("CONFIG_")]
-        
+
         key_configs = {
             "CONFIG_KSU": "KernelSU",
             "CONFIG_KPM": "KPM",
@@ -619,7 +615,7 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
             "CONFIG_BBR": "BBR",
             "CONFIG_ZRAM": "ZRAM",
         }
-        
+
         logger.info("关键配置状态:")
         for prefix, name in key_configs.items():
             found = [c for c in config_lines if c.startswith(prefix)]
@@ -627,25 +623,23 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
                 status = "已启用"
             else:
                 status = "未配置"
-            logger.info(f"  [{status}] {name}")
+            logger.info(f" [{status}] {name}")
             if found:
                 for f in sorted(found):
-                    logger.info(f"      -> {f}")
-        
-        # 显示 ZRAM 相关配置
+                    logger.info(f" -> {f}")
+
         if self.config.use_zram:
             zram_configs = [c for c in config_lines if any(x in c for x in ["ZRAM", "ZSMALLOC", "LZ4", "LZ4KD", "CRYPTO_LZ4", "MODULE_SIG"])]
             if zram_configs:
                 logger.info("ZRAM 相关配置:")
                 for zc in sorted(zram_configs):
-                    logger.info(f"  -> {zc}")
-        
+                    logger.info(f" -> {zc}")
+
         logger.info("-" * 60)
 
     def build_kernel(self) -> bool:
         logger.info("=== 开始编译内核 ===")
         self._chdir(self.work_dir)
-
         build_config = self.work_dir / "common/build.config.gki.aarch64"
         if build_config.exists():
             with open(build_config, "r") as f:
@@ -677,12 +671,10 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
             return
         logger.info("=== 修补 Image 文件 (KPM) ===")
         self._chdir(self.work_dir)
-
         if self.config.android_version in ["android12", "android13"]:
             image_dir = self.work_dir / f"out/{self.config.android_version}-{self.config.kernel_version}/dist"
         else:
             image_dir = self.work_dir / "bazel-bin/common/kernel_aarch64"
-
         if not image_dir.exists():
             return
         self._chdir(image_dir)
@@ -706,9 +698,6 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
             src = image_source / image_name
             if src.exists():
                 self._run_cmd(f"cp {src} {bootimgs_dir}/ && cp {src} {self.work_dir}/", check=False)
-
-        if (self.work_dir / "Image").exists():
-            self._run_cmd("gzip -n -k -f -9 Image", check=False)
 
         if self.config.android_version == "android12":
             self._prepare_android12_boot_images(bootimgs_dir, artifacts)
@@ -734,10 +723,8 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
 
     def _create_boot_image_variants(self, bootimgs_dir: Path, artifacts: list, has_ramdisk: bool = False):
         self._chdir(bootimgs_dir)
-        if (bootimgs_dir / "Image").exists():
-            self._run_cmd("gzip -n -k -f -9 Image", check=False)
 
-        for kernel_file, output_file in [("Image", "boot.img"), ("Image.gz", "boot-gz.img"), ("Image.lz4", "boot-lz4.img")]:
+        for kernel_file, output_file in [("Image", "boot.img")]:
             kernel_path = bootimgs_dir / kernel_file
             if not kernel_path.exists():
                 continue
@@ -756,7 +743,7 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
         artifacts = []
         ak3_dir = self.anykernel_dir
 
-        for suffix in ["", "-lz4", "-gz"]:
+        for suffix in [""]:
             image_file = f"Image{suffix}"
             image_path = self.work_dir / image_file
             if not image_path.exists():
@@ -776,7 +763,6 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
         logger.info("=" * 50)
         logger.info(f"开始 GKI Kernel 构建 - {self.config.config_name}")
         logger.info("=" * 50)
-
         try:
             self.clone_repositories()
             self.clone_toolchain()
@@ -792,15 +778,12 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
             self.configure_kernel()
             self.configure_kernel_name()
             self.show_kernel_config()
-
             if not self.build_kernel():
                 return BuildResult(success=False, config=self.config, message="内核编译失败", build_time=time.time() - start_time)
-
             self.patch_kpm_image()
             artifacts = []
             artifacts.extend(self.prepare_boot_images())
             artifacts.extend(self.create_anykernel_zips())
-
             build_time = time.time() - start_time
             logger.info(f"构建成功! 耗时: {build_time:.2f} 秒, 生成 {len(artifacts)} 个产物")
             return BuildResult(success=True, config=self.config, message="构建成功", artifacts=artifacts, build_time=build_time)
