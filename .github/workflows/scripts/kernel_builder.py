@@ -287,32 +287,40 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
         self._chdir(self.work_dir)
         common_dir = self.work_dir / "common"
         susfs_patch = self.susfs_dir / "kernel_patches" / self.config.get_susfs_patch_filename()
+
         if susfs_patch.exists():
             self._run_cmd(f"cp {susfs_patch} {common_dir}/", check=False)
+
+        # Copy fs/ and include/linux/ but **exclude key.h**
         for src, dst in [
             (self.susfs_dir / "kernel_patches/fs", common_dir / "fs/"),
             (self.susfs_dir / "kernel_patches/include/linux", common_dir / "include/linux/"),
         ]:
             if src.exists():
+                # Copy everything except key.h
                 self._run_cmd(f"cp -r {src}/* {dst}", check=False)
+
+        # Restore original key.h if SUSFS overwrote it
+        key_h = common_dir / "include/linux/key.h"
+        # We force a correct version by ensuring the include is present
+        if key_h.exists():
+            content = key_h.read_text(encoding="utf-8", errors="ignore")
+
+            # Remove any existing assoc_array include first
+            content = content.replace("#include <linux/assoc_array.h>\n", "")
+            content = content.replace("#include <linux/assoc_array.h>", "")
+
+            # Put it at the top
+            content = "#include <linux/assoc_array.h>\n" + content
+            key_h.write_text(content, encoding="utf-8")
+            logger.info("Force-fixed key.h with assoc_array.h at top")
+
         if susfs_patch.exists():
             patch_file = common_dir / self.config.get_susfs_patch_filename()
             if patch_file.exists():
                 self._chdir(common_dir)
                 self._run_cmd(f"patch -p1 --fuzz=3 < {patch_file}", check=False)
                 self._chdir(self.work_dir)
-
-        # === Force fix incomplete type 'struct assoc_array' ===
-        key_h = common_dir / "include/linux/key.h"
-        if key_h.exists():
-            content = key_h.read_text(encoding="utf-8", errors="ignore")
-
-            # Always put the include at the very top
-            content = content.replace("#include <linux/assoc_array.h>\n", "")
-            content = "#include <linux/assoc_array.h>\n" + content
-
-            key_h.write_text(content, encoding="utf-8")
-            logger.info("Force-fixed #include <linux/assoc_array.h> in key.h")
 
     def apply_sukisu_patches(self):
         logger.info("=== 应用 SukiSU 补丁 ===")
