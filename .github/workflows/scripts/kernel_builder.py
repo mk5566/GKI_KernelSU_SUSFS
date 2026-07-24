@@ -399,8 +399,23 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
             return
 
         fb = f"{self.config.android_version}-{self.config.kernel_version}"
+
         with open(task_mmu, "r") as f:
             content = f.read()
+
+        # Fix uninitialized dentry introduced by 69_hide_stuff.patch.
+        if fb == "android13-5.15":
+            old_declaration = "struct dentry *dentry;"
+            new_declaration = "struct dentry *dentry = NULL;"
+
+            if old_declaration in content:
+                content = content.replace(
+                    old_declaration,
+                    new_declaration,
+                    1,
+                )
+                with open(task_mmu, "w") as f:
+                    f.write(content)
 
         if fb == "android15-6.6" and "unsigned int nr_subpages" not in content:
             self._fix_base_c_header()
