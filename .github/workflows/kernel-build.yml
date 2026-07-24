@@ -31,12 +31,12 @@ on:
         description: 'Sub Level 版本'
         required: true
         type: string
-        default: '124'
+        default: '180'
       os_patch_level:
         description: 'OS Patch Level'
         required: true
         type: string
-        default: '2025-02'
+        default: '2025-05'
       revision:
         description: 'Android 12 Revision (可选)'
         required: false
@@ -69,12 +69,12 @@ on:
         description: '启用 ZRAM (LZ4KD)'
         required: true
         type: boolean
-        default: false
+        default: true
       use_kpm:
         description: '启用 KPM'
         required: true
         type: boolean
-        default: true
+        default: false
       BBG:
         description: '启用 Baseband-guard'
         required: true
@@ -89,17 +89,17 @@ on:
         description: '设置 BBR 为默认拥塞算法'
         required: true
         type: boolean
-        default: false
+        default: true
       make_release:
         description: '创建 GitHub Release'
         required: true
         type: boolean
-        default: true
+        default: false
       send_telegram:
         description: '发送 Telegram 通知'
         required: true
         type: boolean
-        default: true
+        default: false
 
 env:
   PYTHON_VERSION: '3.10'
