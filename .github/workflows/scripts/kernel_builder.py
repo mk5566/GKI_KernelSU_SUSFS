@@ -282,7 +282,7 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
             with open(kconfig_file, "w") as f:
                 f.write(content)
 
-      def apply_susfs_patches(self):
+    def apply_susfs_patches(self):
         logger.info("=== 应用 SUSFS 补丁 ===")
         self._chdir(self.work_dir)
         common_dir = self.work_dir / "common"
