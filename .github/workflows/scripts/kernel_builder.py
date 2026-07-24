@@ -281,6 +281,7 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
                            content, flags=re.DOTALL)
             with open(kconfig_file, "w") as f:
                 f.write(content)
+
     def apply_susfs_patches(self):
         logger.info("=== 应用 SUSFS 补丁 ===")
         self._chdir(self.work_dir)
@@ -301,30 +302,18 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
                 self._run_cmd(f"patch -p1 --fuzz=3 < {patch_file}", check=False)
                 self._chdir(self.work_dir)
 
-        # === Fix incomplete type 'struct assoc_array' (SUSFS header regression) ===
+        # === Force fix incomplete type 'struct assoc_array' ===
         key_h = common_dir / "include/linux/key.h"
         if key_h.exists():
             content = key_h.read_text(encoding="utf-8", errors="ignore")
 
-            # Force add the include if needed
-            if "struct assoc_array" in content and "assoc_array.h" not in content:
-                if "#include <linux/sysctl.h>" in content:
-                    content = content.replace(
-                        "#include <linux/sysctl.h>",
-                        "#include <linux/sysctl.h>\n#include <linux/assoc_array.h>"
-                    )
-                elif "#include <linux/rbtree.h>" in content:
-                    content = content.replace(
-                        "#include <linux/rbtree.h>",
-                        "#include <linux/rbtree.h>\n#include <linux/assoc_array.h>"
-                    )
-                else:
-                    content = "#include <linux/assoc_array.h>\n" + content
+            # Always put the include at the very top
+            content = content.replace("#include <linux/assoc_array.h>\n", "")
+            content = "#include <linux/assoc_array.h>\n" + content
 
-                key_h.write_text(content, encoding="utf-8")
-                logger.info("Fixed missing #include <linux/assoc_array.h> in key.h")
-            else:
-                logger.info("key.h already has assoc_array include or no need to fix")
+            key_h.write_text(content, encoding="utf-8")
+            logger.info("Force-fixed #include <linux/assoc_array.h> in key.h")
+
     def apply_sukisu_patches(self):
         logger.info("=== 应用 SukiSU 补丁 ===")
         self._chdir(self.work_dir / "common")
