@@ -403,7 +403,6 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
 
         if self.config.use_zram:
             self._configure_zram()
-          f.write("CONFIG_ZRAM_DEF_COMP_LZ4KD=y\n")
             self._configure_bazel()
 
         if self.config.set_default_bbr:
@@ -418,7 +417,7 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
             with open(build_config, "w") as f:
                 f.write(content)
 
-        def _configure_zram(self):
+    def _configure_zram(self):
         config_file = self.work_dir / "common/arch/arm64/configs/gki_defconfig"
         with open(config_file, "r") as f:
             content = f.read()
