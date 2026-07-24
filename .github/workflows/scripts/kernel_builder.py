@@ -282,36 +282,36 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
             with open(kconfig_file, "w") as f:
                 f.write(content)
 
-    def apply_susfs_patches(self):
+      def apply_susfs_patches(self):
         logger.info("=== 应用 SUSFS 补丁 ===")
         self._chdir(self.work_dir)
         common_dir = self.work_dir / "common"
         susfs_patch = self.susfs_dir / "kernel_patches" / self.config.get_susfs_patch_filename()
 
+        # 1. Backup the original good headers before anything
+        key_h = common_dir / "include/linux/key.h"
+        assoc_h = common_dir / "include/linux/assoc_array.h"
+        key_backup = None
+        assoc_backup = None
+
+        if key_h.exists():
+            key_backup = key_h.read_text(encoding="utf-8", errors="ignore")
+        if assoc_h.exists():
+            assoc_backup = assoc_h.read_text(encoding="utf-8", errors="ignore")
+
+        # 2. Apply SUSFS files
         if susfs_patch.exists():
             self._run_cmd(f"cp {susfs_patch} {common_dir}/", check=False)
 
-        # Copy fs/
         fs_src = self.susfs_dir / "kernel_patches/fs"
         if fs_src.exists():
             self._run_cmd(f"cp -r {fs_src}/* {common_dir}/fs/", check=False)
 
-        # Copy include/linux/ but EXCLUDE the broken headers
         linux_src = self.susfs_dir / "kernel_patches/include/linux"
-        linux_dst = common_dir / "include/linux"
         if linux_src.exists():
-            # Copy everything except key.h and assoc_array.h
-            self._run_cmd(
-                f"find {linux_src} -maxdepth 1 -type f ! -name 'key.h' ! -name 'assoc_array.h' -exec cp {{}} {linux_dst}/ \\;",
-                check=False
-            )
-            # Also copy subdirectories if any
-            self._run_cmd(
-                f"find {linux_src} -mindepth 1 -type d -exec cp -r {{}} {linux_dst}/ \\;",
-                check=False
-            )
+            self._run_cmd(f"cp -r {linux_src}/* {common_dir}/include/linux/", check=False)
 
-        # Apply the main patch
+        # 3. Apply the main patch
         if susfs_patch.exists():
             patch_file = common_dir / self.config.get_susfs_patch_filename()
             if patch_file.exists():
@@ -319,7 +319,15 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
                 self._run_cmd(f"patch -p1 --fuzz=3 < {patch_file}", check=False)
                 self._chdir(self.work_dir)
 
-        logger.info("SUSFS patches applied (key.h and assoc_array.h protected)")
+        # 4. Restore the original good headers (this is the key)
+        if key_backup is not None:
+            key_h.write_text(key_backup, encoding="utf-8")
+            logger.info("Restored original key.h")
+        if assoc_backup is not None:
+            assoc_h.write_text(assoc_backup, encoding="utf-8")
+            logger.info("Restored original assoc_array.h")
+
+        logger.info("SUSFS patches applied (key.h / assoc_array.h restored)")
 
     def apply_sukisu_patches(self):
         logger.info("=== 应用 SukiSU 补丁 ===")
