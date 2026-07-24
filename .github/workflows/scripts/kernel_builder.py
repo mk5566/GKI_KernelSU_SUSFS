@@ -418,10 +418,11 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
             with open(build_config, "w") as f:
                 f.write(content)
 
-    def _configure_zram(self):
+        def _configure_zram(self):
         config_file = self.work_dir / "common/arch/arm64/configs/gki_defconfig"
         with open(config_file, "r") as f:
             content = f.read()
+
         kv = self.config.kernel_version
         if kv == "5.10":
             with open(config_file, "a") as f:
@@ -432,8 +433,10 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
                 f.write(content)
             with open(config_file, "a") as f:
                 f.write("CONFIG_ZSMALLOC=y\n")
+
         with open(config_file, "a") as f:
             f.write(self.ZRAM_CONFIG_COMMON)
+            f.write("CONFIG_ZRAM_DEF_COMP_LZ4KD=y\n")
 
     def _configure_bazel(self):
         modules_bzl = self.work_dir / "common/modules.bzl"
