@@ -99,7 +99,7 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
 """
 
     ZRAM_CONFIG_5_10 = "CONFIG_ZSMALLOC=y\nCONFIG_ZRAM=y\nCONFIG_MODULE_SIG=n\nCONFIG_CRYPTO_LZO=y\nCONFIG_ZRAM_DEF_COMP_LZ4KD=y\n"
-    ZRAM_CONFIG_COMMON = "CONFIG_CRYPTO_LZ4HC=y\nCONFIG_CRYPTO_LZ4K=y\nCONFIG_CRYPTO_LZ4KD=y\nCONFIG_CRYPTO_842=y\nCONFIG_CRYPTO_LZ4K_OPLUS=y\nCONFIG_ZRAM_WRITEBACK=y\n"
+    ZRAM_CONFIG_COMMON = "CONFIG_CRYPTO_LZ4HC=y\nCONFIG_CRYPTO_LZ4K=y\nCONFIG_CRYPTO_LZ4KD=y\nCONFIG_CRYPTO_842=y\nCONFIG_ZRAM_WRITEBACK=y\n"
 
     def __init__(self, config: BuildConfig, workspace: str):
         self.config = config
@@ -339,21 +339,85 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
     def apply_zram_patches(self):
         if not self.config.use_zram:
             return
+
         logger.info("=== 应用 ZRAM (LZ4KD) 补丁 ===")
         self._chdir(self.work_dir / "common")
-        for src in [
-            (self.sukisu_patch_dir / "other/zram/lz4k/include/linux", "include/linux/"),
-            (self.sukisu_patch_dir / "other/zram/lz4k/lib", "lib/"),
-            (self.sukisu_patch_dir / "other/zram/lz4k/crypto", "crypto/"),
-            (self.sukisu_patch_dir / "other/zram/lz4k_oplus", "lib/"),
+
+        # Ensure the original kernel Kconfig has not been corrupted.
+        lib_kconfig = Path("lib/Kconfig")
+        if (not lib_kconfig.exists()
+                or "config ASSOCIATIVE_ARRAY" not in lib_kconfig.read_text()):
+            raise RuntimeError(
+                "ZRAM patch preflight failed: "
+                "lib/Kconfig is missing ASSOCIATIVE_ARRAY"
+            )
+
+        # Copy only the standard LZ4K/LZ4KD source files.
+        # Do not copy lz4k_oplus into lib/.
+        for src, dst in [
+            (
+                self.sukisu_patch_dir / "other/zram/lz4k/include/linux",
+                "include/linux/",
+            ),
+            (
+                self.sukisu_patch_dir / "other/zram/lz4k/lib",
+                "lib/",
+            ),
+            (
+                self.sukisu_patch_dir / "other/zram/lz4k/crypto",
+                "crypto/",
+            ),
         ]:
-            if src[0].exists():
-                self._run_cmd(f"cp -r {src[0]}/* {src[1]}", check=False)
-        zram_patch_dir = self.sukisu_patch_dir / f"other/zram/zram_patch/{self.config.kernel_version}"
-        for patch in ["lz4kd.patch", "lz4k_oplus.patch"]:
-            p = zram_patch_dir / patch
-            if p.exists():
-                self._run_cmd(f"patch -p1 -F 3 < {p}", check=False)
+            if not src.exists():
+                raise RuntimeError(f"Required LZ4KD source directory not found: {src}")
+
+            self._run_cmd(
+                f"cp -r {src}/* {dst}",
+                check=True,
+            )
+
+        # Apply only LZ4KD. Do not apply lz4k_oplus.patch.
+        zram_patch_dir = (
+            self.sukisu_patch_dir
+            / f"other/zram/zram_patch/{self.config.kernel_version}"
+        )
+        lz4kd_patch = zram_patch_dir / "lz4kd.patch"
+
+        if not lz4kd_patch.exists():
+            raise RuntimeError(f"Required ZRAM patch not found: {lz4kd_patch}")
+
+        self._run_cmd(
+            f"patch -p1 -F 3 < {lz4kd_patch}",
+            check=True,
+        )
+
+        # Verify that the patch was applied and the kernel Kconfig survived.
+        required_markers = {
+            Path("lib/Kconfig"): [
+                "config ASSOCIATIVE_ARRAY",
+                "config LZ4KD_COMPRESS",
+            ],
+            Path("lib/Makefile"): [
+                "CONFIG_LZ4KD_COMPRESS",
+            ],
+            Path("crypto/Kconfig"): [
+                "config CRYPTO_LZ4KD",
+            ],
+        }
+
+        for path, markers in required_markers.items():
+            content = path.read_text()
+            missing = [
+                marker
+                for marker in markers
+                if marker not in content
+            ]
+
+            if missing:
+                raise RuntimeError(
+                    f"LZ4KD patch validation failed for {path}: "
+                    f"missing {missing}"
+                )
 
     def apply_task_mmu_fixes(self):
         logger.info("=== 应用 task_mmu.c 修复 ===")
