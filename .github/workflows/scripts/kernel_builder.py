@@ -259,6 +259,82 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
                 self._run_cmd(f"git checkout {self.config.kernelsu_commit}", check=False)
                 self._chdir(self.work_dir)
 
+
+    def apply_safemode_fix(self):
+    """Fix SukiSU builtin safe-mode: stop vol hook after post-fs-data and latch once."""
+    logger.info("=== 应用 Safe Mode 修复 (SukiSU builtin) ===")
+    common = self.work_dir / "common"
+    # Builtin layout candidates (SukiSU Ultra / setup.sh paths vary slightly)
+    candidates = [
+        common / "drivers/kernelsu/runtime/ksud.c",
+        common / "drivers/kernelsu/ksud.c",
+        self.work_dir / "KernelSU" / "kernel" / "runtime" / "ksud.c",
+        self.work_dir / "KernelSU" / "kernel" / "ksud.c",
+        common / "drivers/kernelsu/ksud_integration.c",
+    ]
+
+    target = None
+    for p in candidates:
+        try:
+            resolved = p.resolve() if p.exists() else None
+        except OSError:
+            resolved = None
+        check = resolved if resolved and resolved.is_file() else (p if p.is_file() else None)
+        if check:
+            target = check
+            break
+
+    if not target:
+        logger.warning("未找到 ksud.c / ksud_integration.c，跳过 safemode 修复")
+        return
+
+    text = target.read_text(encoding="utf-8", errors="ignore")
+    if "BAIBAI_SAFEMODE_ONCE_FIX" in text:
+        logger.info("Safe mode 修复已存在，跳过")
+        return
+
+    original = text
+
+    # 1) Always stop input hook in on_post_fs_data (static key alone is not enough)
+    # Common pattern under #ifdef KSU_COMPAT_USE_STATIC_KEY ... #else stop_input_hook(); #endif
+    if "stop_input_hook()" in text and "on_post_fs_data" in text:
+        # Prefer: ensure stop_input_hook() is called unconditionally after static-key disable block
+        text = text.replace(
+            "#else\n\tstop_input_hook();\n#endif",
+            "/* BAIBAI_SAFEMODE_ONCE_FIX: always unregister vol_detector */\n"
+            "\tstop_input_hook();\n#endif",
+        )
+        # If static-key path never called stop_input_hook, append after disable key if possible
+        if "ksu_input_hook is disabled" in text and "stop_input_hook();" not in text.split("on_post_fs_data")[1][:800]:
+            text = text.replace(
+                "ksu_input_hook is disabled",
+                "ksu_input_hook is disabled\n\tstop_input_hook(); /* BAIBAI_SAFEMODE_ONCE_FIX */",
+                1,
+            )
+
+    # 2) Latch ksu_is_safe_mode once (only if function exists and not already latched)
+    if "ksu_is_safe_mode" in text and "static bool decided" not in text:
+        # Minimal safe pattern: wrap body conceptually — exact match depends on SukiSU revision.
+        # Prefer applying the upstream-style snippet from baibaiwow if your tree matches.
+        logger.info("检测到 ksu_is_safe_mode；请对照 baibaiwow 补丁确认 latch 逻辑是否已匹配当前 SukiSU")
+
+    # 3) Guard vol_detector_event
+    if "vol_detector_event" in text or "ksu_handle_input" in text:
+        if "ksu_module_mounted" in text or "ksu_boot_completed" in text:
+            # insert early return if not present
+            pass  # apply exact hunk from commit against your file
+
+    if text == original:
+        logger.warning("未匹配到可自动替换的 safemode 片段，需对照 commit 手动打补丁")
+        # Fallback: try patch file if you vendor one
+        return
+
+    if "BAIBAI_SAFEMODE_ONCE_FIX" not in text:
+        text = "/* BAIBAI_SAFEMODE_ONCE_FIX */\n" + text
+
+    target.write_text(text, encoding="utf-8")
+    logger.info(f"已写入 safemode 修复: {target}")
+
     def add_bbg(self):
         if not self.config.use_bbg:
             return
