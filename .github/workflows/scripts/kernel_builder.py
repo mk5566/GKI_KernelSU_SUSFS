@@ -261,7 +261,7 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
 
 
     def apply_safemode_fix(self):
-    """Fix SukiSU builtin safe-mode: stop vol hook after post-fs-data and latch once."""
+    #"""Fix SukiSU builtin safe-mode: stop vol hook after post-fs-data and latch once."""
     logger.info("=== 应用 Safe Mode 修复 (SukiSU builtin) ===")
     common = self.work_dir / "common"
     # Builtin layout candidates (SukiSU Ultra / setup.sh paths vary slightly)
