@@ -694,7 +694,7 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
         else:
             image_source = self.work_dir / "bazel-bin/common/kernel_aarch64"
 
-        for image_name in ["Image", "Image.lz4"]:
+        for image_name in ["Image"]:
             src = image_source / image_name
             if src.exists():
                 self._run_cmd(f"cp {src} {bootimgs_dir}/ && cp {src} {self.work_dir}/", check=False)
