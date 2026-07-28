@@ -101,8 +101,6 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
 CONFIG_DEBUG_KERNEL=n
 CONFIG_DEBUG_INFO=n
 CONFIG_DEBUG_INFO_BTF=n
-CONFIG_DEBUG_FS=n          # careful: some vendor tools want debugfs
-CONFIG_FTRACE=n            # careful: breaks some tracers; often leave y on GKI
 CONFIG_KALLSYMS_ALL=n      # careful: KPM needs ALL; you have KPM=n so optional
 CONFIG_PRINTK_TIME=y       # keep if you debug boot
 CONFIG_DYNAMIC_DEBUG=n
