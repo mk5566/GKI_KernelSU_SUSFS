@@ -96,10 +96,32 @@ CONFIG_KSU_SUSFS_ENABLE_LOG=n
 CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
 CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
 CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+
+# Reduce noise / size (safe-ish on production phone)
+CONFIG_DEBUG_KERNEL=n
+CONFIG_DEBUG_INFO=n
+CONFIG_DEBUG_INFO_BTF=n
+CONFIG_DEBUG_FS=n          # careful: some vendor tools want debugfs
+CONFIG_FTRACE=n            # careful: breaks some tracers; often leave y on GKI
+CONFIG_KALLSYMS_ALL=n      # careful: KPM needs ALL; you have KPM=n so optional
+CONFIG_PRINTK_TIME=y       # keep if you debug boot
+CONFIG_DYNAMIC_DEBUG=n
+CONFIG_SLUB_DEBUG=n
+CONFIG_PAGE_POISONING=n
+CONFIG_DEBUG_PAGEALLOC=n
+CONFIG_SCHED_DEBUG=n
+CONFIG_SCHEDSTATS=n
+CONFIG_PROVE_LOCKING=n
+CONFIG_DEBUG_MUTEXES=n
+CONFIG_DEBUG_SPINLOCK=n
+CONFIG_DEBUG_ATOMIC_SLEEP=n
+CONFIG_DEBUG_LIST=n
+CONFIG_BUG_ON_DATA_CORRUPTION=n
+
 """
 
     ZRAM_CONFIG_5_10 = "CONFIG_ZSMALLOC=y\nCONFIG_ZRAM=y\nCONFIG_MODULE_SIG=n\nCONFIG_CRYPTO_LZO=y\nCONFIG_ZRAM_DEF_COMP_LZ4KD=y\n"
-    ZRAM_CONFIG_COMMON = "CONFIG_CRYPTO_LZ4=y\nCONFIG_CRYPTO_LZ4KD=y\nCONFIG_ZRAM_WRITEBACK=y\nCONFIG_ZRAM_DEF_COMP_LZ4KD=y\n"
+    ZRAM_CONFIG_COMMON = "CONFIG_CRYPTO_LZ4=y\nCONFIG_CRYPTO_LZ4KD=y\nCONFIG_ZRAM_WRITEBACK=y\nCONFIG_ZRAM_DEF_COMP_LZ4KD=y\nCONFIG_ZRAM_DEF_COMP_DEFLATE=n\nCONFIG_ZRAM_DEF_COMP_ZSTD=n\nCONFIG_ZRAM_DEF_COMP_LZO=n\n"
 
     def __init__(self, config: BuildConfig, workspace: str):
         self.config = config
@@ -1028,6 +1050,7 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
             self.init_and_sync_kernel()
             self.add_kernel_supatch()
             self.add_kernelsu()
+            self.apply_safemode_fix()
             self.add_bbg()
             self.apply_susfs_patches()
             self.apply_sukisu_patches()
