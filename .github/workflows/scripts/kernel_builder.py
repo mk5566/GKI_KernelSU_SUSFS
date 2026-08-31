@@ -418,6 +418,26 @@ CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
         with open(task_mmu, "r") as f:
             content = f.read()
 
+        # SUSFS patches can reference this macro on kernels that do not define it.
+        if "VMA_PAD_START" in content and "#define VMA_PAD_START" not in content:
+            include = "#include <linux/pkeys.h>"
+            definition = (
+                f"{include}\n\n"
+                "// VMA_PAD_START compatibility fix for SUSFS\n"
+                "#ifndef VMA_PAD_START\n"
+                "#define VMA_PAD_START(vma) ((vma)->vm_end)\n"
+                "#endif"
+            )
+
+            if include not in content:
+                raise RuntimeError(
+                    "VMA_PAD_START fix failed: linux/pkeys.h include not found"
+                )
+
+            content = content.replace(include, definition, 1)
+            with open(task_mmu, "w") as f:
+                f.write(content)
+
         # Fix uninitialized dentry introduced by 69_hide_stuff.patch.
         if fb == "android13-5.15":
             old_declaration = "struct dentry *dentry;"
