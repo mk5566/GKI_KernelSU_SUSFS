@@ -189,32 +189,48 @@ class KernelBuilder:
                 new_lines.append(f"# {key} is not set" if val is None else f"{key}={val}")
         config_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 
-    def _apply_patch_file(self, patch_path: Path, required: bool = False) -> bool:
-        def _run_patch(fuzz: int) -> subprocess.CompletedProcess:
+    def _apply_patch_file(self, patch_path: Path, required: bool = False,
+                          allow_fuzz: bool = False) -> bool:
+        def _run_patch(fuzz: int = 0, dry: bool = False) -> subprocess.CompletedProcess:
             fuzz_arg = f"-F {fuzz} " if fuzz else ""
+            dry_arg = "--dry-run " if dry else ""
             return self._run_cmd(
-                f"patch -p1 --forward --no-backup-if-mismatch -l {fuzz_arg}< '{patch_path}'",
+                f"patch -p1 --forward --no-backup-if-mismatch -l {dry_arg}{fuzz_arg}< '{patch_path}'",
                 check=False,
                 capture_output=True,
             )
 
+        def _log_output(result: subprocess.CompletedProcess):
+            output = ((result.stdout or "") + (result.stderr or "")).strip()
+            if output:
+                logger.info(output)
+            return output
+
         logger.info(f"Applying patch: {patch_path.name}")
-        result = _run_patch(0)
-        output = (result.stdout or "") + (result.stderr or "")
-        if output.strip():
-            logger.info(output.strip())
-        if result.returncode == 0:
-            return True
-        if "Reversed (or previously applied)" in output:
+        dry = _run_patch(dry=True)
+        dry_out = _log_output(dry)
+        if dry.returncode == 0:
+            result = _run_patch(dry=False)
+            _log_output(result)
+            if result.returncode == 0:
+                return True
+        elif "Reversed (or previously applied)" in dry_out:
             logger.info(f"Patch already applied: {patch_path.name}")
             return True
 
-        result = _run_patch(3)
-        output = (result.stdout or "") + (result.stderr or "")
-        if output.strip():
-            logger.info(output.strip())
-        if result.returncode == 0 or "Reversed (or previously applied)" in output:
-            return True
+        # Never fuzz-retry after a partial apply. Only fuzz when a dry-run of
+        # the whole patch succeeds, so hunks cannot be inserted twice.
+        if allow_fuzz:
+            dry_fuzz = _run_patch(fuzz=3, dry=True)
+            fuzz_out = _log_output(dry_fuzz)
+            if dry_fuzz.returncode == 0:
+                result = _run_patch(fuzz=3, dry=False)
+                _log_output(result)
+                if result.returncode == 0:
+                    return True
+            elif "Reversed (or previously applied)" in fuzz_out:
+                logger.info(f"Patch already applied: {patch_path.name}")
+                return True
 
         message = f"Patch failed: {patch_path.name}"
         if required:
@@ -481,9 +497,17 @@ class KernelBuilder:
     def apply_sukisu_patches(self):
         logger.info("=== Applying SukiSU hide patches ===")
         self._chdir(self.work_dir / "common")
+        task_mmu = Path("fs/proc/task_mmu.c")
+        if task_mmu.exists() and "show_vma_header_prefix_fake" in task_mmu.read_text(encoding="utf-8"):
+            logger.info("Hide helpers already present in task_mmu.c, skipping 69_hide_stuff.patch")
+            return
         hooks_patch = self.sukisu_patch_dir / "69_hide_stuff.patch"
         if hooks_patch.exists():
-            self._apply_patch_file(hooks_patch, required=False)
+            # Current SUSFS no longer has susfs_sus_ino_for_show_map_vma, so this
+            # patch often mismatches. Never fuzz it: fuzz duplicates the fake
+            # maps helper and breaks the android13-5.15 build.
+            if not self._apply_patch_file(hooks_patch, required=False, allow_fuzz=False):
+                logger.warning("69_hide_stuff.patch does not apply to this SUSFS tree, skipping")
         else:
             logger.warning("69_hide_stuff.patch not found, continuing")
 
@@ -569,17 +593,50 @@ class KernelBuilder:
                     f"missing {missing}"
                 )
 
+    def _strip_duplicate_c_function(self, content: str, signature: str) -> str:
+        starts = []
+        pos = 0
+        while True:
+            idx = content.find(signature, pos)
+            if idx < 0:
+                break
+            starts.append(idx)
+            pos = idx + len(signature)
+        if len(starts) < 2:
+            return content
+
+        def function_end(src: str, start: int) -> int:
+            brace = src.find("{", start)
+            if brace < 0:
+                return len(src)
+            depth = 0
+            for j in range(brace, len(src)):
+                if src[j] == "{":
+                    depth += 1
+                elif src[j] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end = j + 1
+                        if end < len(src) and src[end] == "\n":
+                            end += 1
+                        return end
+            return len(src)
+
+        for start in reversed(starts[1:]):
+            content = content[:start] + content[function_end(content, start):]
+        logger.info(f"Removed {len(starts) - 1} duplicate definition(s) of {signature.split('(')[0].strip()}")
+        return content
+
     def apply_task_mmu_fixes(self):
-        logger.info("=== 应用 task_mmu.c 修复 ===")
+        logger.info("=== Applying task_mmu.c compatibility fixes ===")
         self._chdir(self.work_dir / "common")
         task_mmu = Path("fs/proc/task_mmu.c")
         if not task_mmu.exists():
             return
 
         fb = f"{self.config.android_version}-{self.config.kernel_version}"
-
-        with open(task_mmu, "r") as f:
-            content = f.read()
+        content = task_mmu.read_text(encoding="utf-8")
+        original = content
 
         # SUSFS patches can reference this macro on kernels that do not define it.
         if "VMA_PAD_START" in content and "#define VMA_PAD_START" not in content:
@@ -591,43 +648,35 @@ class KernelBuilder:
                 "#define VMA_PAD_START(vma) ((vma)->vm_end)\n"
                 "#endif"
             )
-
             if include not in content:
                 raise RuntimeError(
                     "VMA_PAD_START fix failed: linux/pkeys.h include not found"
                 )
-
             content = content.replace(include, definition, 1)
-            with open(task_mmu, "w") as f:
-                f.write(content)
 
-        # Fix uninitialized dentry introduced by 69_hide_stuff.patch.
-        if fb == "android13-5.15":
-            old_declaration = "struct dentry *dentry;"
-            new_declaration = "struct dentry *dentry = NULL;"
+        content = self._strip_duplicate_c_function(content, "static void show_vma_header_prefix_fake")
 
-            if old_declaration in content:
-                content = content.replace(
-                    old_declaration,
-                    new_declaration,
-                    1,
-                )
-                with open(task_mmu, "w") as f:
-                    f.write(content)
+        content = content.replace("struct dentry *dentry;", "struct dentry *dentry = NULL;")
+        content = re.sub(
+            r"(struct dentry \*dentry = NULL;\s*){2,}",
+            "struct dentry *dentry = NULL;\n",
+            content,
+        )
+
+        if re.search(r"^\s*bypass:\s*$", content, re.MULTILINE) and "goto bypass" not in content:
+            content = re.sub(r"\n[ \t]*bypass:[ \t]*\n", "\n", content)
+            logger.info("Removed unused bypass label from task_mmu.c")
 
         if fb == "android15-6.6" and "unsigned int nr_subpages" not in content:
             self._fix_base_c_header()
         elif fb == "android14-6.1" and "if (!vma_pages(vma))" not in content:
             self._fix_base_c_header()
-            if "goto show_pad;" in content:
-                content = content.replace("goto show_pad;", "return 0;")
-                with open(task_mmu, "w") as f:
-                    f.write(content)
+            content = content.replace("goto show_pad;", "return 0;")
         elif fb in ["android12-5.10", "android13-5.10", "android13-5.15"] and "if (!vma_pages(vma))" not in content:
-            if "goto show_pad;" in content:
-                content = content.replace("goto show_pad;", "return 0;")
-                with open(task_mmu, "w") as f:
-                    f.write(content)
+            content = content.replace("goto show_pad;", "return 0;")
+
+        if content != original:
+            task_mmu.write_text(content, encoding="utf-8")
 
     def _fix_base_c_header(self):
         base_c = self.work_dir / "common/fs/proc/base.c"
@@ -689,7 +738,7 @@ class KernelBuilder:
                     raise RuntimeError(f"Required vendor patch missing: {patch_path}")
                 logger.warning(f"Vendor patch file not found: {patch_path}")
                 continue
-            if self._apply_patch_file(patch_path, required=required):
+            if self._apply_patch_file(patch_path, required=required, allow_fuzz=not required):
                 applied.append(patch_name)
             else:
                 failed_optional.append(patch_name)
