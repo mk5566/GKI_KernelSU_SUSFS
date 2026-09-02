@@ -582,22 +582,23 @@ CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
 
     def _configure_zram(self):
         config_file = self.work_dir / "common/arch/arm64/configs/gki_defconfig"
-        with open(config_file, "r") as f:
-            content = f.read()
-
-        kv = self.config.kernel_version
-        if kv == "5.10":
-            with open(config_file, "a") as f:
-                f.write(self.ZRAM_CONFIG_5_10)
-        else:
+        if config_file.exists():
+            content = config_file.read_text(encoding="utf-8")
             content = content.replace("CONFIG_ZRAM=m", "CONFIG_ZRAM=y")
-            with open(config_file, "w") as f:
-                f.write(content)
-            with open(config_file, "a") as f:
-                f.write("CONFIG_ZSMALLOC=y\n")
+            content = content.replace("CONFIG_ZSMALLOC=m", "CONFIG_ZSMALLOC=y")
+            config_file.write_text(content, encoding="utf-8")
+            with open(config_file, "a", encoding="utf-8") as f:
+                f.write(self.ZRAM_CONFIG_COMMON)
 
-        with open(config_file, "a") as f:
-            f.write(self.ZRAM_CONFIG_COMMON)
+        # Remove zram and zsmalloc from module lists since they are built into vmlinux
+        for mod_list_file in [
+            self.work_dir / "common/android/gki_system_dlkm_modules",
+            self.work_dir / "common/android/gki_aarch64_modules",
+        ]:
+            if mod_list_file.exists():
+                lines = mod_list_file.read_text(encoding="utf-8").splitlines()
+                lines = [l for l in lines if not any(x in l for x in ["zram", "zsmalloc"])]
+                mod_list_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def _configure_bazel(self):
         modules_bzl = self.work_dir / "common/modules.bzl"
@@ -750,21 +751,26 @@ CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
         self._chdir(self.work_dir)
         build_config = self.work_dir / "common/build.config.gki.aarch64"
         if build_config.exists():
-            with open(build_config, "r") as f:
+            with open(build_config, "r", encoding="utf-8") as f:
                 content = f.read()
             content = content.replace("BUILD_SYSTEM_DLKM=1", "BUILD_SYSTEM_DLKM=0")
-            lines = [l for l in content.split('\n') if 'MODULES_ORDER=android/gki_aarch64_modules' not in l and 'KMI_SYMBOL_LIST_STRICT_MODE' not in l]
+            lines = [l for l in content.split('\n') if not any(k in l for k in [
+                'MODULES_ORDER=', 'MODULES_LIST=', 'KMI_SYMBOL_LIST_STRICT_MODE'
+            ])]
             extra_flags = [
                 "TRIM_NONLISTED_KMI=0",
                 "KMI_SYMBOL_LIST_STRICT_MODE=0",
                 "KMI_SYMBOL_LIST_ADD_ONLY=0",
                 "KMI_ENFORCED=0",
+                "BUILD_SYSTEM_DLKM=0",
+                "MODULES_LIST=",
+                "MODULES_ORDER=",
                 "ABI_DEFINITION=",
                 "KMI_SYMBOL_LIST=",
                 "ADDITIONAL_KMI_SYMBOL_LISTS=",
             ]
             content = '\n'.join(lines) + '\n' + '\n'.join(extra_flags) + '\n'
-            with open(build_config, "w") as f:
+            with open(build_config, "w", encoding="utf-8") as f:
                 f.write(content)
 
         try:
