@@ -749,11 +749,29 @@ CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
     def build_kernel(self) -> bool:
         logger.info("=== 开始编译内核 ===")
         self._chdir(self.work_dir)
+
+        # 1. Neutralize build.config.gki
+        build_config_gki = self.work_dir / "common/build.config.gki"
+        if build_config_gki.exists():
+            content = build_config_gki.read_text(encoding="utf-8")
+            content = content.replace('POST_DEFCONFIG_CMDS="check_defconfig"', 'POST_DEFCONFIG_CMDS=""')
+            content = content.replace("check_defconfig", "")
+            build_config_gki.write_text(content, encoding="utf-8")
+
+        # 2. Neutralize build.config.aarch64
+        build_config_aarch64 = self.work_dir / "common/build.config.aarch64"
+        if build_config_aarch64.exists():
+            content = build_config_aarch64.read_text(encoding="utf-8")
+            content = content.replace("GKI_MODULES_LIST=android/gki_aarch64_modules", "GKI_MODULES_LIST=")
+            build_config_aarch64.write_text(content, encoding="utf-8")
+
+        # 3. Neutralize build.config.gki.aarch64
         build_config = self.work_dir / "common/build.config.gki.aarch64"
         if build_config.exists():
-            with open(build_config, "r", encoding="utf-8") as f:
-                content = f.read()
+            content = build_config.read_text(encoding="utf-8")
             content = content.replace("BUILD_SYSTEM_DLKM=1", "BUILD_SYSTEM_DLKM=0")
+            content = content.replace("BUILD_GKI_ARTIFACTS=1", "BUILD_GKI_ARTIFACTS=0")
+            content = content.replace("BUILD_GKI_CERTIFICATION_TOOLS=1", "BUILD_GKI_CERTIFICATION_TOOLS=0")
             lines = [l for l in content.split('\n') if not any(k in l for k in [
                 'MODULES_ORDER=', 'MODULES_LIST=', 'KMI_SYMBOL_LIST_STRICT_MODE'
             ])]
@@ -763,20 +781,34 @@ CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
                 "KMI_SYMBOL_LIST_ADD_ONLY=0",
                 "KMI_ENFORCED=0",
                 "BUILD_SYSTEM_DLKM=0",
+                "BUILD_GKI_ARTIFACTS=0",
+                "BUILD_GKI_CERTIFICATION_TOOLS=0",
                 "MODULES_LIST=",
                 "MODULES_ORDER=",
+                "GKI_MODULES_LIST=",
                 "ABI_DEFINITION=",
                 "KMI_SYMBOL_LIST=",
                 "ADDITIONAL_KMI_SYMBOL_LISTS=",
+                "POST_DEFCONFIG_CMDS=",
             ]
             content = '\n'.join(lines) + '\n' + '\n'.join(extra_flags) + '\n'
-            with open(build_config, "w", encoding="utf-8") as f:
-                f.write(content)
+            build_config.write_text(content, encoding="utf-8")
 
         try:
             if (self.work_dir / "build/build.sh").exists():
                 logger.info("使用旧版构建方式...")
-                result = self._run_cmd("LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh CC=\"/usr/bin/ccache clang\"", check=False)
+                build_cmd = (
+                    "LTO=thin "
+                    "BUILD_SYSTEM_DLKM=0 "
+                    "BUILD_GKI_ARTIFACTS=0 "
+                    "BUILD_GKI_CERTIFICATION_TOOLS=0 "
+                    "TRIM_NONLISTED_KMI=0 "
+                    "KMI_ENFORCED=0 "
+                    "POST_DEFCONFIG_CMDS=\"\" "
+                    "BUILD_CONFIG=common/build.config.gki.aarch64 "
+                    "build/build.sh CC=\"/usr/bin/ccache clang\""
+                )
+                result = self._run_cmd(build_cmd, check=False)
             else:
                 logger.info("使用 Bazel 构建方式...")
                 result = self._run_cmd("tools/bazel build --disk_cache=/home/runner/.cache/bazel --config=fast --lto=thin //common:kernel_aarch64_dist", check=False)
