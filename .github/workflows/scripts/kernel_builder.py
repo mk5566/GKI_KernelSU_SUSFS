@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 import logging
 import re
@@ -6,11 +7,13 @@ from pathlib import Path
 from typing import Optional, Callable
 from dataclasses import dataclass, field
 from config import (BuildConfig, KSU_REPO_CONFIG, SUSFS_REPO_CONFIG, SUKISU_PATCH_REPO_CONFIG,
-                   ANYKERNEL_CONFIG, KERNEL_PATCHES_CONFIG, BBG_CONFIG, TOOLCHAIN_CONFIG,
+                   ANYKERNEL_CONFIG, BBG_CONFIG, TOOLCHAIN_CONFIG,
                    LEGACY_FIXES, OP8E_PATCH_URL, KPM_PATCH_URL)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+REQUIRED_TOOLS = ("git", "curl", "patch", "python3", "zip", "openssl")
 
 
 @dataclass
@@ -29,19 +32,20 @@ class ShellCommand:
 
     def run(self, cmd: str, check: bool = True, capture_output: bool = False,
             shell: bool = True, timeout: Optional[int] = None) -> subprocess.CompletedProcess:
-        logger.info(f"执行命令: {cmd}")
+        logger.info(f"Running: {cmd}")
         try:
             return subprocess.run(cmd, shell=shell, cwd=self.cwd, env=self.env,
                                 capture_output=capture_output, text=True, timeout=timeout, check=check)
         except subprocess.CalledProcessError as e:
-            logger.error(f"命令执行失败: {e.stderr or str(e)}")
+            output = e.stderr or e.stdout or str(e)
+            logger.error(f"Command failed (exit {e.returncode}): {output}")
             raise
         except subprocess.TimeoutExpired:
-            logger.error(f"命令执行超时: {cmd}")
+            logger.error(f"Command timed out: {cmd}")
             raise
 
     def run_with_callback(self, cmd: str, callback: Optional[Callable] = None) -> str:
-        logger.info(f"执行命令: {cmd}")
+        logger.info(f"Running: {cmd}")
         process = subprocess.Popen(cmd, shell=True, cwd=self.cwd, env=self.env,
                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
         output_lines = []
@@ -52,69 +56,45 @@ class ShellCommand:
                 callback(line)
         process.wait()
         if process.returncode != 0:
-            raise RuntimeError(f"命令执行失败")
+            raise RuntimeError(f"Command failed (exit {process.returncode}): {cmd}")
         return "\n".join(output_lines)
 
 
 class KernelBuilder:
-    KERNEL_CONFIG_TEMPLATE = """
-# === KernelSU / SUSFS ===
-CONFIG_KSU=y
-CONFIG_KPM=n
-CONFIG_KSU_SUSFS=y
-CONFIG_KSU_SUSFS_SUS_SU=n
-CONFIG_KSU_SUSFS_SUS_MAP=y
-CONFIG_KSU_SUSFS_SUS_MOUNT=y
-CONFIG_KSU_SUSFS_SUS_KSTAT=y
-CONFIG_KSU_SUSFS_TRY_UMOUNT=y
-CONFIG_KSU_SUSFS_SPOOF_UNAME=y
-CONFIG_KSU_SUSFS_ENABLE_LOG=n
-CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
-CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
-CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+    KERNEL_CONFIG_UPDATES = {
+        "CONFIG_KSU": "y",
+        "CONFIG_KSU_DEBUG": "n",
+        "CONFIG_KSU_SUSFS": "y",
+        "CONFIG_KSU_SUSFS_SUS_MAP": "y",
+        "CONFIG_KSU_SUSFS_SUS_MOUNT": "y",
+        "CONFIG_KSU_SUSFS_SUS_KSTAT": "y",
+        "CONFIG_KSU_SUSFS_SPOOF_UNAME": "y",
+        "CONFIG_KSU_SUSFS_ENABLE_LOG": "n",
+        "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS": "y",
+        "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG": "y",
+        "CONFIG_KSU_SUSFS_OPEN_REDIRECT": "y",
+        "CONFIG_TMPFS_XATTR": "y",
+        "CONFIG_TMPFS_POSIX_ACL": "y",
+        "CONFIG_IP_NF_TARGET_TTL": "y",
+        "CONFIG_IP6_NF_TARGET_HL": "y",
+        "CONFIG_IP6_NF_MATCH_HL": "y",
+        "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE": "y",
+        "CONFIG_CC_OPTIMIZE_FOR_SIZE": None,
+    }
 
-# === TMPFS (KSU overlays) ===
-CONFIG_TMPFS_XATTR=y
-CONFIG_TMPFS_POSIX_ACL=y
-
-# === Netfilter extras (hotspot TTL) ===
-CONFIG_IP_NF_TARGET_TTL=y
-CONFIG_IP6_NF_TARGET_HL=y
-CONFIG_IP6_NF_MATCH_HL=y
-
-# === TCP: BBR default, Westwood fallback ===
-CONFIG_TCP_CONG_ADVANCED=y
-CONFIG_TCP_CONG_BBR=y
-CONFIG_DEFAULT_BBR=y
-CONFIG_DEFAULT_TCP_CONG="bbr"
-CONFIG_TCP_CONG_WESTWOOD=y
-CONFIG_NET_SCH_FQ=y
-CONFIG_TCP_CONG_BIC=n
-CONFIG_TCP_CONG_HTCP=n
-
-# === Compiler ===
-CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
-
-"""
-
-    ZRAM_CONFIG_5_10 = (
-        "CONFIG_ZSMALLOC=y\n"
-        "CONFIG_ZRAM=y\n"
-        "CONFIG_ZRAM_DEF_COMP_LZ4KD=y\n"
-    )
-    ZRAM_CONFIG_COMMON = (
-        "CONFIG_CRYPTO_LZ4=y\n"
-        "CONFIG_CRYPTO_LZ4KD=y\n"
-        "CONFIG_ZRAM_WRITEBACK=y\n"
-        "CONFIG_ZRAM_DEF_COMP_LZ4KD=y\n"
-        "CONFIG_ZRAM_DEF_COMP_LZ4=n\n"
-        "CONFIG_ZRAM_DEF_COMP_DEFLATE=n\n"
-        "CONFIG_ZRAM_DEF_COMP_ZSTD=n\n"
-        "CONFIG_ZRAM_DEF_COMP_LZO=n\n"
-        "CONFIG_ZRAM_DEF_COMP_LZORLE=n\n"
-        "CONFIG_ZRAM_DEF_COMP_LZ4HC=n\n"
-        "CONFIG_ZRAM_DEF_COMP_842=n\n"
-    )
+    BBR3_CONFIG_UPDATES = {
+        "CONFIG_TCP_CONG_ADVANCED": "y",
+        "CONFIG_TCP_CONG_BBR": "y",
+        "CONFIG_TCP_CONG_BBR3": "y",
+        "CONFIG_DEFAULT_BBR3": "y",
+        "CONFIG_DEFAULT_BBR": None,
+        "CONFIG_DEFAULT_CUBIC": None,
+        "CONFIG_DEFAULT_TCP_CONG": '"bbr3"',
+        "CONFIG_TCP_CONG_WESTWOOD": "y",
+        "CONFIG_NET_SCH_FQ": "y",
+        "CONFIG_TCP_CONG_BIC": "n",
+        "CONFIG_TCP_CONG_HTCP": "n",
+    }
 
     def __init__(self, config: BuildConfig, workspace: str):
         self.config = config
@@ -126,7 +106,6 @@ CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
         self.susfs_dir = self.workspace / "susfs4ksu"
         self.sukisu_patch_dir = self.workspace / "SukiSU_patch"
         self.anykernel_dir = self.workspace / "AnyKernel3"
-        self.kernel_patches_dir = self.workspace / "kernel_patches"
         self.toolchain_dir = self.workspace / "toolchain"
         self.mkbootimg_dir = self.workspace / "mkbootimg"
         self._setup_env()
@@ -136,6 +115,7 @@ CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
         self.env["CCACHE_COMPILERCHECK"] = "%compiler% -dumpmachine; %compiler% -dumpversion"
         self.env["CCACHE_NOHASHDIR"] = "true"
         self.env["CCACHE_HARDLINK"] = "true"
+        self.env.setdefault("CCACHE_DIR", os.path.expanduser("~/.ccache"))
         self.shell.env = self.env
 
     def _run_cmd(self, cmd: str, **kwargs) -> subprocess.CompletedProcess:
@@ -145,91 +125,251 @@ CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
         os.chdir(path)
         self.shell.cwd = str(path)
 
+    def _preflight(self):
+        missing = [tool for tool in REQUIRED_TOOLS if shutil.which(tool) is None]
+        if missing:
+            raise RuntimeError(f"Missing required tools: {', '.join(missing)}")
+
+    def _ensure_git_identity(self):
+        def _has(key: str) -> bool:
+            result = subprocess.run(["git", "config", "--global", key],
+                                    capture_output=True, text=True)
+            return result.returncode == 0 and bool(result.stdout.strip())
+
+        if not _has("user.email"):
+            self._run_cmd('git config --global user.email "gki-builder@localhost"', check=True)
+        if not _has("user.name"):
+            self._run_cmd('git config --global user.name "GKI Builder"', check=True)
+        self._run_cmd("git config --global --add safe.directory '*'", check=False)
+
+    def _clone_if_needed(self, name: str, dest: Path, url: str, branch: Optional[str] = None):
+        if dest.exists():
+            logger.info(f"{name} already present at {dest}")
+            return
+        cmd = f"git clone --filter=blob:none {url} {dest}"
+        if branch:
+            cmd = f"git clone --filter=blob:none -b {branch} {url} {dest}"
+        logger.info(f"Cloning {name}...")
+        self._run_cmd(cmd, check=True)
+        if not dest.exists():
+            raise RuntimeError(f"Failed to clone {name} from {url}")
+
+    def _require_path(self, path: Path, what: str):
+        if not path.exists():
+            raise RuntimeError(f"{what} not found: {path}")
+
+    def _defconfig_path(self) -> Path:
+        return self.work_dir / "common/arch/arm64/configs/gki_defconfig"
+
+    def _upsert_defconfig(self, updates: dict):
+        config_file = self._defconfig_path()
+        if not config_file.exists():
+            raise RuntimeError(f"gki_defconfig not found: {config_file}")
+
+        lines = config_file.read_text(encoding="utf-8").splitlines()
+        seen = set()
+        new_lines = []
+        for line in lines:
+            key = None
+            stripped = line.strip()
+            if stripped.startswith("CONFIG_"):
+                key = stripped.split("=", 1)[0]
+            elif stripped.startswith("# CONFIG_") and stripped.endswith(" is not set"):
+                key = stripped[2:].split(" ", 1)[0]
+            if key and key in updates:
+                if key in seen:
+                    continue
+                val = updates[key]
+                new_lines.append(f"# {key} is not set" if val is None else f"{key}={val}")
+                seen.add(key)
+            else:
+                new_lines.append(line)
+        for key, val in updates.items():
+            if key not in seen:
+                new_lines.append(f"# {key} is not set" if val is None else f"{key}={val}")
+        config_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
+    def _apply_patch_file(self, patch_path: Path, required: bool = False) -> bool:
+        def _run_patch(fuzz: int) -> subprocess.CompletedProcess:
+            fuzz_arg = f"-F {fuzz} " if fuzz else ""
+            return self._run_cmd(
+                f"patch -p1 --forward --no-backup-if-mismatch -l {fuzz_arg}< '{patch_path}'",
+                check=False,
+                capture_output=True,
+            )
+
+        logger.info(f"Applying patch: {patch_path.name}")
+        result = _run_patch(0)
+        output = (result.stdout or "") + (result.stderr or "")
+        if output.strip():
+            logger.info(output.strip())
+        if result.returncode == 0:
+            return True
+        if "Reversed (or previously applied)" in output:
+            logger.info(f"Patch already applied: {patch_path.name}")
+            return True
+
+        result = _run_patch(3)
+        output = (result.stdout or "") + (result.stderr or "")
+        if output.strip():
+            logger.info(output.strip())
+        if result.returncode == 0 or "Reversed (or previously applied)" in output:
+            return True
+
+        message = f"Patch failed: {patch_path.name}"
+        if required:
+            rej = list(Path(".").rglob("*.rej"))
+            for rej_file in rej[:8]:
+                try:
+                    logger.error(f"Reject {rej_file}:\n{rej_file.read_text(encoding='utf-8', errors='replace')[:2000]}")
+                except OSError:
+                    pass
+            raise RuntimeError(message)
+        logger.warning(message)
+        return False
+
+    def _kernel_image_path(self) -> Path:
+        if self.config.android_version in ["android12", "android13"]:
+            return self.work_dir / f"out/{self.config.android_version}-{self.config.kernel_version}/dist/Image"
+        return self.work_dir / "bazel-bin/common/kernel_aarch64/Image"
+
+    def _read_kernel_version(self) -> str:
+        makefile = self.work_dir / "common/Makefile"
+        if not makefile.exists():
+            return "unknown"
+        version = patchlevel = sublevel = "?"
+        for line in makefile.read_text(encoding="utf-8").splitlines()[:20]:
+            if line.startswith("VERSION ="):
+                version = line.split("=", 1)[1].strip()
+            elif line.startswith("PATCHLEVEL ="):
+                patchlevel = line.split("=", 1)[1].strip()
+            elif line.startswith("SUBLEVEL ="):
+                sublevel = line.split("=", 1)[1].strip()
+        return f"{version}.{patchlevel}.{sublevel}"
+
     def _apply_susfs_commit(self):
         if not self.config.susfs_commit or not self.susfs_dir.exists():
             return
         self._chdir(self.susfs_dir)
         if self.config.susfs_commit.startswith("HEAD~"):
-            self._run_cmd("git fetch origin", check=False)
-            self._run_cmd(f"git reset --hard {self.config.susfs_commit}", check=False)
+            self._run_cmd("git fetch origin", check=True)
+            self._run_cmd(f"git reset --hard {self.config.susfs_commit}", check=True)
         else:
-            self._run_cmd("git fetch origin", check=False)
-            self._run_cmd(f"git checkout {self.config.susfs_commit}", check=False)
+            self._run_cmd("git fetch origin", check=True)
+            self._run_cmd(f"git checkout {self.config.susfs_commit}", check=True)
         self._chdir(self.workspace)
 
     def clone_repositories(self):
-        logger.info("=== 开始克隆仓库 ===")
-        for name, repo_dir, url, branch in [
-            ("SUSFS", self.susfs_dir, SUSFS_REPO_CONFIG['repo_url'], self.config.kernel_branch),
-            ("SukiSU Patch", self.sukisu_patch_dir, SUKISU_PATCH_REPO_CONFIG['repo_url'], None),
-            ("AnyKernel3", self.anykernel_dir, ANYKERNEL_CONFIG['repo_url'], ANYKERNEL_CONFIG['branch']),
-            ("Kernel Patches", self.kernel_patches_dir, KERNEL_PATCHES_CONFIG['repo_url'], None),
-        ]:
-            if not repo_dir.exists():
-                cmd = f"git clone {url}"
-                if branch:
-                    cmd += f" -b {branch}"
-                logger.info(f"克隆 {name}...")
-                self._run_cmd(cmd, check=False)
-            else:
-                logger.info(f"{name} 已存在，跳过")
+        logger.info("=== Cloning helper repositories ===")
+        self._clone_if_needed("SUSFS", self.susfs_dir, SUSFS_REPO_CONFIG["repo_url"], self.config.kernel_branch)
+        self._clone_if_needed("SukiSU Patch", self.sukisu_patch_dir, SUKISU_PATCH_REPO_CONFIG["repo_url"])
+        self._clone_if_needed("AnyKernel3", self.anykernel_dir, ANYKERNEL_CONFIG["repo_url"], ANYKERNEL_CONFIG["branch"])
         self._apply_susfs_commit()
-        logger.info("=== 仓库克隆完成 ===")
+        logger.info("=== Helper repositories ready ===")
 
     def clone_toolchain(self):
-        logger.info("=== 克隆工具链 ===")
+        logger.info("=== Cloning toolchain ===")
         if not self.toolchain_dir.exists():
-            self._run_cmd(f"git clone {TOOLCHAIN_CONFIG['aosp_mirror']}/kernel/prebuilts/build-tools "
-                         f"-b {TOOLCHAIN_CONFIG['build_tools_branch']} --depth 1 {self.toolchain_dir}", check=False)
+            self._run_cmd(
+                f"git clone --depth 1 -b {TOOLCHAIN_CONFIG['build_tools_branch']} "
+                f"{TOOLCHAIN_CONFIG['aosp_mirror']}/kernel/prebuilts/build-tools {self.toolchain_dir}",
+                check=True,
+            )
         if not self.mkbootimg_dir.exists():
-            self._run_cmd(f"git clone {TOOLCHAIN_CONFIG['aosp_mirror']}/platform/system/tools/mkbootimg "
-                         f"-b {TOOLCHAIN_CONFIG['mkbootimg_branch']} --depth 1 {self.mkbootimg_dir}", check=False)
-        self.env["AVBTOOL"] = str(self.toolchain_dir / "linux-x86/bin/avbtool")
-        self.env["MKBOOTIMG"] = str(self.mkbootimg_dir / "mkbootimg.py")
-        self.env["UNPACK_BOOTIMG"] = str(self.mkbootimg_dir / "unpack_bootimg.py")
-        if "BOOT_SIGN_KEY_PATH" in os.environ:
-            self.env["BOOT_SIGN_KEY_PATH"] = os.environ["BOOT_SIGN_KEY_PATH"]
+            self._run_cmd(
+                f"git clone --depth 1 -b {TOOLCHAIN_CONFIG['mkbootimg_branch']} "
+                f"{TOOLCHAIN_CONFIG['aosp_mirror']}/platform/system/tools/mkbootimg {self.mkbootimg_dir}",
+                check=True,
+            )
+        avbtool = self.toolchain_dir / "linux-x86/bin/avbtool"
+        mkbootimg = self.mkbootimg_dir / "mkbootimg.py"
+        unpack = self.mkbootimg_dir / "unpack_bootimg.py"
+        self._require_path(avbtool, "avbtool")
+        self._require_path(mkbootimg, "mkbootimg.py")
+        self.env["AVBTOOL"] = str(avbtool)
+        self.env["MKBOOTIMG"] = str(mkbootimg)
+        self.env["UNPACK_BOOTIMG"] = str(unpack)
+
+        key_path = Path(os.environ.get("BOOT_SIGN_KEY_PATH", self.workspace / "boot_avb_testkey.pem"))
+        if not key_path.exists():
+            self._run_cmd(f"openssl genrsa -out '{key_path}' 2048", check=True)
+        self.env["BOOT_SIGN_KEY_PATH"] = str(key_path)
         self.shell.env = self.env
-        logger.info("=== 工具链准备完成 ===")
+        logger.info("=== Toolchain ready ===")
 
     def setup_repo_tool(self):
-        logger.info("=== 安装 repo 工具 ===")
+        logger.info("=== Installing repo tool ===")
         repo_dir = self.workspace / "git-repo"
         repo_dir.mkdir(exist_ok=True)
         repo_path = repo_dir / "repo"
         if not repo_path.exists():
-            self._run_cmd(f"curl https://storage.googleapis.com/git-repo-downloads/repo > {repo_path}", check=False)
-            self._run_cmd(f"chmod a+rx {repo_path}", check=False)
+            self._run_cmd(
+                f"curl -fLSs https://storage.googleapis.com/git-repo-downloads/repo -o {repo_path}",
+                check=True,
+            )
+            self._run_cmd(f"chmod a+rx {repo_path}", check=True)
         self.env["REPO"] = str(repo_path)
         self.shell.env = self.env
 
     def init_and_sync_kernel(self):
-        logger.info("=== 初始化和同步内核源代码 ===")
+        logger.info("=== Initializing and syncing kernel sources ===")
+        self._ensure_git_identity()
         self._chdir(self.work_dir)
         formatted_branch = self.config.formatted_branch
+        manifest_candidates = [
+            f"common-{formatted_branch}",
+            f"deprecated/common-{formatted_branch}",
+            f"common-deprecated/{formatted_branch}",
+        ]
 
-        self._run_cmd(f"$REPO init --depth=1 -u https://android.googlesource.com/kernel/manifest "
-                     f"-b common-{formatted_branch} --repo-rev=v2.16", check=False)
+        init_ok = False
+        last_error = ""
+        for manifest_branch in manifest_candidates:
+            logger.info(f"repo init with manifest branch {manifest_branch}")
+            result = self._run_cmd(
+                f"$REPO init --depth=1 -u https://android.googlesource.com/kernel/manifest "
+                f"-b {manifest_branch} --repo-rev=v2.16",
+                check=False,
+                capture_output=True,
+            )
+            output = (result.stdout or "") + (result.stderr or "")
+            if output.strip():
+                logger.info(output.strip())
+            if result.returncode == 0:
+                init_ok = True
+                break
+            last_error = output or f"exit {result.returncode}"
 
-        remote = subprocess.run(f"git ls-remote https://android.googlesource.com/kernel/common {formatted_branch}",
-                               shell=True, capture_output=True, text=True).stdout.strip()
-        if "deprecated" in remote:
-            manifest_path = self.work_dir / ".repo/manifests/default.xml"
-            with open(manifest_path, "r") as f:
-                content = f.read()
-            content = content.replace(f'"{formatted_branch}"', f'"deprecated/{formatted_branch}"')
-            with open(manifest_path, "w") as f:
-                f.write(content)
+        if not init_ok:
+            raise RuntimeError(f"repo init failed for {formatted_branch}: {last_error}")
+
+        remote = subprocess.run(
+            f"git ls-remote https://android.googlesource.com/kernel/common {formatted_branch}",
+            shell=True, capture_output=True, text=True,
+        ).stdout.strip()
+        manifest_path = self.work_dir / ".repo/manifests/default.xml"
+        if "deprecated/" in remote and manifest_path.exists():
+            content = manifest_path.read_text(encoding="utf-8")
+            if f'deprecated/{formatted_branch}' not in content:
+                content = content.replace(f'"{formatted_branch}"', f'"deprecated/{formatted_branch}"')
+                manifest_path.write_text(content, encoding="utf-8")
+                logger.info(f"Rewrote manifest revision to deprecated/{formatted_branch}")
 
         self.env["REMOTE_BRANCH"] = remote
-        logger.info("同步内核源代码...")
-        self._run_cmd("$REPO --trace sync -c -j$(nproc --all) --no-tags --fail-fast", check=False)
+        logger.info("Syncing kernel sources...")
+        self._run_cmd("$REPO --trace sync -c -j$(nproc --all) --no-tags --fail-fast", check=True)
 
-        common_dir = self.work_dir / "common"
-        if not common_dir.exists():
-            raise RuntimeError("repo sync 失败，common 目录不存在")
+        self._require_path(self.work_dir / "common", "kernel common/ directory after repo sync")
+        kernel_ver = self._read_kernel_version()
+        logger.info(f"Synced kernel version: {kernel_ver}")
+        expected = f"{self.config.kernel_version}.{self.config.sub_level}"
+        if self.config.sub_level != "X" and kernel_ver != expected:
+            raise RuntimeError(
+                f"Synced kernel {kernel_ver} does not match requested {expected} "
+                f"(branch {formatted_branch})"
+            )
         self._apply_legacy_fixes(remote)
-        logger.info("=== 内核源代码同步完成 ===")
+        logger.info("=== Kernel source sync complete ===")
 
     def _apply_legacy_fixes(self, remote_branch: str = ""):
         av, kv = self.config.android_version, self.config.kernel_version
@@ -262,17 +402,18 @@ CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
                 f.write("obj-y += hmbird_patch.o\n")
 
     def add_kernelsu(self):
-        logger.info("=== 添加 KernelSU ===")
+        logger.info("=== Adding KernelSU ===")
         self._chdir(self.work_dir)
-        setup_url = (f"https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/{self.config.kernelsu_commit}/kernel/setup.sh"
-                    if self.config.kernelsu_commit else KSU_REPO_CONFIG["setup_script"])
-        self._run_cmd(f"curl -LSs {setup_url} | bash -s builtin", check=False)
-        if self.config.kernelsu_commit:
-            ksu_dir = self.work_dir / "KernelSU"
-            if ksu_dir.exists():
-                self._chdir(ksu_dir)
-                self._run_cmd(f"git checkout {self.config.kernelsu_commit}", check=False)
-                self._chdir(self.work_dir)
+        setup_ref = self.config.kernelsu_commit or self.config.ksu_setup_ref
+        setup_url = (
+            f"https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/{setup_ref}/kernel/setup.sh"
+            if self.config.kernelsu_commit else KSU_REPO_CONFIG["setup_script"]
+        )
+        setup_script = self.work_dir / "sukisu_setup.sh"
+        self._run_cmd(f"curl -fLSs {setup_url} -o {setup_script}", check=True)
+        self._run_cmd(f"bash {setup_script} {setup_ref}", check=True)
+        self._require_path(self.work_dir / "common/drivers/kernelsu", "KernelSU driver symlink")
+        self._require_path(self.work_dir / "KernelSU", "KernelSU checkout")
 
         # Fix missing kernel_umount_feature_set in SukiSU-Ultra v4.2.0 if present
         for umount_path in [
@@ -320,31 +461,31 @@ CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
                 f.write(content)
 
     def apply_susfs_patches(self):
-        logger.info("=== 应用 SUSFS 补丁 ===")
+        logger.info("=== Applying SUSFS patches ===")
         self._chdir(self.work_dir)
         common_dir = self.work_dir / "common"
         susfs_patch = self.susfs_dir / "kernel_patches" / self.config.get_susfs_patch_filename()
-        if susfs_patch.exists():
-            self._run_cmd(f"cp {susfs_patch} {common_dir}/", check=False)
+        self._require_path(susfs_patch, "SUSFS patch")
+        self._run_cmd(f"cp {susfs_patch} {common_dir}/", check=True)
         for src, dst in [
             (self.susfs_dir / "kernel_patches/fs", common_dir / "fs/"),
             (self.susfs_dir / "kernel_patches/include/linux", common_dir / "include/linux/"),
         ]:
-            if src.exists():
-                self._run_cmd(f"cp -r {src}/* {dst}", check=False)
-        if susfs_patch.exists():
-            patch_file = common_dir / self.config.get_susfs_patch_filename()
-            if patch_file.exists():
-                self._chdir(common_dir)
-                self._run_cmd(f"patch -p1 --fuzz=3 < {patch_file}", check=False)
-                self._chdir(self.work_dir)
+            self._require_path(src, f"SUSFS source {src}")
+            self._run_cmd(f"cp -r {src}/* {dst}", check=True)
+        patch_file = common_dir / self.config.get_susfs_patch_filename()
+        self._chdir(common_dir)
+        self._apply_patch_file(patch_file, required=True)
+        self._chdir(self.work_dir)
 
     def apply_sukisu_patches(self):
-        logger.info("=== 应用 SukiSU 补丁 ===")
+        logger.info("=== Applying SukiSU hide patches ===")
         self._chdir(self.work_dir / "common")
         hooks_patch = self.sukisu_patch_dir / "69_hide_stuff.patch"
         if hooks_patch.exists():
-            self._run_cmd(f"cp {hooks_patch} . && patch -p1 -F 3 < 69_hide_stuff.patch", check=False)
+            self._apply_patch_file(hooks_patch, required=False)
+        else:
+            logger.warning("69_hide_stuff.patch not found, continuing")
 
     def apply_zram_patches(self):
         if not self.config.use_zram:
@@ -530,81 +671,98 @@ CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
         order_file = patch_dir / "APPLY_ORDER.txt"
         patch_list = []
         if order_file.exists():
-            with open(order_file, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith("#"):
-                        patch_list.append(line)
+            for raw in order_file.read_text(encoding="utf-8-sig").splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                required = line.startswith("!")
+                name = line[1:].strip() if required else line
+                patch_list.append((name, required))
         else:
-            patch_list = sorted([p.name for p in patch_dir.glob("*.patch")])
+            patch_list = [(p.name, False) for p in sorted(patch_dir.glob("*.patch"))]
 
-        for patch_name in patch_list:
+        applied, failed_optional = [], []
+        for patch_name, required in patch_list:
             patch_path = patch_dir / patch_name
             if not patch_path.exists():
+                if required:
+                    raise RuntimeError(f"Required vendor patch missing: {patch_path}")
                 logger.warning(f"Vendor patch file not found: {patch_path}")
                 continue
+            if self._apply_patch_file(patch_path, required=required):
+                applied.append(patch_name)
+            else:
+                failed_optional.append(patch_name)
 
-            logger.info(f"Applying vendor patch: {patch_name}")
-            res = self._run_cmd(f"patch -p1 -F 3 < '{patch_path}'", check=False)
-            if res.returncode != 0:
-                logger.warning(f"Patch {patch_name} returned non-zero code {res.returncode}")
-
+        logger.info(f"Vendor patches applied: {len(applied)}")
+        if failed_optional:
+            logger.warning(f"Optional vendor patches skipped: {failed_optional}")
         self._chdir(self.work_dir)
 
     def configure_kernel(self):
-        logger.info("=== 配置内核 ===")
+        logger.info("=== Configuring kernel ===")
         self._chdir(self.work_dir)
-        config_file = self.work_dir / "common/arch/arm64/configs/gki_defconfig"
-        if not config_file.exists():
-            logger.warning(f"配置文件不存在: {config_file}")
-            return
+        self._require_path(self._defconfig_path(), "gki_defconfig")
 
-        with open(config_file, "a") as f:
-            f.write(self.KERNEL_CONFIG_TEMPLATE)
-            if self.config.kernel_version != "6.6":
-                f.write("CONFIG_KSU_SUSFS_SUS_PATH=y\n")
-            else:
-                f.write("CONFIG_KSU_SUSFS_SUS_PATH=n\n")
+        updates = dict(self.KERNEL_CONFIG_UPDATES)
+        updates["CONFIG_KPM"] = "y" if self.config.use_kpm else "n"
+        updates["CONFIG_KSU_SUSFS_SUS_PATH"] = "n" if self.config.kernel_version == "6.6" else "y"
+        if self.config.set_default_bbr:
+            updates.update(self.BBR3_CONFIG_UPDATES)
+        else:
+            updates.update({
+                "CONFIG_TCP_CONG_ADVANCED": "y",
+                "CONFIG_TCP_CONG_BBR": "y",
+                "CONFIG_TCP_CONG_BBR3": "y",
+                "CONFIG_TCP_CONG_WESTWOOD": "y",
+                "CONFIG_NET_SCH_FQ": "y",
+            })
+        self._upsert_defconfig(updates)
 
         if self.config.use_zram:
             self._configure_zram()
             self._configure_bazel()
 
-        # BBR is always enabled via KERNEL_CONFIG_TEMPLATE
-
         build_config = self.work_dir / "common/build.config.gki"
         if build_config.exists():
-            with open(build_config, "r") as f:
-                content = f.read()
+            content = build_config.read_text(encoding="utf-8")
+            content = content.replace('POST_DEFCONFIG_CMDS="check_defconfig"', 'POST_DEFCONFIG_CMDS=""')
             content = content.replace("check_defconfig", "")
-            with open(build_config, "w") as f:
-                f.write(content)
+            build_config.write_text(content, encoding="utf-8")
 
     def _configure_zram(self):
-        config_file = self.work_dir / "common/arch/arm64/configs/gki_defconfig"
-        if config_file.exists():
-            content = config_file.read_text(encoding="utf-8")
-            content = content.replace("CONFIG_ZRAM=m", "CONFIG_ZRAM=y")
-            content = content.replace("CONFIG_ZSMALLOC=m", "CONFIG_ZSMALLOC=y")
-            config_file.write_text(content, encoding="utf-8")
-            with open(config_file, "a", encoding="utf-8") as f:
-                f.write(self.ZRAM_CONFIG_COMMON)
+        self._upsert_defconfig({
+            "CONFIG_ZRAM": "y",
+            "CONFIG_ZSMALLOC": "y",
+            "CONFIG_CRYPTO_LZ4": "y",
+            "CONFIG_CRYPTO_LZ4KD": "y",
+            "CONFIG_ZRAM_WRITEBACK": "y",
+            "CONFIG_ZRAM_DEF_COMP_LZ4KD": "y",
+            "CONFIG_ZRAM_DEF_COMP_LZ4": "n",
+            "CONFIG_ZRAM_DEF_COMP_DEFLATE": "n",
+            "CONFIG_ZRAM_DEF_COMP_ZSTD": "n",
+            "CONFIG_ZRAM_DEF_COMP_LZO": "n",
+            "CONFIG_ZRAM_DEF_COMP_LZORLE": "n",
+            "CONFIG_ZRAM_DEF_COMP_LZ4HC": "n",
+            "CONFIG_ZRAM_DEF_COMP_842": "n",
+        })
 
         # Remove zram and zsmalloc from module lists since they are built into vmlinux
-        for mod_list_file in [
-            self.work_dir / "common/android/gki_system_dlkm_modules",
-            self.work_dir / "common/android/gki_aarch64_modules",
-        ]:
-            if mod_list_file.exists():
+        android_dir = self.work_dir / "common/android"
+        if android_dir.exists():
+            for mod_list_file in android_dir.glob("*modules*"):
+                if not mod_list_file.is_file():
+                    continue
                 lines = mod_list_file.read_text(encoding="utf-8").splitlines()
-                lines = [l for l in lines if not any(x in l for x in ["zram", "zsmalloc"])]
-                mod_list_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                filtered = [l for l in lines if not any(x in l for x in ["zram", "zsmalloc"])]
+                if filtered != lines:
+                    mod_list_file.write_text("\n".join(filtered) + "\n", encoding="utf-8")
+                    logger.info(f"Removed built-in zram/zsmalloc from {mod_list_file.name}")
 
     def _configure_bazel(self):
         modules_bzl = self.work_dir / "common/modules.bzl"
         if modules_bzl.exists():
-            with open(modules_bzl, "r") as f:
-                content = f.read()
+            content = modules_bzl.read_text(encoding="utf-8")
             modified = False
             for old in ['"drivers/block/zram/zram.ko",\n', '"drivers/block/zram/zram.ko",',
                        '"mm/zsmalloc.ko",\n', '"mm/zsmalloc.ko",']:
@@ -612,11 +770,8 @@ CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
                     content = content.replace(old, '')
                     modified = True
             if modified:
-                with open(modules_bzl, "w") as f:
-                    f.write(content)
-        config_file = self.work_dir / "common/arch/arm64/configs/gki_defconfig"
-        with open(config_file, "a") as f:
-            f.write("CONFIG_MODULE_SIG_FORCE=n\n")
+                modules_bzl.write_text(content, encoding="utf-8")
+        self._upsert_defconfig({"CONFIG_MODULE_SIG_FORCE": "n"})
 
     def configure_kernel_name(self):
         logger.info("=== 配置内核名称 ===")
@@ -628,20 +783,16 @@ CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
 
         setlocalversion = self.work_dir / "common/scripts/setlocalversion"
         if setlocalversion.exists():
-            with open(setlocalversion, "r") as f:
-                content = f.read()
+            content = setlocalversion.read_text(encoding="utf-8")
+            content = content.replace("-dirty", "")
             if safe_custom_version:
                 lines = content.split('\n')
                 for i, line in enumerate(lines):
                     if 'echo "$res"' in line and not line.strip().startswith('#'):
                         lines[i] = f'\techo "{safe_custom_version}$res"'
                         break
-                with open(setlocalversion, "w") as f:
-                    f.write('\n'.join(lines))
-            if "-dirty" in content:
-                content = content.replace("-dirty", "")
-                with open(setlocalversion, "w") as f:
-                    f.write(content)
+                content = '\n'.join(lines)
+            setlocalversion.write_text(content, encoding="utf-8")
 
         import datetime
         current_time = datetime.datetime.utcnow().strftime("%a %b %d %H:%M:%S UTC %Y")
@@ -721,17 +872,19 @@ CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
             "CONFIG_KPM": "KPM",
             "CONFIG_KSU_SUSFS": "SUSFS",
             "CONFIG_BBG": "Baseband-guard",
-            "CONFIG_BBR": "BBR",
+            "CONFIG_TCP_CONG_BBR3": "BBRv3",
+            "CONFIG_DEFAULT_TCP_CONG": "Default TCP cong",
             "CONFIG_ZRAM": "ZRAM",
+            "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE": "Optimize for performance",
         }
 
-        logger.info("关键配置状态:")
+        logger.info("Key config status:")
         for prefix, name in key_configs.items():
             found = [c for c in config_lines if c.startswith(prefix)]
             if found:
-                status = "已启用"
+                status = "enabled"
             else:
-                status = "未配置"
+                status = "missing"
             logger.info(f" [{status}] {name}")
             if found:
                 for f in sorted(found):
@@ -813,13 +966,17 @@ CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
                 logger.info("使用 Bazel 构建方式...")
                 result = self._run_cmd("tools/bazel build --disk_cache=/home/runner/.cache/bazel --config=fast --lto=thin //common:kernel_aarch64_dist", check=False)
 
-            if result.returncode == 0:
-                logger.info("=== 内核编译成功 ===")
-                return True
-            logger.error(f"内核编译失败: {result.stderr if result.stderr else 'Unknown error'}")
-            return False
+            if result.returncode != 0:
+                logger.error(f"Kernel compile failed: {result.stderr if result.stderr else f'exit {result.returncode}'}")
+                return False
+            image_path = self._kernel_image_path()
+            if not image_path.exists():
+                logger.error(f"Compile reported success but Image is missing: {image_path}")
+                return False
+            logger.info(f"=== Kernel compile succeeded: {image_path} ===")
+            return True
         except Exception as e:
-            logger.error(f"编译过程出错: {e}")
+            logger.error(f"Compile error: {e}")
             return False
 
     def patch_kpm_image(self):
@@ -899,27 +1056,37 @@ CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
         artifacts = []
         ak3_dir = self.anykernel_dir
 
+        image_src = self._kernel_image_path()
+        self._require_path(image_src, "compiled kernel Image")
+        self._run_cmd(f"cp {image_src} {self.work_dir}/Image", check=True)
+
         for suffix in [""]:
             image_file = f"Image{suffix}"
             image_path = self.work_dir / image_file
             if not image_path.exists():
                 continue
             zip_name = f"{self.config.android_version}-{self.config.kernel_version}.{self.config.sub_level}-{self.config.os_patch_level}-AnyKernel3{suffix}.zip"
-            self._run_cmd(f"cp {image_path} {ak3_dir}/", check=False)
+            self._run_cmd(f"cp {image_path} {ak3_dir}/", check=True)
             self._chdir(ak3_dir)
-            self._run_cmd(f"zip -r ../{zip_name} ./*", check=False)
-            self._run_cmd(f"rm {ak3_dir}/{image_file}", check=False)
-            artifacts.append(str(self.work_dir / zip_name))
+            zip_path = self.work_dir / zip_name
+            self._run_cmd(f"zip -r '{zip_path}' ./*", check=True)
+            self._run_cmd(f"rm -f {ak3_dir}/{image_file}", check=False)
+            if not zip_path.exists():
+                raise RuntimeError(f"AnyKernel3 zip was not created: {zip_path}")
+            artifacts.append(str(zip_path))
             self._chdir(self.work_dir)
+        if not artifacts:
+            raise RuntimeError("No AnyKernel3 zip was produced")
         return artifacts
 
     def build(self) -> BuildResult:
         import time
         start_time = time.time()
         logger.info("=" * 50)
-        logger.info(f"开始 GKI Kernel 构建 - {self.config.config_name}")
+        logger.info(f"Starting GKI kernel build - {self.config.config_name}")
         logger.info("=" * 50)
         try:
+            self._preflight()
             self.clone_repositories()
             self.clone_toolchain()
             self.setup_repo_tool()
@@ -936,14 +1103,17 @@ CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
             self.configure_kernel_name()
             self.show_kernel_config()
             if not self.build_kernel():
-                return BuildResult(success=False, config=self.config, message="内核编译失败", build_time=time.time() - start_time)
+                return BuildResult(success=False, config=self.config, message="Kernel compile failed", build_time=time.time() - start_time)
             self.patch_kpm_image()
             artifacts = []
-            artifacts.extend(self.prepare_boot_images())
             artifacts.extend(self.create_anykernel_zips())
+            try:
+                artifacts.extend(self.prepare_boot_images())
+            except Exception as boot_err:
+                logger.warning(f"boot.img packaging failed (AnyKernel3 zip is still valid): {boot_err}")
             build_time = time.time() - start_time
-            logger.info(f"构建成功! 耗时: {build_time:.2f} 秒, 生成 {len(artifacts)} 个产物")
-            return BuildResult(success=True, config=self.config, message="构建成功", artifacts=artifacts, build_time=build_time)
+            logger.info(f"Build succeeded in {build_time:.2f}s, {len(artifacts)} artifact(s)")
+            return BuildResult(success=True, config=self.config, message="Build succeeded", artifacts=artifacts, build_time=build_time)
         except Exception as e:
-            logger.error(f"构建过程出错: {e}")
+            logger.exception(f"Build failed: {e}")
             return BuildResult(success=False, config=self.config, message=str(e), build_time=time.time() - start_time)

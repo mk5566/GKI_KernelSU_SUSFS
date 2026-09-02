@@ -83,21 +83,41 @@ $PatchMappings = @(
     @{ Src = "f2fs_enlarge_min_fsync_blocks.patch"; Dst = "patches/5.15.180/f2fs_enlarge_min_fsync_blocks.patch" },
     @{ Src = "adjust_cpu_scan_order.patch"; Dst = "patches/5.15.180/adjust_cpu_scan_order.patch" },
     @{ Src = "optimise_memcmp.patch"; Dst = "patches/5.15.180/optimise_memcmp.patch" },
+    @{ Src = "file_struct_8bytes_align.patch"; Dst = "patches/5.15.180/file_struct_8bytes_align.patch" },
+    @{ Src = "mem_opt_prefetch.patch"; Dst = "patches/5.15.180/mem_opt_prefetch.patch" },
+    @{ Src = "int_sqrt.patch"; Dst = "patches/5.15.180/int_sqrt.patch" },
+    @{ Src = "increase_sk_mem_packets.patch"; Dst = "patches/5.15.180/increase_sk_mem_packets.patch" },
+    @{ Src = "reduce_cache_pressure.patch"; Dst = "patches/5.15.180/reduce_cache_pressure.patch" },
+    @{ Src = "reduce_gc_thread_sleep_time.patch"; Dst = "patches/5.15.180/reduce_gc_thread_sleep_time.patch" },
+    @{ Src = "increase_ext4_default_commit_age.patch"; Dst = "patches/5.15.180/increase_ext4_default_commit_age.patch" },
+    @{ Src = "reduce_pci_pme_wakeups.patch"; Dst = "patches/5.15.180/reduce_pci_pme_wakeups.patch" },
+    @{ Src = "silence_system_logspam.patch"; Dst = "patches/5.15.180/silence_system_logspam.patch" },
     @{ Src = "bbrv3/0001-net-tcp-backport-BBRv3-to-android13-5.15.patch"; Dst = "patches/5.15.180/0001-net-tcp-backport-BBRv3-to-android13-5.15.patch" }
 )
 
 $ApplyOrder = @(
+    "# Patch apply order for android13-5.15.180",
+    "# Lines starting with ! are required: a failed apply fails the build.",
     "avoid_extra_s2idle_wake_attempts.patch",
     "minimise_wakeup_time.patch",
     "reduce_freeze_timeout.patch",
     "clear_page_16bytes_align.patch",
+    "file_struct_8bytes_align.patch",
     "f2fs_reduce_congestion.patch",
-    "disable_cache_hot_buddy.patch",
-    "silence_irq_cpu_logspam.patch",
     "f2fs_enlarge_min_fsync_blocks.patch",
+    "reduce_gc_thread_sleep_time.patch",
+    "disable_cache_hot_buddy.patch",
     "adjust_cpu_scan_order.patch",
     "optimise_memcmp.patch",
-    "0001-net-tcp-backport-BBRv3-to-android13-5.15.patch"
+    "mem_opt_prefetch.patch",
+    "int_sqrt.patch",
+    "increase_sk_mem_packets.patch",
+    "reduce_cache_pressure.patch",
+    "increase_ext4_default_commit_age.patch",
+    "reduce_pci_pme_wakeups.patch",
+    "silence_irq_cpu_logspam.patch",
+    "silence_system_logspam.patch",
+    "!0001-net-tcp-backport-BBRv3-to-android13-5.15.patch"
 )
 
 Write-Host "Windows apply script for locked GKI 5.15.180 slim profile" -ForegroundColor Green
@@ -161,7 +181,8 @@ foreach ($item in $PatchMappings) {
 }
 
 $orderFilePath = Join-Path (Get-Location) "patches/5.15.180/APPLY_ORDER.txt"
-$ApplyOrder | Set-Content -Path $orderFilePath -Encoding UTF8
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllText($orderFilePath, (($ApplyOrder -join "`n") + "`n"), $utf8NoBom)
 Write-Host "  generated patches/5.15.180/APPLY_ORDER.txt"
 
 Write-Step "Deleting removed files"

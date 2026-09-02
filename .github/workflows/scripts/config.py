@@ -6,35 +6,37 @@ import urllib.request
 import ssl
 
 
-def get_susfs_version() -> str:
-    """从 susfs 仓库获取版本号"""
-    ssl_ctx = ssl.create_default_context()
-    ssl_ctx.check_hostname = False
-    ssl_ctx.verify_mode = ssl.CERT_NONE
+_SUSFS_VERSION_CACHE = None
 
-    # 尝试多个分支获取版本号
-    branches = ["gki-android15-6.6", "gki-android14-6.1", "gki-android13-5.15", "gki-android12-5.10", "main"]
+
+def get_susfs_version() -> str:
+    """Fetch SUSFS version from the gki-android13-5.15 branch, with a local default."""
+    global _SUSFS_VERSION_CACHE
+    if _SUSFS_VERSION_CACHE:
+        return _SUSFS_VERSION_CACHE
+
+    ssl_ctx = ssl.create_default_context()
+    branches = ["gki-android13-5.15", "gki-android15-6.6", "gki-android14-6.1", "gki-android12-5.10", "main"]
     version_pattern = re.compile(r'#define\s+SUSFS_VERSION\s+"([^"]+)"')
 
     for branch in branches:
         try:
             url = f"https://raw.githubusercontent.com/ShirkNeko/susfs4ksu/{branch}/kernel_patches/include/linux/susfs.h"
-            req = urllib.request.Request(url, headers={'User-Agent': 'Python'})
+            req = urllib.request.Request(url, headers={"User-Agent": "GKI-Builder"})
             with urllib.request.urlopen(req, context=ssl_ctx, timeout=10) as response:
-                content = response.read().decode('utf-8')
+                content = response.read().decode("utf-8")
                 match = version_pattern.search(content)
                 if match:
-                    return match.group(1)
+                    _SUSFS_VERSION_CACHE = match.group(1)
+                    return _SUSFS_VERSION_CACHE
         except Exception:
             continue
 
-    # 如果获取失败，返回默认值
-    return "v2.1.0"
+    _SUSFS_VERSION_CACHE = "v2.3.0"
+    return _SUSFS_VERSION_CACHE
 
 
-# 内核版本号 - 从 susfs 仓库自动获取
-KERNEL_VERSION = get_susfs_version()
-print(f"SUSFS Version: {KERNEL_VERSION}")
+KERNEL_VERSION = "v2.3.0"
 
 
 class AndroidVersion(Enum):
@@ -164,6 +166,14 @@ class BuildConfig:
     @property
     def kernel_branch(self) -> str:
         return f"gki-{self.android_version}-{self.kernel_version}"
+
+    @property
+    def ksu_setup_ref(self) -> str:
+        if self.kernelsu_commit:
+            return self.kernelsu_commit
+        # GKI built-in integration always uses the builtin kernel tree.
+        # Stable and Dev both consume builtin; Dev tracks branch HEAD.
+        return "builtin"
 
     def get_susfs_patch_filename(self) -> str:
         return f"50_add_susfs_in_gki-{self.android_version}-{self.kernel_version}.patch"

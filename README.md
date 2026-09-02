@@ -13,9 +13,9 @@ Automated Generic Kernel Image (GKI) build system locked to **android13-5.15.180
 |---|---|---|
 | [SukiSU-Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra) | Advanced kernel-based root solution | Included |
 | [SUSFS](https://gitlab.com/simonpunk/susfs4ksu) | Kernel-level root and filesystem stealth hiding | Included |
-| **BBRv3 + TCP PLB** | Google BBRv3 congestion control with KABI compliance | Enabled by default |
+| **BBRv3 + TCP PLB** | Google BBRv3 congestion control with KABI compliance, set as the default TCP algorithm | Enabled by default |
 | **LZ4KD ZRAM** | High-performance LZ4KD memory compression algorithm | Enabled by default |
-| **Performance Patches** | Sultan s2idle wake reduction, alarmtimer minimize wakeup, 16-byte clear_page alignment, fast memcmp, scheduler scan order, F2FS congestion reduction | Included in `patches/5.15.180` |
+| **Performance Patches** | Scheduler, F2FS/ext4, memcpy/memcmp, idle/wakeup, and memory-pressure tweaks for Snapdragon 8 Gen 2 GKI | Included in `patches/5.15.180` |
 
 ---
 
@@ -69,17 +69,30 @@ fastboot flash boot android13-5.15.180-2025-05-boot.img
 
 ## Applied Performance Patches (`patches/5.15.180`)
 
+Required:
+
+1. `0001-net-tcp-backport-BBRv3-to-android13-5.15.patch` — BBRv3 + TCP PLB backport with Android KABI guards. The build fails if this does not apply.
+
+Optional (skipped with a warning if a hunk does not match):
+
 1. `avoid_extra_s2idle_wake_attempts.patch` — Avoid redundant s2idle wakeups.
 2. `minimise_wakeup_time.patch` — Dynamic alarmtimer wakeup timeout reduction.
 3. `reduce_freeze_timeout.patch` — Generous 1-second process freeze timeout.
 4. `clear_page_16bytes_align.patch` — 16-byte cache alignment for ARM64 page zeroing.
-5. `f2fs_reduce_congestion.patch` — F2FS congestion wait timeout reduced from 20ms to 6ms.
-6. `disable_cache_hot_buddy.patch` — Leverage DynamIQ Shared Unit (DSU) on modern cores.
-7. `silence_irq_cpu_logspam.patch` — Silence CPU hotplug IRQ migration warnings.
-8. `f2fs_enlarge_min_fsync_blocks.patch` — Enlarge `min_fsync_blocks` to 20 for flash endurance and speed.
-9. `adjust_cpu_scan_order.patch` — Scheduler idle capacity scanning optimization.
-10. `optimise_memcmp.patch` — ARM-optimized NEON SIMD memcmp routine.
-11. `0001-net-tcp-backport-BBRv3-to-android13-5.15.patch` — BBRv3 backport with Android KABI guards.
+5. `file_struct_8bytes_align.patch` — 8-byte `struct file` alignment.
+6. `f2fs_reduce_congestion.patch` — F2FS congestion wait timeout reduced from 20ms to 6ms.
+7. `f2fs_enlarge_min_fsync_blocks.patch` — Enlarge `min_fsync_blocks` to 20.
+8. `reduce_gc_thread_sleep_time.patch` — Faster F2FS urgent GC.
+9. `disable_cache_hot_buddy.patch` — Leverage DynamIQ Shared Unit (DSU) on modern cores.
+10. `adjust_cpu_scan_order.patch` — Scheduler idle capacity scanning optimization.
+11. `optimise_memcmp.patch` — ARM-optimized NEON SIMD memcmp routine.
+12. `mem_opt_prefetch.patch` — Prefetch in ARM64 memcpy template.
+13. `int_sqrt.patch` — Faster integer square root.
+14. `increase_sk_mem_packets.patch` — Larger default socket memory.
+15. `reduce_cache_pressure.patch` — Lower VFS cache pressure.
+16. `increase_ext4_default_commit_age.patch` — Let the VM do bulk writeback.
+17. `reduce_pci_pme_wakeups.patch` — Fewer PCI PME polling wakeups.
+18. `silence_irq_cpu_logspam.patch` / `silence_system_logspam.patch` — Cut noisy kernel logs.
 
 ---
 

@@ -106,9 +106,38 @@ def list_matrix():
             print(f"  - {cfg['sub_level']:>4} | {cfg['os_patch_level']}{rev}")
 
 
+def _validate_vendor_patches(config: BuildConfig) -> list:
+    repo_root = Path(__file__).resolve().parent.parent.parent.parent
+    patch_dir = repo_root / "patches" / f"{config.kernel_version}.{config.sub_level}"
+    missing = []
+    if not patch_dir.exists():
+        return [f"patch directory missing: {patch_dir}"]
+    order_file = patch_dir / "APPLY_ORDER.txt"
+    names = []
+    if order_file.exists():
+        for raw in order_file.read_text(encoding="utf-8-sig").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            names.append(line[1:].strip() if line.startswith("!") else line)
+    else:
+        names = [p.name for p in patch_dir.glob("*.patch")]
+    for name in names:
+        if not (patch_dir / name).exists():
+            missing.append(str(patch_dir / name))
+    return missing
+
+
 def build_single(config: BuildConfig, workspace: str, dry_run: bool = False) -> BuildResult:
     if dry_run:
         logger.info(f"[DRY RUN] Validating config: {config.config_name}")
+        missing = _validate_vendor_patches(config)
+        if missing:
+            logger.error("Missing vendor patches:")
+            for path in missing:
+                logger.error(f"  - {path}")
+            return BuildResult(success=False, config=config, message="Missing vendor patches")
+        logger.info("[DRY RUN] Vendor patches present")
         return BuildResult(success=True, config=config, message="Configuration validation passed")
 
     builder = KernelBuilder(config, workspace)
