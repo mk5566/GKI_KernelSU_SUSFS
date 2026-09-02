@@ -1,24 +1,11 @@
-# Patch apply order for android13-5.15.180
-# Lines starting with ! are required: a failed apply fails the build.
-# Other patches are optional performance tweaks.
-
 avoid_extra_s2idle_wake_attempts.patch
 minimise_wakeup_time.patch
 reduce_freeze_timeout.patch
 clear_page_16bytes_align.patch
-file_struct_8bytes_align.patch
 f2fs_reduce_congestion.patch
-f2fs_enlarge_min_fsync_blocks.patch
-reduce_gc_thread_sleep_time.patch
 disable_cache_hot_buddy.patch
+silence_irq_cpu_logspam.patch
+f2fs_enlarge_min_fsync_blocks.patch
 adjust_cpu_scan_order.patch
 optimise_memcmp.patch
-mem_opt_prefetch.patch
-int_sqrt.patch
-increase_sk_mem_packets.patch
-reduce_cache_pressure.patch
-increase_ext4_default_commit_age.patch
-reduce_pci_pme_wakeups.patch
-silence_irq_cpu_logspam.patch
-silence_system_logspam.patch
-!0001-net-tcp-backport-BBRv3-to-android13-5.15.patch
+0001-net-tcp-backport-BBRv3-to-android13-5.15.patch
