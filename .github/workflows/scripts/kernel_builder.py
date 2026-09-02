@@ -754,8 +754,18 @@ CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
                 content = f.read()
             content = content.replace("BUILD_SYSTEM_DLKM=1", "BUILD_SYSTEM_DLKM=0")
             lines = [l for l in content.split('\n') if 'MODULES_ORDER=android/gki_aarch64_modules' not in l and 'KMI_SYMBOL_LIST_STRICT_MODE' not in l]
+            extra_flags = [
+                "TRIM_NONLISTED_KMI=0",
+                "KMI_SYMBOL_LIST_STRICT_MODE=0",
+                "KMI_SYMBOL_LIST_ADD_ONLY=0",
+                "KMI_ENFORCED=0",
+                "ABI_DEFINITION=",
+                "KMI_SYMBOL_LIST=",
+                "ADDITIONAL_KMI_SYMBOL_LISTS=",
+            ]
+            content = '\n'.join(lines) + '\n' + '\n'.join(extra_flags) + '\n'
             with open(build_config, "w") as f:
-                f.write('\n'.join(lines))
+                f.write(content)
 
         try:
             if (self.work_dir / "build/build.sh").exists():
