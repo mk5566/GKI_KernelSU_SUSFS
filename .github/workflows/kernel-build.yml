@@ -8,27 +8,21 @@ on:
   workflow_dispatch:
     inputs:
       android_version:
-        description: 'Android 版本'
+        description: 'Android Version'
         required: true
         type: choice
         options:
-          - android12
           - android13
-          - android14
-          - android15
         default: android13
       kernel_version:
-        description: 'Kernel 版本'
+        description: 'Kernel Version'
         required: true
         type: choice
         options:
-          - "5.10"
           - "5.15"
-          - "6.1"
-          - "6.6"
         default: "5.15"
       sub_level:
-        description: 'Sub Level 版本'
+        description: 'Sub Level Version'
         required: true
         type: string
         default: '180'
@@ -38,65 +32,65 @@ on:
         type: string
         default: '2025-05'
       revision:
-        description: 'Android 12 Revision (可选)'
+        description: 'Revision (Optional)'
         required: false
         type: string
         default: ''
       kernelsu_version:
-        description: 'SukiSU 版本'
+        description: 'SukiSU Version'
         required: true
         type: choice
         options:
-          - Stable(标准)
-          - Dev(开发)
-        default: Stable(标准)
+          - Stable(standard)
+          - Dev(development)
+        default: Stable(standard)
       kernelsu_commit:
-        description: '指定 KernelSU commit hash (可选)'
+        description: 'Specify KernelSU commit hash (Optional)'
         required: false
         type: string
         default: ''
       susfs_commit:
-        description: '指定 SUSFS commit hash'
+        description: 'Specify SUSFS commit hash (Optional)'
         required: false
         type: string
         default: ''
       custom_version:
-        description: '自定义版本名称 (可选)'
+        description: 'Custom Version Name (Optional)'
         required: false
         type: string
         default: ''
       use_zram:
-        description: '启用 ZRAM (LZ4KD)'
+        description: 'Enable ZRAM (LZ4KD)'
         required: true
         type: boolean
         default: true
       use_kpm:
-        description: '启用 KPM'
+        description: 'Enable KPM'
         required: true
         type: boolean
         default: false
       BBG:
-        description: '启用 Baseband-guard'
+        description: 'Enable Baseband-guard'
         required: true
         type: boolean
         default: false
       supp_op:
-        description: '启用 OnePlus 8E 支持'
+        description: 'Enable OnePlus 8E Support'
         required: true
         type: boolean
         default: false
       set_defbbr:
-        description: '设置 BBR 为默认拥塞算法'
+        description: 'Set BBR as Default Congestion Algorithm'
         required: true
         type: boolean
         default: true
       make_release:
-        description: '创建 GitHub Release'
+        description: 'Create GitHub Release'
         required: true
         type: boolean
         default: false
       send_telegram:
-        description: '发送 Telegram 通知'
+        description: 'Send Telegram Notification'
         required: true
         type: boolean
         default: false
@@ -131,7 +125,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update && sudo apt upgrade -y
-          sudo apt install -y ccache python3 git curl wget zip unzip
+          sudo apt install -y ccache python3 git curl wget zip unzip xz-utils openssl pixz
           pip install PyYAML
 
       - name: Configure ccache

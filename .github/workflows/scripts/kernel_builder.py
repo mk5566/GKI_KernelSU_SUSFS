@@ -274,6 +274,28 @@ CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
                 self._run_cmd(f"git checkout {self.config.kernelsu_commit}", check=False)
                 self._chdir(self.work_dir)
 
+        # Fix missing kernel_umount_feature_set in SukiSU-Ultra v4.2.0 if present
+        for umount_path in [
+            self.work_dir / "common/drivers/kernelsu/feature/kernel_umount.c",
+            self.work_dir / "KernelSU/kernel/feature/kernel_umount.c",
+        ]:
+            if umount_path.exists():
+                content = umount_path.read_text(encoding="utf-8")
+                if "kernel_umount_feature_set" in content and "static int kernel_umount_feature_set" not in content:
+                    logger.info("Applying kernel_umount_feature_set compatibility fix...")
+                    fix = (
+                        "static int kernel_umount_feature_set(u64 value)\n"
+                        "{\n"
+                        "    bool enable = value != 0;\n"
+                        "    ksu_kernel_umount_enabled = enable;\n"
+                        "    pr_info(\"kernel_umount: set to %d\\n\", enable);\n"
+                        "    return 0;\n"
+                        "}\n\n"
+                    )
+                    content = content.replace("static const struct ksu_feature_handler kernel_umount_handler",
+                                              fix + "static const struct ksu_feature_handler kernel_umount_handler")
+                    umount_path.write_text(content, encoding="utf-8")
+
     def add_bbg(self):
         if not self.config.use_bbg:
             return
@@ -477,6 +499,57 @@ CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
                                     "#include <linux/cpufreq_times.h>\n#include <linux/dma-buf.h>")
             with open(base_c, "w") as f:
                 f.write(content)
+
+    def apply_vendor_patches(self):
+        logger.info("=== Applying Vendor / Performance Patches ===")
+        common_dir = self.work_dir / "common"
+        if not common_dir.exists():
+            return
+
+        repo_root = Path(__file__).resolve().parent.parent.parent.parent
+        candidate_dirs = [
+            repo_root / "patches" / f"{self.config.kernel_version}.{self.config.sub_level}",
+            repo_root / "patches" / self.config.sub_level,
+            repo_root / "patches" / self.config.kernel_version,
+            repo_root / "patches",
+        ]
+
+        patch_dir = None
+        for cand in candidate_dirs:
+            if cand.exists() and cand.is_dir():
+                patch_dir = cand
+                break
+
+        if not patch_dir:
+            logger.info("No vendor patches directory found, skipping.")
+            return
+
+        logger.info(f"Loading vendor patches from: {patch_dir}")
+        self._chdir(common_dir)
+
+        order_file = patch_dir / "APPLY_ORDER.txt"
+        patch_list = []
+        if order_file.exists():
+            with open(order_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        patch_list.append(line)
+        else:
+            patch_list = sorted([p.name for p in patch_dir.glob("*.patch")])
+
+        for patch_name in patch_list:
+            patch_path = patch_dir / patch_name
+            if not patch_path.exists():
+                logger.warning(f"Vendor patch file not found: {patch_path}")
+                continue
+
+            logger.info(f"Applying vendor patch: {patch_name}")
+            res = self._run_cmd(f"patch -p1 -F 3 < '{patch_path}'", check=False)
+            if res.returncode != 0:
+                logger.warning(f"Patch {patch_name} returned non-zero code {res.returncode}")
+
+        self._chdir(self.work_dir)
 
     def configure_kernel(self):
         logger.info("=== 配置内核 ===")
@@ -810,6 +883,7 @@ CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
             self.apply_sukisu_patches()
             self.apply_zram_patches()
             self.apply_task_mmu_fixes()
+            self.apply_vendor_patches()
             self.configure_kernel()
             self.configure_kernel_name()
             self.show_kernel_config()

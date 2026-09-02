@@ -20,55 +20,33 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 DEFAULT_BUILD_MATRIX = {
-    "android12-5.10": [
-        {"sub_level": "136", "os_patch_level": "2022-11", "revision": "r15"},
-        {"sub_level": "198", "os_patch_level": "2024-01", "revision": "r17"},
-        {"sub_level": "209", "os_patch_level": "2024-05", "revision": "r13"},
-        {"sub_level": "236", "os_patch_level": "2025-05", "revision": "r1"},
-        {"sub_level": "X", "os_patch_level": "lts", "revision": "r1"},
-    ],
     "android13-5.15": [
-        {"sub_level": "74", "os_patch_level": "2023-01"},
-        {"sub_level": "123", "os_patch_level": "2023-11"},
-        {"sub_level": "148", "os_patch_level": "2024-05"},
-        {"sub_level": "170", "os_patch_level": "2025-01"},
-        {"sub_level": "178", "os_patch_level": "2025-03"},
         {"sub_level": "180", "os_patch_level": "2025-05"},
-        {"sub_level": "189", "os_patch_level": "2025-09"},
-    ],
-    "android14-6.1": [
-        {"sub_level": "78", "os_patch_level": "2024-06"},
-        {"sub_level": "90", "os_patch_level": "2024-08"},
-        {"sub_level": "99", "os_patch_level": "2024-10"},
-        {"sub_level": "124", "os_patch_level": "2025-02"},
-        {"sub_level": "145", "os_patch_level": "2025-09"},
-    ],
-    "android15-6.6": [
-        {"sub_level": "50", "os_patch_level": "2024-10"},
-        {"sub_level": "66", "os_patch_level": "2025-02"},
-        {"sub_level": "102", "os_patch_level": "2025-10"},
     ],
 }
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="GKI Kernel 构建系统")
+    parser = argparse.ArgumentParser(description="GKI Kernel Build System")
 
-    parser.add_argument("--android", "-a", choices=[v.value for v in AndroidVersion])
-    parser.add_argument("--kernel", "-k", choices=[v.value for v in KernelVersion])
-    parser.add_argument("--sub-level", "-s")
-    parser.add_argument("--os-patch")
-    parser.add_argument("--ksu-version", choices=[v.value for v in KSUVersion], default=KSUVersion.STABLE.value)
+    parser.add_argument("--android", "-a", choices=[v.value for v in AndroidVersion], default="android13")
+    parser.add_argument("--kernel", "-k", choices=[v.value for v in KernelVersion], default="5.15")
+    parser.add_argument("--sub-level", "-s", default="180")
+    parser.add_argument("--os-patch", default="2025-05")
+    parser.add_argument("--ksu-version", choices=[v.value for v in KSUVersion] + ["Stable(标准)", "Dev(开发)"], default=KSUVersion.STABLE.value)
     parser.add_argument("--ksu-commit", default=None)
     parser.add_argument("--susfs-commit", default=None)
-    parser.add_argument("--zram", action="store_true")
-    parser.add_argument("--no-kpm", action="store_true")
-    parser.add_argument("--bbg", action="store_true")
-    parser.add_argument("--op8e", action="store_true")
-    parser.add_argument("--bbr", action="store_true")
-    parser.add_argument("--no-release", action="store_true")
+    parser.add_argument("--zram", action="store_true", default=True, help="Enable ZRAM (LZ4KD)")
+    parser.add_argument("--no-zram", action="store_false", dest="zram", help="Disable ZRAM")
+    parser.add_argument("--kpm", action="store_true", default=False, help="Enable KPM")
+    parser.add_argument("--no-kpm", action="store_false", dest="kpm", help="Disable KPM")
+    parser.add_argument("--bbg", action="store_true", default=False, help="Enable Baseband-guard")
+    parser.add_argument("--op8e", action="store_true", default=False, help="Enable OnePlus 8E support")
+    parser.add_argument("--bbr", action="store_true", default=True, help="Set BBR as default congestion control")
+    parser.add_argument("--no-bbr", action="store_false", dest="bbr", help="Do not force BBR as default")
+    parser.add_argument("--no-release", action="store_true", help="Do not create GitHub Release")
     parser.add_argument("--custom-version", dest="custom_version", default=None)
-    parser.add_argument("--revision")
+    parser.add_argument("--revision", default=None)
     parser.add_argument("--matrix", "-m")
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--list-configs", action="store_true")
@@ -83,15 +61,15 @@ def parse_args() -> argparse.Namespace:
 
 def create_build_config(args: argparse.Namespace) -> BuildConfig:
     return BuildConfig(
-        android_version=args.android or "android14",
-        kernel_version=args.kernel or "6.1",
-        sub_level=args.sub_level or "124",
-        os_patch_level=args.os_patch or "2025-02",
+        android_version=args.android or "android13",
+        kernel_version=args.kernel or "5.15",
+        sub_level=args.sub_level or "180",
+        os_patch_level=args.os_patch or "2025-05",
         kernelsu_version=args.ksu_version,
         kernelsu_commit=args.ksu_commit,
         susfs_commit=args.susfs_commit,
         use_zram=args.zram,
-        use_kpm=not args.no_kpm,
+        use_kpm=args.kpm,
         use_bbg=args.bbg,
         support_op8e=args.op8e,
         set_default_bbr=args.bbr,
@@ -103,7 +81,7 @@ def create_build_config(args: argparse.Namespace) -> BuildConfig:
 
 def list_configs():
     print("\n" + "=" * 60)
-    print("支持的 Android/Kernel 版本组合")
+    print("Supported Android / Kernel Combinations")
     print("=" * 60)
     for android, kernels in ANDROID_KERNEL_MAP.items():
         print(f"\n{android.value}:")
@@ -111,7 +89,7 @@ def list_configs():
             configs = DEFAULT_BUILD_MATRIX.get(f"{android.value}-{kernel.value}", [])
             print(f"  - {kernel.value}: {', '.join(c['sub_level'] for c in configs) or 'N/A'}")
     print("\n" + "=" * 60)
-    print("KernelSU 版本选项")
+    print("KernelSU Version Options")
     print("=" * 60)
     for v in KSUVersion:
         print(f"  - {v.value}")
@@ -119,7 +97,7 @@ def list_configs():
 
 def list_matrix():
     print("\n" + "=" * 60)
-    print("预定义构建矩阵")
+    print("Predefined Build Matrix")
     print("=" * 60)
     for combo, configs in sorted(DEFAULT_BUILD_MATRIX.items()):
         print(f"\n{combo}:")
@@ -130,19 +108,19 @@ def list_matrix():
 
 def build_single(config: BuildConfig, workspace: str, dry_run: bool = False) -> BuildResult:
     if dry_run:
-        logger.info(f"[DRY RUN] 验证配置: {config.config_name}")
-        return BuildResult(success=True, config=config, message="配置验证通过")
+        logger.info(f"[DRY RUN] Validating config: {config.config_name}")
+        return BuildResult(success=True, config=config, message="Configuration validation passed")
 
     builder = KernelBuilder(config, workspace)
     return builder.build()
 
 
 def build_matrix(matrix_key: str, args: argparse.Namespace, workspace: str) -> list:
-    logger.info(f"\n{'=' * 60}\n开始构建矩阵: {matrix_key}\n{'=' * 60}\n")
+    logger.info(f"\n{'=' * 60}\nStarting matrix build: {matrix_key}\n{'=' * 60}\n")
 
     configs_data = DEFAULT_BUILD_MATRIX.get(matrix_key, [])
     if not configs_data:
-        logger.error(f"未知的矩阵: {matrix_key}")
+        logger.error(f"Unknown matrix: {matrix_key}")
         return []
 
     results = []
@@ -156,7 +134,7 @@ def build_matrix(matrix_key: str, args: argparse.Namespace, workspace: str) -> l
                 kernelsu_version=args.ksu_version,
                 kernelsu_commit=args.ksu_commit,
                 use_zram=args.zram,
-                use_kpm=not args.no_kpm,
+                use_kpm=args.kpm,
                 use_bbg=args.bbg,
                 support_op8e=args.op8e,
                 set_default_bbr=args.bbr,
@@ -165,16 +143,16 @@ def build_matrix(matrix_key: str, args: argparse.Namespace, workspace: str) -> l
                 revision=cfg_data.get("revision"),
             )
 
-            logger.info(f"\n{'=' * 60}\n构建配置: {config.config_name}\n{'=' * 60}")
+            logger.info(f"\n{'=' * 60}\nBuilding config: {config.config_name}\n{'=' * 60}")
             result = build_single(config, workspace, args.dry_run)
             results.append(result)
 
             if result.success:
-                logger.info(f"✓ {config.config_name} 构建成功")
+                logger.info(f"✓ {config.config_name} build succeeded")
             else:
-                logger.error(f"✗ {config.config_name} 构建失败: {result.message}")
+                logger.error(f"✗ {config.config_name} build failed: {result.message}")
         except Exception as e:
-            logger.error(f"配置 {cfg_data} 出错: {e}")
+            logger.error(f"Config error for {cfg_data}: {e}")
             continue
 
     return results
@@ -193,19 +171,19 @@ def print_summary(results: list, output_json: str = None):
     success = sum(1 for r in results if r.success)
 
     print("\n" + "=" * 60)
-    print("构建摘要")
+    print("Build Summary")
     print("=" * 60)
-    print(f"总数: {total}")
-    print(f"成功: \033[92m{success}\033[0m")
-    print(f"失败: \033[91m{total - success}\033[0m")
+    print(f"Total: {total}")
+    print(f"Success: \033[92m{success}\033[0m")
+    print(f"Failed: \033[91m{total - success}\033[0m")
 
     if success > 0:
         avg_time = sum(r.build_time or 0 for r in results if r.success) / success
-        print(f"平均构建时间: {avg_time:.2f} 秒")
+        print(f"Average Build Time: {avg_time:.2f} s")
 
     failed = total - success
     if failed > 0:
-        print("\n失败的配置:")
+        print("\nFailed configurations:")
         for r in results:
             if not r.success:
                 print(f"  - {r.config.config_name}: {r.message}")
@@ -222,7 +200,7 @@ def print_summary(results: list, output_json: str = None):
         }
         with open(output_json, "w", encoding="utf-8") as f:
             json.dump(json_data, f, indent=2, ensure_ascii=False)
-        logger.info(f"结果已保存到: {output_json}")
+        logger.info(f"Results saved to: {output_json}")
 
 
 def main():
@@ -240,11 +218,11 @@ def main():
         return 0
 
     if not args.all and not args.matrix and not args.android:
-        logger.error("请指定 --all, --matrix 或 --android")
+        logger.error("Please specify --all, --matrix or --android")
         return 1
 
     workspace = args.workspace
-    logger.info(f"工作目录: {workspace}")
+    logger.info(f"Workspace: {workspace}")
     os.makedirs(workspace, exist_ok=True)
 
     results = []
@@ -259,7 +237,7 @@ def main():
             result = build_single(config, workspace, args.dry_run)
             results.append(result)
         except Exception as e:
-            logger.error(f"配置错误: {e}")
+            logger.error(f"Configuration error: {e}")
             return 1
 
     if results:
