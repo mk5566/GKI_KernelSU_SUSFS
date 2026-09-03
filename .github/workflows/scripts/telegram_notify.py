@@ -144,7 +144,7 @@ def build_single_notify_message(
     os_patch_level: str,
     kernelsu_version: str,
     use_zram: bool,
-    use_kpm: bool,
+    use_bbr: bool = True,
     hashes_file: str = None,
 ) -> str:
     """生成单版本构建完成通知消息"""
@@ -156,8 +156,9 @@ def build_single_notify_message(
 <b>📅 OS Patch:</b> {os_patch_level}
 
 <b>💾 SukiSU 版本:</b> {kernelsu_version}
-<b>🔧 ZRAM:</b> {"启用" if use_zram else "禁用"}
-<b>📦 KPM:</b> {"启用" if use_kpm else "禁用"}"""
+<b>🛡️ SUSFS:</b> 启用
+<b>🚀 BBRv3:</b> {"启用" if use_bbr else "禁用"}
+<b>🔧 ZRAM (LZ4KD):</b> {"启用" if use_zram else "禁用"}"""
 
     # 添加文件 hash 信息
     if hashes_file and os.path.exists(hashes_file):
@@ -225,7 +226,7 @@ def build_release_notify_message(
 def main():
     if len(sys.argv) < 2:
         print("用法:")
-        print("  python telegram_notify.py single <android> <kernel> <sub_level> <os_patch> <ksu_version> <zram> <kpm> [hashes_file]")
+        print("  python telegram_notify.py single <android> <kernel> <sub_level> <os_patch> <ksu_version> <zram> <bbr> [hashes_file]")
         print("  python telegram_notify.py release <tag> <url> [notes_file] [hashes_file]")
         sys.exit(1)
 
@@ -248,7 +249,7 @@ def main():
             os_patch_level=sys.argv[5],
             kernelsu_version=sys.argv[6],
             use_zram=sys.argv[7].lower() == "true",
-            use_kpm=sys.argv[8].lower() == "true" if len(sys.argv) > 8 else False,
+            use_bbr=sys.argv[8].lower() == "true" if len(sys.argv) > 8 else True,
             hashes_file=hashes_file,
         )
         success = notifier.send_message(message)

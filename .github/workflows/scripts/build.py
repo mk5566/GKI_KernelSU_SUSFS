@@ -7,6 +7,13 @@ import logging
 from pathlib import Path
 from datetime import datetime
 
+if hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config import BuildConfig, AndroidVersion, KernelVersion, ANDROID_KERNEL_MAP, KSUVersion
@@ -33,20 +40,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--kernel", "-k", choices=[v.value for v in KernelVersion], default="5.15")
     parser.add_argument("--sub-level", "-s", default="180")
     parser.add_argument("--os-patch", default="2025-05")
-    parser.add_argument("--ksu-version", choices=[v.value for v in KSUVersion] + ["Stable(标准)", "Dev(开发)"], default=KSUVersion.STABLE.value)
+    parser.add_argument("--ksu-version", choices=[v.value for v in KSUVersion], default=KSUVersion.STABLE.value)
     parser.add_argument("--ksu-commit", default=None)
     parser.add_argument("--susfs-commit", default=None)
     parser.add_argument("--zram", action="store_true", default=True, help="Enable ZRAM (LZ4KD)")
     parser.add_argument("--no-zram", action="store_false", dest="zram", help="Disable ZRAM")
-    parser.add_argument("--kpm", action="store_true", default=False, help="Enable KPM")
-    parser.add_argument("--no-kpm", action="store_false", dest="kpm", help="Disable KPM")
-    parser.add_argument("--bbg", action="store_true", default=False, help="Enable Baseband-guard")
-    parser.add_argument("--op8e", action="store_true", default=False, help="Enable OnePlus 8E support")
     parser.add_argument("--bbr", action="store_true", default=True, help="Set BBR as default congestion control")
     parser.add_argument("--no-bbr", action="store_false", dest="bbr", help="Do not force BBR as default")
     parser.add_argument("--no-release", action="store_true", help="Do not create GitHub Release")
     parser.add_argument("--custom-version", dest="custom_version", default=None)
-    parser.add_argument("--revision", default=None)
     parser.add_argument("--matrix", "-m")
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--list-configs", action="store_true")
@@ -69,13 +71,9 @@ def create_build_config(args: argparse.Namespace) -> BuildConfig:
         kernelsu_commit=args.ksu_commit,
         susfs_commit=args.susfs_commit,
         use_zram=args.zram,
-        use_kpm=args.kpm,
-        use_bbg=args.bbg,
-        support_op8e=args.op8e,
         set_default_bbr=args.bbr,
         make_release=not args.no_release,
         custom_version=args.custom_version,
-        revision=args.revision,
     )
 
 
@@ -163,13 +161,9 @@ def build_matrix(matrix_key: str, args: argparse.Namespace, workspace: str) -> l
                 kernelsu_version=args.ksu_version,
                 kernelsu_commit=args.ksu_commit,
                 use_zram=args.zram,
-                use_kpm=args.kpm,
-                use_bbg=args.bbg,
-                support_op8e=args.op8e,
                 set_default_bbr=args.bbr,
                 make_release=not args.no_release,
                 custom_version=args.custom_version,
-                revision=cfg_data.get("revision"),
             )
 
             logger.info(f"\n{'=' * 60}\nBuilding config: {config.config_name}\n{'=' * 60}")

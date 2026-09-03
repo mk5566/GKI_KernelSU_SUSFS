@@ -7,8 +7,7 @@ from pathlib import Path
 from typing import Optional, Callable
 from dataclasses import dataclass, field
 from config import (BuildConfig, KSU_REPO_CONFIG, SUSFS_REPO_CONFIG, SUKISU_PATCH_REPO_CONFIG,
-                   ANYKERNEL_CONFIG, BBG_CONFIG, TOOLCHAIN_CONFIG,
-                   LEGACY_FIXES, OP8E_PATCH_URL, KPM_PATCH_URL)
+                   ANYKERNEL_CONFIG, TOOLCHAIN_CONFIG)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -65,14 +64,16 @@ class KernelBuilder:
         "CONFIG_KSU": "y",
         "CONFIG_KSU_DEBUG": "n",
         "CONFIG_KSU_SUSFS": "y",
-        "CONFIG_KSU_SUSFS_SUS_MAP": "y",
+        "CONFIG_KSU_SUSFS_SUS_PATH": "y",
         "CONFIG_KSU_SUSFS_SUS_MOUNT": "y",
         "CONFIG_KSU_SUSFS_SUS_KSTAT": "y",
+        "CONFIG_KSU_SUSFS_SUS_MAP": "y",
         "CONFIG_KSU_SUSFS_SPOOF_UNAME": "y",
         "CONFIG_KSU_SUSFS_ENABLE_LOG": "n",
         "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS": "y",
         "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG": "y",
         "CONFIG_KSU_SUSFS_OPEN_REDIRECT": "y",
+        "CONFIG_KSU_SUSFS_SUS_SU": "y",
         "CONFIG_TMPFS_XATTR": "y",
         "CONFIG_TMPFS_POSIX_ACL": "y",
         "CONFIG_IP_NF_TARGET_TTL": "y",
@@ -80,6 +81,12 @@ class KernelBuilder:
         "CONFIG_IP6_NF_MATCH_HL": "y",
         "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE": "y",
         "CONFIG_CC_OPTIMIZE_FOR_SIZE": None,
+        # Strip debug symbols to speed up build/link time and avoid disk bloat
+        "CONFIG_DEBUG_INFO": "n",
+        "CONFIG_DEBUG_INFO_NONE": "y",
+        "CONFIG_DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT": "n",
+        "CONFIG_DEBUG_INFO_DWARF4": "n",
+        "CONFIG_DEBUG_INFO_DWARF5": "n",
     }
 
     BBR3_CONFIG_UPDATES = {
@@ -146,9 +153,9 @@ class KernelBuilder:
         if dest.exists():
             logger.info(f"{name} already present at {dest}")
             return
-        cmd = f"git clone --filter=blob:none {url} {dest}"
+        cmd = f"git clone --depth 1 {url} {dest}"
         if branch:
-            cmd = f"git clone --filter=blob:none -b {branch} {url} {dest}"
+            cmd = f"git clone --depth 1 -b {branch} {url} {dest}"
         logger.info(f"Cloning {name}...")
         self._run_cmd(cmd, check=True)
         if not dest.exists():
@@ -245,9 +252,7 @@ class KernelBuilder:
         return False
 
     def _kernel_image_path(self) -> Path:
-        if self.config.android_version in ["android12", "android13"]:
-            return self.work_dir / f"out/{self.config.android_version}-{self.config.kernel_version}/dist/Image"
-        return self.work_dir / "bazel-bin/common/kernel_aarch64/Image"
+        return self.work_dir / f"out/{self.config.android_version}-{self.config.kernel_version}/dist/Image"
 
     def _read_kernel_version(self) -> str:
         makefile = self.work_dir / "common/Makefile"
@@ -268,11 +273,11 @@ class KernelBuilder:
             return
         self._chdir(self.susfs_dir)
         if self.config.susfs_commit.startswith("HEAD~"):
-            self._run_cmd("git fetch origin", check=True)
+            self._run_cmd("git fetch --depth 10 origin", check=True)
             self._run_cmd(f"git reset --hard {self.config.susfs_commit}", check=True)
         else:
-            self._run_cmd("git fetch origin", check=True)
-            self._run_cmd(f"git checkout {self.config.susfs_commit}", check=True)
+            self._run_cmd(f"git fetch --depth 1 origin {self.config.susfs_commit}", check=True)
+            self._run_cmd("git checkout FETCH_HEAD", check=True)
         self._chdir(self.workspace)
 
     def clone_repositories(self):
@@ -344,7 +349,7 @@ class KernelBuilder:
             logger.info(f"repo init with manifest branch {manifest_branch}")
             result = self._run_cmd(
                 f"$REPO init --depth=1 -u https://android.googlesource.com/kernel/manifest "
-                f"-b {manifest_branch} --repo-rev=v2.16",
+                f"-b {manifest_branch} --repo-rev=v2.16 --no-clone-bundle",
                 check=False,
                 capture_output=True,
             )
@@ -373,7 +378,7 @@ class KernelBuilder:
 
         self.env["REMOTE_BRANCH"] = remote
         logger.info("Syncing kernel sources...")
-        self._run_cmd("$REPO --trace sync -c -j$(nproc --all) --no-tags --fail-fast", check=True)
+        self._run_cmd("$REPO sync -c -j$(nproc --all) --no-tags --fail-fast --no-clone-bundle", check=True)
 
         self._require_path(self.work_dir / "common", "kernel common/ directory after repo sync")
         kernel_ver = self._read_kernel_version()
@@ -384,38 +389,7 @@ class KernelBuilder:
                 f"Synced kernel {kernel_ver} does not match requested {expected} "
                 f"(branch {formatted_branch})"
             )
-        self._apply_legacy_fixes(remote)
         logger.info("=== Kernel source sync complete ===")
-
-    def _apply_legacy_fixes(self, remote_branch: str = ""):
-        av, kv = self.config.android_version, self.config.kernel_version
-        sub = self.config.get_sub_level_int()
-        is_deprecated = "deprecated" in remote_branch
-
-        if is_deprecated and av == "android13" and kv == "5.15" and sub and sub < 123:
-            common_dir = self.work_dir / "common"
-            self._chdir(common_dir)
-            self._run_cmd(f"curl -LSs {LEGACY_FIXES['android13-5.15-below-123']['url']} -o fix.patch && patch -p1 < fix.patch", check=False)
-            self._chdir(self.work_dir)
-
-        if av == "android12" and kv == "5.10" and sub and sub < 136:
-            common_dir = self.work_dir / "common"
-            self._chdir(common_dir)
-            self._run_cmd(f"curl -LSs {LEGACY_FIXES['android12-5.10-below-136']['url']} | patch -p1", check=False)
-            self._chdir(self.work_dir)
-
-    def add_kernel_supatch(self):
-        if not self.config.support_op8e:
-            return
-        logger.info("=== 添加 OnePlus 8E 支持补丁 ===")
-        drivers_dir = self.work_dir / "common/drivers"
-        if not drivers_dir.exists():
-            return
-        self._chdir(drivers_dir)
-        self._run_cmd(f"curl -LSs {OP8E_PATCH_URL} -o hmbird_patch.c", check=False)
-        if (drivers_dir / "hmbird_patch.c").exists():
-            with open(drivers_dir / "Makefile", "a") as f:
-                f.write("obj-y += hmbird_patch.o\n")
 
     def add_kernelsu(self):
         logger.info("=== Adding KernelSU ===")
@@ -452,29 +426,6 @@ class KernelBuilder:
                     content = content.replace("static const struct ksu_feature_handler kernel_umount_handler",
                                               fix + "static const struct ksu_feature_handler kernel_umount_handler")
                     umount_path.write_text(content, encoding="utf-8")
-
-    def add_bbg(self):
-        if not self.config.use_bbg:
-            return
-        logger.info("=== 添加 Baseband-guard ===")
-        common_dir = self.work_dir / "common"
-        if not common_dir.exists():
-            return
-        self._chdir(common_dir)
-        self._run_cmd(f"wget -O- {BBG_CONFIG['setup_script']} | bash", check=False)
-        config_file = common_dir / "arch/arm64/configs/gki_defconfig"
-        if config_file.exists():
-            with open(config_file, "a") as f:
-                f.write("CONFIG_BBG=y\n")
-        kconfig_file = common_dir / "security/Kconfig"
-        if kconfig_file.exists():
-            with open(kconfig_file, "r") as f:
-                content = f.read()
-            content = re.sub(r'(config LSM.*?)(default .*)(\n.*?help)',
-                           lambda m: m.group(1) + ('lockdown,baseband_guard' if 'lockdown' in m.group(2) and 'baseband_guard' not in m.group(2) else m.group(2)) + m.group(3),
-                           content, flags=re.DOTALL)
-            with open(kconfig_file, "w") as f:
-                f.write(content)
 
     def apply_susfs_patches(self):
         logger.info("=== Applying SUSFS patches ===")
@@ -667,28 +618,11 @@ class KernelBuilder:
             content = re.sub(r"\n[ \t]*bypass:[ \t]*\n", "\n", content)
             logger.info("Removed unused bypass label from task_mmu.c")
 
-        if fb == "android15-6.6" and "unsigned int nr_subpages" not in content:
-            self._fix_base_c_header()
-        elif fb == "android14-6.1" and "if (!vma_pages(vma))" not in content:
-            self._fix_base_c_header()
-            content = content.replace("goto show_pad;", "return 0;")
-        elif fb in ["android12-5.10", "android13-5.10", "android13-5.15"] and "if (!vma_pages(vma))" not in content:
+        if "if (!vma_pages(vma))" not in content:
             content = content.replace("goto show_pad;", "return 0;")
 
         if content != original:
             task_mmu.write_text(content, encoding="utf-8")
-
-    def _fix_base_c_header(self):
-        base_c = self.work_dir / "common/fs/proc/base.c"
-        if not base_c.exists():
-            return
-        with open(base_c, "r") as f:
-            content = f.read()
-        if "#include <linux/dma-buf.h>" not in content:
-            content = content.replace("#include <linux/cpufreq_times.h>",
-                                    "#include <linux/cpufreq_times.h>\n#include <linux/dma-buf.h>")
-            with open(base_c, "w") as f:
-                f.write(content)
 
     def apply_vendor_patches(self):
         logger.info("=== Applying Vendor / Performance Patches ===")
@@ -770,7 +704,6 @@ class KernelBuilder:
 
         if self.config.use_zram:
             self._configure_zram()
-            self._configure_bazel()
 
         build_config = self.work_dir / "common/build.config.gki"
         if build_config.exists():
@@ -794,6 +727,7 @@ class KernelBuilder:
             "CONFIG_ZRAM_DEF_COMP_LZORLE": "n",
             "CONFIG_ZRAM_DEF_COMP_LZ4HC": "n",
             "CONFIG_ZRAM_DEF_COMP_842": "n",
+            "CONFIG_MODULE_SIG_FORCE": "n",
         })
 
         # Remove zram and zsmalloc from module lists since they are built into vmlinux
@@ -807,20 +741,6 @@ class KernelBuilder:
                 if filtered != lines:
                     mod_list_file.write_text("\n".join(filtered) + "\n", encoding="utf-8")
                     logger.info(f"Removed built-in zram/zsmalloc from {mod_list_file.name}")
-
-    def _configure_bazel(self):
-        modules_bzl = self.work_dir / "common/modules.bzl"
-        if modules_bzl.exists():
-            content = modules_bzl.read_text(encoding="utf-8")
-            modified = False
-            for old in ['"drivers/block/zram/zram.ko",\n', '"drivers/block/zram/zram.ko",',
-                       '"mm/zsmalloc.ko",\n', '"mm/zsmalloc.ko",']:
-                if old in content:
-                    content = content.replace(old, '')
-                    modified = True
-            if modified:
-                modules_bzl.write_text(content, encoding="utf-8")
-        self._upsert_defconfig({"CONFIG_MODULE_SIG_FORCE": "n"})
 
     def configure_kernel_name(self):
         logger.info("=== 配置内核名称 ===")
@@ -854,53 +774,16 @@ class KernelBuilder:
             with open(mkcompile_h, "w") as f:
                 f.write(content)
 
-        if self.config.kernel_version in ["6.1", "6.6"]:
-            init_makefile = self.work_dir / "common/init/Makefile"
-            if init_makefile.exists():
-                with open(init_makefile, "r") as f:
+        if self.config.custom_version:
+            config_file = self.work_dir / "common/arch/arm64/configs/gki_defconfig"
+            if config_file.exists():
+                with open(config_file, "r") as f:
                     content = f.read()
-                content = content.replace('$(preempt-flag-y) "$(build-timestamp)"', f'$(preempt-flag-y) "{current_time}"')
-                with open(init_makefile, "w") as f:
+                content = re.sub(r'^CONFIG_LOCALVERSION=".*"$', f'CONFIG_LOCALVERSION="{self.config.custom_version}"', content, flags=re.MULTILINE)
+                with open(config_file, "w") as f:
                     f.write(content)
-
-        if not (self.work_dir / "build/build.sh").exists():
-            bazel_build = self.work_dir / "common/BUILD.bazel"
-            if bazel_build.exists():
-                with open(bazel_build, "r") as f:
-                    content = f.read()
-                lines = [l for l in content.split('\n') if '"protected_exports_list"' not in l or 'android/abi_gki_protected_exports_aarch64' not in l]
-                with open(bazel_build, "w") as f:
-                    f.write('\n'.join(lines))
-
-            abi_path = self.work_dir / "common/android/abi_gki_protected_exports_aarch64"
-            if abi_path.exists():
-                import shutil
-                try:
-                    if abi_path.is_dir():
-                        shutil.rmtree(abi_path)
-                    else:
-                        abi_path.unlink()
-                except Exception:
-                    pass
-
-            stamp_bzl = self.work_dir / "build/kernel/kleaf/impl/stamp.bzl"
-            if stamp_bzl.exists():
-                with open(stamp_bzl, "r") as f:
-                    content = f.read()
-                content = content.replace("-maybe-dirty", "")
-                with open(stamp_bzl, "w") as f:
-                    f.write(content)
-
-            if self.config.custom_version:
-                config_file = self.work_dir / "common/arch/arm64/configs/gki_defconfig"
-                if config_file.exists():
-                    with open(config_file, "r") as f:
-                        content = f.read()
-                    content = re.sub(r'^CONFIG_LOCALVERSION=".*"$', f'CONFIG_LOCALVERSION="{self.config.custom_version}"', content, flags=re.MULTILINE)
-                    with open(config_file, "w") as f:
-                        f.write(content)
-                else:
-                    logger.warning(f"配置文件不存在，跳过 custom_version 设置: {config_file}")
+            else:
+                logger.warning(f"配置文件不存在，跳过 custom_version 设置: {config_file}")
 
     def show_kernel_config(self):
         logger.info("=== 显示内核配置列表 ===")
@@ -918,13 +801,12 @@ class KernelBuilder:
 
         key_configs = {
             "CONFIG_KSU": "KernelSU",
-            "CONFIG_KPM": "KPM",
             "CONFIG_KSU_SUSFS": "SUSFS",
-            "CONFIG_BBG": "Baseband-guard",
             "CONFIG_TCP_CONG_BBR3": "BBRv3",
             "CONFIG_DEFAULT_TCP_CONG": "Default TCP cong",
             "CONFIG_ZRAM": "ZRAM",
             "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE": "Optimize for performance",
+            "CONFIG_DEBUG_INFO_NONE": "Debug info disabled",
         }
 
         logger.info("Key config status:")
@@ -997,23 +879,20 @@ class KernelBuilder:
             build_config.write_text(content, encoding="utf-8")
 
         try:
-            if (self.work_dir / "build/build.sh").exists():
-                logger.info("使用旧版构建方式...")
-                build_cmd = (
-                    "LTO=thin "
-                    "BUILD_SYSTEM_DLKM=0 "
-                    "BUILD_GKI_ARTIFACTS=0 "
-                    "BUILD_GKI_CERTIFICATION_TOOLS=0 "
-                    "TRIM_NONLISTED_KMI=0 "
-                    "KMI_ENFORCED=0 "
-                    "POST_DEFCONFIG_CMDS=\"\" "
-                    "BUILD_CONFIG=common/build.config.gki.aarch64 "
-                    "build/build.sh CC=\"/usr/bin/ccache clang\""
-                )
-                result = self._run_cmd(build_cmd, check=False)
-            else:
-                logger.info("使用 Bazel 构建方式...")
-                result = self._run_cmd("tools/bazel build --disk_cache=/home/runner/.cache/bazel --config=fast --lto=thin //common:kernel_aarch64_dist", check=False)
+            logger.info("Starting kernel compilation with build.sh...")
+            build_cmd = (
+                "LTO=thin "
+                "BUILD_SYSTEM_DLKM=0 "
+                "BUILD_GKI_ARTIFACTS=0 "
+                "BUILD_GKI_CERTIFICATION_TOOLS=0 "
+                "TRIM_NONLISTED_KMI=0 "
+                "KMI_ENFORCED=0 "
+                "INSTALL_MOD_STRIP=1 "
+                "POST_DEFCONFIG_CMDS=\"\" "
+                "BUILD_CONFIG=common/build.config.gki.aarch64 "
+                "build/build.sh CC=\"/usr/bin/ccache clang\""
+            )
+            result = self._run_cmd(build_cmd, check=False)
 
             if result.returncode != 0:
                 logger.error(f"Kernel compile failed: {result.stderr if result.stderr else f'exit {result.returncode}'}")
@@ -1028,22 +907,6 @@ class KernelBuilder:
             logger.error(f"Compile error: {e}")
             return False
 
-    def patch_kpm_image(self):
-        if not self.config.use_kpm or self.config.kernel_version == "6.6":
-            return
-        logger.info("=== 修补 Image 文件 (KPM) ===")
-        self._chdir(self.work_dir)
-        if self.config.android_version in ["android12", "android13"]:
-            image_dir = self.work_dir / f"out/{self.config.android_version}-{self.config.kernel_version}/dist"
-        else:
-            image_dir = self.work_dir / "bazel-bin/common/kernel_aarch64"
-        if not image_dir.exists():
-            return
-        self._chdir(image_dir)
-        self._run_cmd(f"curl -LSs {KPM_PATCH_URL} -o patch && chmod 777 patch && ./patch", check=False)
-        if (image_dir / "oImage").exists():
-            self._run_cmd("mv oImage Image", check=False)
-
     def prepare_boot_images(self) -> list:
         logger.info("=== 准备启动镜像 ===")
         self._chdir(self.work_dir)
@@ -1051,53 +914,24 @@ class KernelBuilder:
         bootimgs_dir.mkdir(exist_ok=True)
         artifacts = []
 
-        if self.config.android_version in ["android12", "android13"]:
-            image_source = self.work_dir / f"out/{self.config.android_version}-{self.config.kernel_version}/dist"
-        else:
-            image_source = self.work_dir / "bazel-bin/common/kernel_aarch64"
-
+        image_source = self.work_dir / f"out/{self.config.android_version}-{self.config.kernel_version}/dist"
         for image_name in ["Image"]:
             src = image_source / image_name
             if src.exists():
                 self._run_cmd(f"cp {src} {bootimgs_dir}/ && cp {src} {self.work_dir}/", check=False)
 
-        if self.config.android_version == "android12":
-            self._prepare_android12_boot_images(bootimgs_dir, artifacts)
-        else:
-            self._prepare_boot_images_generic(bootimgs_dir, artifacts)
-        return artifacts
-
-    def _prepare_android12_boot_images(self, bootimgs_dir: Path, artifacts: list):
         self._chdir(bootimgs_dir)
-        gki_url = f"https://dl.google.com/android/gki/gki-certified-boot-android12-5.10-{self.config.os_patch_level}_{self.config.revision}.zip"
-        fallback_url = "https://dl.google.com/android/gki/gki-certified-boot-android12-5.10-2023-01_r1.zip"
-        result = subprocess.run(f"curl -sL -w '%{{http_code}}' {gki_url} -o /dev/null", shell=True, capture_output=True, text=True)
-        url = gki_url if "200" in result.stdout else fallback_url
-        self._run_cmd(f"curl -Lo gki-kernel.zip {url} && unzip -o gki-kernel.zip && rm gki-kernel.zip", check=False)
-        boot_img_path = bootimgs_dir / "boot-5.10.img"
-        if boot_img_path.exists():
-            self._run_cmd(f"$UNPACK_BOOTIMG --boot_img={boot_img_path}", check=False)
-        self._create_boot_image_variants(bootimgs_dir, artifacts, has_ramdisk=True)
-
-    def _prepare_boot_images_generic(self, bootimgs_dir: Path, artifacts: list):
-        self._chdir(bootimgs_dir)
-        self._create_boot_image_variants(bootimgs_dir, artifacts, has_ramdisk=False)
-
-    def _create_boot_image_variants(self, bootimgs_dir: Path, artifacts: list, has_ramdisk: bool = False):
-        self._chdir(bootimgs_dir)
-
         for kernel_file, output_file in [("Image", "boot.img")]:
             kernel_path = bootimgs_dir / kernel_file
             if not kernel_path.exists():
                 continue
             cmd = f"$MKBOOTIMG --header_version 4 --kernel {kernel_file} --output {output_file}"
-            if has_ramdisk:
-                cmd += f" --ramdisk out/ramdisk --os_version 12.0.0 --os_patch_level {self.config.os_patch_level}"
             self._run_cmd(cmd, check=False)
             self._run_cmd(f"$AVBTOOL add_hash_footer --partition_name boot --partition_size $((64 * 1024 * 1024)) --image {output_file} --algorithm SHA256_RSA2048 --key $BOOT_SIGN_KEY_PATH", check=False)
             dest = self.work_dir / f"{self.config.android_version}-{self.config.kernel_version}.{self.config.sub_level}-{self.config.os_patch_level}-{output_file}"
             self._run_cmd(f"cp {output_file} {dest}", check=False)
             artifacts.append(str(dest))
+        return artifacts
 
     def create_anykernel_zips(self) -> list:
         logger.info("=== 创建 AnyKernel3 ZIP 文件 ===")
@@ -1140,9 +974,7 @@ class KernelBuilder:
             self.clone_toolchain()
             self.setup_repo_tool()
             self.init_and_sync_kernel()
-            self.add_kernel_supatch()
             self.add_kernelsu()
-            self.add_bbg()
             self.apply_susfs_patches()
             self.apply_sukisu_patches()
             self.apply_zram_patches()
@@ -1153,7 +985,6 @@ class KernelBuilder:
             self.show_kernel_config()
             if not self.build_kernel():
                 return BuildResult(success=False, config=self.config, message="Kernel compile failed", build_time=time.time() - start_time)
-            self.patch_kpm_image()
             artifacts = []
             artifacts.extend(self.create_anykernel_zips())
             try:

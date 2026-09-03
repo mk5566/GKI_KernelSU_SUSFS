@@ -16,7 +16,7 @@ def get_susfs_version() -> str:
         return _SUSFS_VERSION_CACHE
 
     ssl_ctx = ssl.create_default_context()
-    branches = ["gki-android13-5.15", "gki-android15-6.6", "gki-android14-6.1", "gki-android12-5.10", "main"]
+    branches = ["gki-android13-5.15", "main"]
     version_pattern = re.compile(r'#define\s+SUSFS_VERSION\s+"([^"]+)"')
 
     for branch in branches:
@@ -40,17 +40,11 @@ KERNEL_VERSION = "v2.3.0"
 
 
 class AndroidVersion(Enum):
-    ANDROID12 = "android12"
     ANDROID13 = "android13"
-    ANDROID14 = "android14"
-    ANDROID15 = "android15"
 
 
 class KernelVersion(Enum):
-    KERNEL_5_10 = "5.10"
     KERNEL_5_15 = "5.15"
-    KERNEL_6_1 = "6.1"
-    KERNEL_6_6 = "6.6"
 
 
 class KSUVersion(Enum):
@@ -59,16 +53,15 @@ class KSUVersion(Enum):
 
 
 ANDROID_KERNEL_MAP = {
-    AndroidVersion.ANDROID12: [KernelVersion.KERNEL_5_10],
-    AndroidVersion.ANDROID13: [KernelVersion.KERNEL_5_10, KernelVersion.KERNEL_5_15],
-    AndroidVersion.ANDROID14: [KernelVersion.KERNEL_5_15, KernelVersion.KERNEL_6_1],
-    AndroidVersion.ANDROID15: [KernelVersion.KERNEL_6_6],
+    AndroidVersion.ANDROID13: [KernelVersion.KERNEL_5_15],
 }
 
 # Repository configurations
-KSU_REPO_CONFIG = {"repo_url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra.git",
-                    "branch": "main",
-                    "setup_script": "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh"}
+KSU_REPO_CONFIG = {
+    "repo_url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra.git",
+    "branch": "main",
+    "setup_script": "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh",
+}
 
 # SUSFS repository configuration
 SUSFS_REPO_CONFIG = {"repo_url": "https://github.com/ShirkNeko/susfs4ksu.git"}
@@ -79,23 +72,13 @@ SUKISU_PATCH_REPO_CONFIG = {"repo_url": "https://github.com/ShirkNeko/SukiSU_pat
 # AnyKernel3 repository configuration
 ANYKERNEL_CONFIG = {"repo_url": "https://github.com/WildPlusKernel/AnyKernel3.git", "branch": "gki-2.0"}
 
-# Kernel Patches repository configuration
-KERNEL_PATCHES_CONFIG = {"repo_url": "https://github.com/Tools-cx-app/kernel_patches.git"}
-
-# Baseband-guard configuration
-BBG_CONFIG = {"repo_url": "https://github.com/vc-teahouse/Baseband-guard.git",
-              "setup_script": "https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh"}
-
 # Toolchain configuration
-TOOLCHAIN_CONFIG = {"aosp_mirror": "https://android.googlesource.com",
-                    "build_tools_branch": "main-kernel-build-2024",
-                    "mkbootimg_branch": "main-kernel-build-2024"}
-LEGACY_FIXES = {
-    "android13-5.15-below-123": {"url": "https://github.com/zzh20188/GKI_KernelSU_SUSFS/raw/refs/heads/legacy/fix_5.15.legacy", "min_sub_level": 123},
-    "android12-5.10-below-136": {"url": "https://github.com/zzh20188/GKI_KernelSU_SUSFS/raw/refs/heads/legacy/fdinfo.c.patch", "min_sub_level": 136},
+TOOLCHAIN_CONFIG = {
+    "aosp_mirror": "https://android.googlesource.com",
+    "build_tools_branch": "main-kernel-build-2024",
+    "mkbootimg_branch": "main-kernel-build-2024",
 }
-OP8E_PATCH_URL = "https://github.com/zzh20188/GKI_KernelSU_SUSFS/raw/refs/heads/dev/hmbird_patch.c"
-KPM_PATCH_URL = "https://raw.githubusercontent.com/ShirkNeko/SukiSU_patch/refs/heads/main/kpm/patch_linux"
+
 
 
 @dataclass
@@ -108,13 +91,9 @@ class BuildConfig:
     kernelsu_commit: Optional[str] = None
     susfs_commit: Optional[str] = None
     use_zram: bool = True
-    use_kpm: bool = False
-    use_bbg: bool = False
-    support_op8e: bool = False
     set_default_bbr: bool = True
     make_release: bool = False
     custom_version: Optional[str] = None
-    revision: Optional[str] = None
     build_id: Optional[str] = None
 
     def __post_init__(self):
@@ -193,13 +172,9 @@ class BuildConfig:
             "kernelsu_version": self.kernelsu_version,
             "kernelsu_commit": self.kernelsu_commit,
             "use_zram": self.use_zram,
-            "use_kpm": self.use_kpm,
-            "use_bbg": self.use_bbg,
-            "support_op8e": self.support_op8e,
             "set_default_bbr": self.set_default_bbr,
             "make_release": self.make_release,
             "custom_version": self.custom_version,
-            "revision": self.revision,
             "build_id": self.build_id,
         }
 

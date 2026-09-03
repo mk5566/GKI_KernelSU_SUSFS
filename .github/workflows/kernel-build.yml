@@ -31,11 +31,6 @@ on:
         required: true
         type: string
         default: '2025-05'
-      revision:
-        description: 'Revision (Optional)'
-        required: false
-        type: string
-        default: ''
       kernelsu_version:
         description: 'SukiSU Version'
         required: true
@@ -64,21 +59,6 @@ on:
         required: true
         type: boolean
         default: true
-      use_kpm:
-        description: 'Enable KPM'
-        required: true
-        type: boolean
-        default: false
-      BBG:
-        description: 'Enable Baseband-guard'
-        required: true
-        type: boolean
-        default: false
-      supp_op:
-        description: 'Enable OnePlus 8E Support'
-        required: true
-        type: boolean
-        default: false
       set_defbbr:
         description: 'Set BBR as Default Congestion Algorithm'
         required: true
@@ -103,23 +83,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
-      - name: Maximize build space
-        uses: AdityaGarg8/remove-unwanted-software@v5
-        with:
-          remove-dotnet: 'true'
-          remove-android: 'true'
-          remove-haskell: 'true'
-          remove-codeql: 'true'
-          remove-docker-images: 'true'
-          remove-large-packages: 'true'
-          remove-swapfile: 'false'
-          verbose: 'true'
-
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -136,19 +104,20 @@ jobs:
 
       - name: Configure ccache
         run: |
-          mkdir -p ~/.cache/bazel
           ccache --version
           ccache --max-size=5G
           ccache --set-config=compression=true
+          ccache --set-config=compression_type=zstd
+          ccache -z
           echo "CCACHE_DIR=$HOME/.ccache" >> $GITHUB_ENV
 
       - name: Restore ccache
-        uses: actions/cache@v5
+        uses: actions/cache@v4
         with:
           path: ~/.ccache
-          key: ${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.sub_level }}-ccache-${{ github.sha }}
+          key: android13-5.15.180-ccache-${{ github.sha }}
           restore-keys: |
-            ${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.sub_level }}-ccache-
+            android13-5.15.180-ccache-
 
       - name: Build kernel
         run: |
@@ -159,24 +128,22 @@ jobs:
           ARGS="$ARGS --kernel ${{ github.event.inputs.kernel_version }}"
           ARGS="$ARGS --sub-level ${{ github.event.inputs.sub_level }}"
           ARGS="$ARGS --os-patch ${{ github.event.inputs.os_patch_level }}"
-          [ -n "${{ github.event.inputs.revision }}" ] && ARGS="$ARGS --revision ${{ github.event.inputs.revision }}"
-          ARGS="$ARGS --ksu-version ${{ github.event.inputs.kernelsu_version }}"
+          ARGS="$ARGS --ksu-version '${{ github.event.inputs.kernelsu_version }}'"
 
           [ "${{ github.event.inputs.use_zram }}" = "true" ] && ARGS="$ARGS --zram"
           [ "${{ github.event.inputs.use_zram }}" = "false" ] && ARGS="$ARGS --no-zram"
-          [ "${{ github.event.inputs.use_kpm }}" = "true" ] && ARGS="$ARGS --kpm"
-          [ "${{ github.event.inputs.use_kpm }}" = "false" ] && ARGS="$ARGS --no-kpm"
-          [ "${{ github.event.inputs.BBG }}" = "true" ] && ARGS="$ARGS --bbg"
-          [ "${{ github.event.inputs.supp_op }}" = "true" ] && ARGS="$ARGS --op8e"
           [ "${{ github.event.inputs.set_defbbr }}" = "true" ] && ARGS="$ARGS --bbr"
           [ "${{ github.event.inputs.set_defbbr }}" = "false" ] && ARGS="$ARGS --no-bbr"
           [ -z "${{ github.event.inputs.kernelsu_commit }}" ] || ARGS="$ARGS --ksu-commit=${{ github.event.inputs.kernelsu_commit }}"
           [ -z "${{ github.event.inputs.susfs_commit }}" ] || ARGS="$ARGS --susfs-commit=${{ github.event.inputs.susfs_commit }}"
-          [ -z "${{ github.event.inputs.custom_version }}" ] || ARGS="$ARGS --custom-version=${{ github.event.inputs.custom_version }}"
+          [ -z "${{ github.event.inputs.custom_version }}" ] || ARGS="$ARGS --custom-version='${{ github.event.inputs.custom_version }}'"
           [ "${{ github.event.inputs.make_release }}" = "true" ] || ARGS="$ARGS --no-release"
 
-          python3 build.py $ARGS --dry-run
           python3 build.py $ARGS
+
+      - name: Show ccache stats
+        if: always()
+        run: ccache -s
 
       - name: Prepare artifacts
         run: |
@@ -193,7 +160,7 @@ jobs:
           fi
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: kernel-${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.sub_level }}
           path: artifacts/*
@@ -204,6 +171,18 @@ jobs:
           echo "=== Creating checksums ==="
           sha256sum artifacts/* > SHA256SUMS.txt
           cat SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        if: ${{ github.event.inputs.make_release == 'true' && success() }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}.${{ github.event.inputs.sub_level }}-${{ github.event.inputs.os_patch_level }}"
+          [ -n "${{ github.event.inputs.custom_version }}" ] && TAG="$TAG-${{ github.event.inputs.custom_version }}"
+          gh release create "$TAG" artifacts/* SHA256SUMS.txt \
+            --title "GKI Kernel $TAG" \
+            --notes "Generic Kernel Image locked to 5.15.180 with SukiSU-Ultra, SUSFS, BBRv3, and LZ4KD ZRAM." \
+            --clobber || true
 
       - name: Send Telegram Notification
         if: ${{ github.event.inputs.send_telegram == 'true' && success() }}
@@ -220,5 +199,5 @@ jobs:
             "${{ github.event.inputs.os_patch_level }}" \
             "${{ github.event.inputs.kernelsu_version }}" \
             "${{ github.event.inputs.use_zram }}" \
-            "${{ github.event.inputs.use_kpm }}" \
+            "${{ github.event.inputs.set_defbbr }}" \
             "../../SHA256SUMS.txt"

@@ -73,26 +73,18 @@ Required:
 
 1. `0001-net-tcp-backport-BBRv3-to-android13-5.15.patch` — BBRv3 + TCP PLB backport with Android KABI guards. The build fails if this does not apply.
 
-Optional (skipped with a warning if a hunk does not match):
+Optional (applied cleanly or skipped with a warning):
 
 1. `avoid_extra_s2idle_wake_attempts.patch` — Avoid redundant s2idle wakeups.
 2. `minimise_wakeup_time.patch` — Dynamic alarmtimer wakeup timeout reduction.
 3. `reduce_freeze_timeout.patch` — Generous 1-second process freeze timeout.
 4. `clear_page_16bytes_align.patch` — 16-byte cache alignment for ARM64 page zeroing.
-5. `file_struct_8bytes_align.patch` — 8-byte `struct file` alignment.
-6. `f2fs_reduce_congestion.patch` — F2FS congestion wait timeout reduced from 20ms to 6ms.
-7. `f2fs_enlarge_min_fsync_blocks.patch` — Enlarge `min_fsync_blocks` to 20.
-8. `reduce_gc_thread_sleep_time.patch` — Faster F2FS urgent GC.
-9. `disable_cache_hot_buddy.patch` — Leverage DynamIQ Shared Unit (DSU) on modern cores.
-10. `adjust_cpu_scan_order.patch` — Scheduler idle capacity scanning optimization.
-11. `optimise_memcmp.patch` — ARM-optimized NEON SIMD memcmp routine.
-12. `mem_opt_prefetch.patch` — Prefetch in ARM64 memcpy template.
-13. `int_sqrt.patch` — Faster integer square root.
-14. `increase_sk_mem_packets.patch` — Larger default socket memory.
-15. `reduce_cache_pressure.patch` — Lower VFS cache pressure.
-16. `increase_ext4_default_commit_age.patch` — Let the VM do bulk writeback.
-17. `reduce_pci_pme_wakeups.patch` — Fewer PCI PME polling wakeups.
-18. `silence_irq_cpu_logspam.patch` / `silence_system_logspam.patch` — Cut noisy kernel logs.
+5. `f2fs_reduce_congestion.patch` — F2FS congestion wait timeout reduced from 20ms to 6ms.
+6. `disable_cache_hot_buddy.patch` — Leverage DynamIQ Shared Unit (DSU) on modern cores.
+7. `silence_irq_cpu_logspam.patch` — Cut noisy IRQ CPU affinity warnings.
+8. `f2fs_enlarge_min_fsync_blocks.patch` — Enlarge `min_fsync_blocks` to 20.
+9. `adjust_cpu_scan_order.patch` — Scheduler idle capacity scanning optimization.
+10. `optimise_memcmp.patch` — ARM-optimized NEON SIMD memcmp routine.
 
 ---
 
@@ -101,11 +93,10 @@ Optional (skipped with a warning if a hunk does not match):
 ```
 .
 ├── .github/
-│   ├── workflows/
-│   │   ├── kernel-build.yml       # Single target build workflow
-│   │   ├── config/matrix.json     # Locked single build matrix entry
-│   │   └── scripts/               # Python build & packaging engine
-│   └── actions/                   # Ccache save & restore actions
+│   └── workflows/
+│       ├── kernel-build.yml       # Optimized single-target build workflow
+│       ├── config/matrix.json     # Locked build matrix entry
+│       └── scripts/               # Python build engine & config
 ├── patches/
 │   └── 5.15.180/                  # Vendor performance & BBRv3 patches
 │       └── APPLY_ORDER.txt        # Sequence of patch application
