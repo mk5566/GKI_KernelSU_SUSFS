@@ -133,7 +133,7 @@ jobs:
           ccache --version
           ccache --max-size=8G
           ccache --set-config=compression=true
-          ccache --set-config=compression_type=zstd
+          ccache --set-config=compression_level=1
           ccache -z
           echo "CCACHE_DIR=$HOME/.ccache" >> $GITHUB_ENV
 
