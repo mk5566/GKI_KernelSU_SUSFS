@@ -26,20 +26,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DEFAULT_BUILD_MATRIX = {
-    "android13-5.15": [
-        {"sub_level": "180", "os_patch_level": "2025-05"},
-    ],
+LOCKED_TARGET = {
+    "android": "android13",
+    "kernel": "5.15",
+    "sub_level": "180",
+    "os_patch_level": "2025-05",
 }
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="GKI Kernel Build System")
+    parser = argparse.ArgumentParser(description="GKI Kernel Build System (android13-5.15.180)")
 
-    parser.add_argument("--android", "-a", choices=[v.value for v in AndroidVersion], default="android13")
-    parser.add_argument("--kernel", "-k", choices=[v.value for v in KernelVersion], default="5.15")
-    parser.add_argument("--sub-level", "-s", default="180")
-    parser.add_argument("--os-patch", default="2025-05")
+    parser.add_argument("--android", "-a", choices=[v.value for v in AndroidVersion], default=LOCKED_TARGET["android"])
+    parser.add_argument("--kernel", "-k", choices=[v.value for v in KernelVersion], default=LOCKED_TARGET["kernel"])
+    parser.add_argument("--sub-level", "-s", default=LOCKED_TARGET["sub_level"])
+    parser.add_argument("--os-patch", default=LOCKED_TARGET["os_patch_level"])
     parser.add_argument("--ksu-version", choices=[v.value for v in KSUVersion], default=KSUVersion.STABLE.value)
     parser.add_argument("--ksu-commit", default=None)
     parser.add_argument("--susfs-commit", default=None)
@@ -49,10 +50,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-bbr", action="store_false", dest="bbr", help="Do not force BBR as default")
     parser.add_argument("--no-release", action="store_true", help="Do not create GitHub Release")
     parser.add_argument("--custom-version", dest="custom_version", default=None)
-    parser.add_argument("--matrix", "-m")
-    parser.add_argument("--all", action="store_true")
     parser.add_argument("--list-configs", action="store_true")
-    parser.add_argument("--list-matrix", action="store_true")
     parser.add_argument("--workspace", "-w", default=os.environ.get("GKI_WORKSPACE", "/tmp/gki-build"))
     parser.add_argument("--verbose", "-v", action="store_true")
     parser.add_argument("--output-json")
@@ -63,10 +61,10 @@ def parse_args() -> argparse.Namespace:
 
 def create_build_config(args: argparse.Namespace) -> BuildConfig:
     return BuildConfig(
-        android_version=args.android or "android13",
-        kernel_version=args.kernel or "5.15",
-        sub_level=args.sub_level or "180",
-        os_patch_level=args.os_patch or "2025-05",
+        android_version=args.android or LOCKED_TARGET["android"],
+        kernel_version=args.kernel or LOCKED_TARGET["kernel"],
+        sub_level=args.sub_level or LOCKED_TARGET["sub_level"],
+        os_patch_level=args.os_patch or LOCKED_TARGET["os_patch_level"],
         kernelsu_version=args.ksu_version,
         kernelsu_commit=args.ksu_commit,
         susfs_commit=args.susfs_commit,
@@ -79,29 +77,20 @@ def create_build_config(args: argparse.Namespace) -> BuildConfig:
 
 def list_configs():
     print("\n" + "=" * 60)
-    print("Supported Android / Kernel Combinations")
+    print("Locked GKI target")
     print("=" * 60)
+    print(
+        f"  {LOCKED_TARGET['android']}-{LOCKED_TARGET['kernel']}."
+        f"{LOCKED_TARGET['sub_level']}  (OS patch {LOCKED_TARGET['os_patch_level']})"
+    )
+    print("\nSupported combinations:")
     for android, kernels in ANDROID_KERNEL_MAP.items():
-        print(f"\n{android.value}:")
-        for kernel in kernels:
-            configs = DEFAULT_BUILD_MATRIX.get(f"{android.value}-{kernel.value}", [])
-            print(f"  - {kernel.value}: {', '.join(c['sub_level'] for c in configs) or 'N/A'}")
+        print(f"  {android.value}: {', '.join(k.value for k in kernels)}")
     print("\n" + "=" * 60)
     print("KernelSU Version Options")
     print("=" * 60)
     for v in KSUVersion:
         print(f"  - {v.value}")
-
-
-def list_matrix():
-    print("\n" + "=" * 60)
-    print("Predefined Build Matrix")
-    print("=" * 60)
-    for combo, configs in sorted(DEFAULT_BUILD_MATRIX.items()):
-        print(f"\n{combo}:")
-        for cfg in configs:
-            rev = f" (rev: {cfg.get('revision', 'N/A')})" if cfg.get('revision') else ""
-            print(f"  - {cfg['sub_level']:>4} | {cfg['os_patch_level']}{rev}")
 
 
 def _validate_vendor_patches(config: BuildConfig) -> list:
@@ -140,53 +129,6 @@ def build_single(config: BuildConfig, workspace: str, dry_run: bool = False) -> 
 
     builder = KernelBuilder(config, workspace)
     return builder.build()
-
-
-def build_matrix(matrix_key: str, args: argparse.Namespace, workspace: str) -> list:
-    logger.info(f"\n{'=' * 60}\nStarting matrix build: {matrix_key}\n{'=' * 60}\n")
-
-    configs_data = DEFAULT_BUILD_MATRIX.get(matrix_key, [])
-    if not configs_data:
-        logger.error(f"Unknown matrix: {matrix_key}")
-        return []
-
-    results = []
-    for cfg_data in configs_data:
-        try:
-            config = BuildConfig(
-                android_version=matrix_key.split("-")[0],
-                kernel_version=matrix_key.split("-")[1],
-                sub_level=cfg_data["sub_level"],
-                os_patch_level=cfg_data["os_patch_level"],
-                kernelsu_version=args.ksu_version,
-                kernelsu_commit=args.ksu_commit,
-                use_zram=args.zram,
-                set_default_bbr=args.bbr,
-                make_release=not args.no_release,
-                custom_version=args.custom_version,
-            )
-
-            logger.info(f"\n{'=' * 60}\nBuilding config: {config.config_name}\n{'=' * 60}")
-            result = build_single(config, workspace, args.dry_run)
-            results.append(result)
-
-            if result.success:
-                logger.info(f"✓ {config.config_name} build succeeded")
-            else:
-                logger.error(f"✗ {config.config_name} build failed: {result.message}")
-        except Exception as e:
-            logger.error(f"Config error for {cfg_data}: {e}")
-            continue
-
-    return results
-
-
-def build_all(args: argparse.Namespace, workspace: str) -> list:
-    all_results = []
-    for matrix_key in sorted(DEFAULT_BUILD_MATRIX.keys()):
-        results = build_matrix(matrix_key, args, workspace)
-        all_results.extend(results)
-    return all_results
 
 
 def print_summary(results: list, output_json: str = None):
@@ -236,39 +178,23 @@ def main():
         list_configs()
         return 0
 
-    if args.list_matrix:
-        list_matrix()
-        return 0
-
-    if not args.all and not args.matrix and not args.android:
-        logger.error("Please specify --all, --matrix or --android")
-        return 1
-
     workspace = args.workspace
     logger.info(f"Workspace: {workspace}")
     os.makedirs(workspace, exist_ok=True)
 
-    results = []
+    try:
+        config = create_build_config(args)
+        result = build_single(config, workspace, args.dry_run)
+        results = [result]
+    except Exception as e:
+        logger.error(f"Configuration error: {e}")
+        return 1
 
-    if args.all:
-        results = build_all(args, workspace)
-    elif args.matrix:
-        results = build_matrix(args.matrix, args, workspace)
-    else:
-        try:
-            config = create_build_config(args)
-            result = build_single(config, workspace, args.dry_run)
-            results.append(result)
-        except Exception as e:
-            logger.error(f"Configuration error: {e}")
-            return 1
+    print_summary(results, args.output_json)
 
-    if results:
-        print_summary(results, args.output_json)
-
-    if results and all(r.success for r in results):
+    if all(r.success for r in results):
         return 0
-    elif results and any(r.success for r in results):
+    if any(r.success for r in results):
         return 2
     return 1
 

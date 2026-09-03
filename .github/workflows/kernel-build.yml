@@ -2,7 +2,10 @@ name: Kernel Build
 
 permissions:
   contents: write
-  actions: write
+
+concurrency:
+  group: kernel-build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 on:
   workflow_dispatch:
@@ -77,17 +80,21 @@ on:
 
 env:
   PYTHON_VERSION: '3.10'
+  GKI_WORKSPACE: /tmp/gki-build
+  DEBIAN_FRONTEND: noninteractive
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 180
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -95,7 +102,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            ccache python3 git curl wget zip unzip xz-utils openssl pixz \
+            ccache python3 git curl wget zip unzip xz-utils openssl \
             patch rsync bc bison flex libssl-dev libelf-dev
           pip install PyYAML
           git config --global user.email "gki-builder@localhost"
@@ -105,62 +112,81 @@ jobs:
       - name: Configure ccache
         run: |
           ccache --version
-          ccache --max-size=5G
+          ccache --max-size=8G
           ccache --set-config=compression=true
           ccache --set-config=compression_type=zstd
           ccache -z
           echo "CCACHE_DIR=$HOME/.ccache" >> $GITHUB_ENV
+          echo "USE_CCACHE=1" >> $GITHUB_ENV
 
       - name: Restore ccache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v5
         with:
           path: ~/.ccache
-          key: android13-5.15.180-ccache-${{ github.sha }}
+          key: ccache-${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}.${{ github.event.inputs.sub_level }}-${{ github.event.inputs.os_patch_level }}-${{ github.run_id }}
           restore-keys: |
-            android13-5.15.180-ccache-
+            ccache-${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}.${{ github.event.inputs.sub_level }}-${{ github.event.inputs.os_patch_level }}-
 
       - name: Build kernel
         run: |
           set -euo pipefail
           cd ./.github/workflows/scripts
 
-          ARGS="--android ${{ github.event.inputs.android_version }}"
-          ARGS="$ARGS --kernel ${{ github.event.inputs.kernel_version }}"
-          ARGS="$ARGS --sub-level ${{ github.event.inputs.sub_level }}"
-          ARGS="$ARGS --os-patch ${{ github.event.inputs.os_patch_level }}"
-          ARGS="$ARGS --ksu-version '${{ github.event.inputs.kernelsu_version }}'"
+          extra=()
+          if [ "${{ github.event.inputs.use_zram }}" = "true" ]; then
+            extra+=(--zram)
+          else
+            extra+=(--no-zram)
+          fi
+          if [ "${{ github.event.inputs.set_defbbr }}" = "true" ]; then
+            extra+=(--bbr)
+          else
+            extra+=(--no-bbr)
+          fi
+          [ -z "${{ github.event.inputs.kernelsu_commit }}" ] || extra+=(--ksu-commit="${{ github.event.inputs.kernelsu_commit }}")
+          [ -z "${{ github.event.inputs.susfs_commit }}" ] || extra+=(--susfs-commit="${{ github.event.inputs.susfs_commit }}")
+          [ -z "${{ github.event.inputs.custom_version }}" ] || extra+=(--custom-version="${{ github.event.inputs.custom_version }}")
+          [ "${{ github.event.inputs.make_release }}" = "true" ] || extra+=(--no-release)
 
-          [ "${{ github.event.inputs.use_zram }}" = "true" ] && ARGS="$ARGS --zram"
-          [ "${{ github.event.inputs.use_zram }}" = "false" ] && ARGS="$ARGS --no-zram"
-          [ "${{ github.event.inputs.set_defbbr }}" = "true" ] && ARGS="$ARGS --bbr"
-          [ "${{ github.event.inputs.set_defbbr }}" = "false" ] && ARGS="$ARGS --no-bbr"
-          [ -z "${{ github.event.inputs.kernelsu_commit }}" ] || ARGS="$ARGS --ksu-commit=${{ github.event.inputs.kernelsu_commit }}"
-          [ -z "${{ github.event.inputs.susfs_commit }}" ] || ARGS="$ARGS --susfs-commit=${{ github.event.inputs.susfs_commit }}"
-          [ -z "${{ github.event.inputs.custom_version }}" ] || ARGS="$ARGS --custom-version='${{ github.event.inputs.custom_version }}'"
-          [ "${{ github.event.inputs.make_release }}" = "true" ] || ARGS="$ARGS --no-release"
-
-          python3 build.py $ARGS
+          python3 build.py \
+            --android "${{ github.event.inputs.android_version }}" \
+            --kernel "${{ github.event.inputs.kernel_version }}" \
+            --sub-level "${{ github.event.inputs.sub_level }}" \
+            --os-patch "${{ github.event.inputs.os_patch_level }}" \
+            --ksu-version "${{ github.event.inputs.kernelsu_version }}" \
+            --workspace "${GKI_WORKSPACE}" \
+            "${extra[@]}"
 
       - name: Show ccache stats
         if: always()
         run: ccache -s
 
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.ccache
+          key: ccache-${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}.${{ github.event.inputs.sub_level }}-${{ github.event.inputs.os_patch_level }}-${{ github.run_id }}
+
       - name: Prepare artifacts
         run: |
           set -euo pipefail
           mkdir -p artifacts
-          find /tmp/gki-build -type f -name "android*-boot.img" -exec cp {} artifacts/ \;
-          find /tmp/gki-build -type f -name "android*-AnyKernel3.zip" -exec cp {} artifacts/ \;
+          find "${GKI_WORKSPACE}" -type f -name "android*-boot.img" -exec cp {} artifacts/ \;
+          find "${GKI_WORKSPACE}" -type f -name "android*-AnyKernel3.zip" -exec cp {} artifacts/ \;
+          if [ -f "${GKI_WORKSPACE}/BUILD_INFO.md" ]; then
+            cp "${GKI_WORKSPACE}/BUILD_INFO.md" artifacts/
+          fi
           echo "Artifacts:"
           ls -lh artifacts || true
           if ! ls artifacts/*AnyKernel3.zip >/dev/null 2>&1; then
             echo "ERROR: AnyKernel3 zip was not produced"
-            find /tmp/gki-build -maxdepth 3 -type f \( -name 'Image' -o -name '*.zip' -o -name '*.img' \) -print || true
+            find "${GKI_WORKSPACE}" -maxdepth 3 -type f \( -name 'Image' -o -name '*.zip' -o -name '*.img' -o -name 'BUILD_INFO.md' \) -print || true
             exit 1
           fi
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: kernel-${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.sub_level }}
           path: artifacts/*
@@ -179,10 +205,19 @@ jobs:
         run: |
           TAG="${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}.${{ github.event.inputs.sub_level }}-${{ github.event.inputs.os_patch_level }}"
           [ -n "${{ github.event.inputs.custom_version }}" ] && TAG="$TAG-${{ github.event.inputs.custom_version }}"
-          gh release create "$TAG" artifacts/* SHA256SUMS.txt \
-            --title "GKI Kernel $TAG" \
-            --notes "Generic Kernel Image locked to 5.15.180 with SukiSU-Ultra, SUSFS, BBRv3, and LZ4KD ZRAM." \
-            --clobber || true
+          NOTES_FILE="${GKI_WORKSPACE}/BUILD_INFO.md"
+          if [ ! -f "$NOTES_FILE" ]; then
+            echo "ERROR: BUILD_INFO.md was not produced"
+            exit 1
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" artifacts/* SHA256SUMS.txt --clobber
+            gh release edit "$TAG" --notes-file "$NOTES_FILE"
+          else
+            gh release create "$TAG" artifacts/* SHA256SUMS.txt \
+              --title "GKI Kernel $TAG" \
+              --notes-file "$NOTES_FILE"
+          fi
 
       - name: Send Telegram Notification
         if: ${{ github.event.inputs.send_telegram == 'true' && success() }}
@@ -200,4 +235,4 @@ jobs:
             "${{ github.event.inputs.kernelsu_version }}" \
             "${{ github.event.inputs.use_zram }}" \
             "${{ github.event.inputs.set_defbbr }}" \
-            "../../SHA256SUMS.txt"
+            "${{ github.workspace }}/SHA256SUMS.txt"

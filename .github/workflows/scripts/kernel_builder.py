@@ -4,12 +4,11 @@ import subprocess
 import logging
 import re
 from pathlib import Path
-from typing import Optional, Callable
+from typing import Optional
 from dataclasses import dataclass, field
 from config import (BuildConfig, KSU_REPO_CONFIG, SUSFS_REPO_CONFIG, SUKISU_PATCH_REPO_CONFIG,
                    ANYKERNEL_CONFIG, TOOLCHAIN_CONFIG)
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 REQUIRED_TOOLS = ("git", "curl", "patch", "python3", "zip", "openssl")
@@ -43,21 +42,6 @@ class ShellCommand:
             logger.error(f"Command timed out: {cmd}")
             raise
 
-    def run_with_callback(self, cmd: str, callback: Optional[Callable] = None) -> str:
-        logger.info(f"Running: {cmd}")
-        process = subprocess.Popen(cmd, shell=True, cwd=self.cwd, env=self.env,
-                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-        output_lines = []
-        for line in process.stdout:
-            line = line.rstrip()
-            output_lines.append(line)
-            if callback:
-                callback(line)
-        process.wait()
-        if process.returncode != 0:
-            raise RuntimeError(f"Command failed (exit {process.returncode}): {cmd}")
-        return "\n".join(output_lines)
-
 
 class KernelBuilder:
     KERNEL_CONFIG_UPDATES = {
@@ -73,7 +57,11 @@ class KernelBuilder:
         "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS": "y",
         "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG": "y",
         "CONFIG_KSU_SUSFS_OPEN_REDIRECT": "y",
+        # TRY_UMOUNT is a separate hiding path from SUS_SU. SUSFS Kconfig
+        # defaults it to y and gates susfs_try_umount_all() on the symbol.
+        "CONFIG_KSU_SUSFS_TRY_UMOUNT": "y",
         "CONFIG_KSU_SUSFS_SUS_SU": "y",
+        "CONFIG_KPM": "n",
         "CONFIG_TMPFS_XATTR": "y",
         "CONFIG_TMPFS_POSIX_ACL": "y",
         "CONFIG_IP_NF_TARGET_TTL": "y",
@@ -119,10 +107,13 @@ class KernelBuilder:
 
     def _setup_env(self):
         self.env["CONFIG"] = self.config.config_name
+        self.env["USE_CCACHE"] = "1"
+        self.env["CCACHE_EXEC"] = "/usr/bin/ccache"
         self.env["CCACHE_COMPILERCHECK"] = "%compiler% -dumpmachine; %compiler% -dumpversion"
         self.env["CCACHE_NOHASHDIR"] = "true"
         self.env["CCACHE_HARDLINK"] = "true"
         self.env.setdefault("CCACHE_DIR", os.path.expanduser("~/.ccache"))
+        self.env.setdefault("GIT_TERMINAL_PROMPT", "0")
         self.shell.env = self.env
 
     def _run_cmd(self, cmd: str, **kwargs) -> subprocess.CompletedProcess:
@@ -384,7 +375,7 @@ class KernelBuilder:
         kernel_ver = self._read_kernel_version()
         logger.info(f"Synced kernel version: {kernel_ver}")
         expected = f"{self.config.kernel_version}.{self.config.sub_level}"
-        if self.config.sub_level != "X" and kernel_ver != expected:
+        if kernel_ver != expected:
             raise RuntimeError(
                 f"Synced kernel {kernel_ver} does not match requested {expected} "
                 f"(branch {formatted_branch})"
@@ -394,11 +385,11 @@ class KernelBuilder:
     def add_kernelsu(self):
         logger.info("=== Adding KernelSU ===")
         self._chdir(self.work_dir)
-        setup_ref = self.config.kernelsu_commit or self.config.ksu_setup_ref
-        setup_url = (
-            f"https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/{setup_ref}/kernel/setup.sh"
-            if self.config.kernelsu_commit else KSU_REPO_CONFIG["setup_script"]
+        setup_ref = self.config.ksu_setup_ref
+        raw_base = KSU_REPO_CONFIG["repo_url"].rstrip("/").removesuffix(".git").replace(
+            "https://github.com/", "https://raw.githubusercontent.com/", 1
         )
+        setup_url = f"{raw_base}/{setup_ref}/kernel/setup.sh"
         setup_script = self.work_dir / "sukisu_setup.sh"
         self._run_cmd(f"curl -fLSs {setup_url} -o {setup_script}", check=True)
         self._run_cmd(f"bash {setup_script} {setup_ref}", check=True)
@@ -512,10 +503,7 @@ class KernelBuilder:
         if not lz4kd_patch.exists():
             raise RuntimeError(f"Required ZRAM patch not found: {lz4kd_patch}")
 
-        self._run_cmd(
-            f"patch -p1 -F 3 < {lz4kd_patch}",
-            check=True,
-        )
+        self._apply_patch_file(lz4kd_patch, required=True, allow_fuzz=True)
 
         # Verify that the patch was applied and the kernel Kconfig survived.
         required_markers = {
@@ -585,7 +573,6 @@ class KernelBuilder:
         if not task_mmu.exists():
             return
 
-        fb = f"{self.config.android_version}-{self.config.kernel_version}"
         content = task_mmu.read_text(encoding="utf-8")
         original = content
 
@@ -631,20 +618,8 @@ class KernelBuilder:
             return
 
         repo_root = Path(__file__).resolve().parent.parent.parent.parent
-        candidate_dirs = [
-            repo_root / "patches" / f"{self.config.kernel_version}.{self.config.sub_level}",
-            repo_root / "patches" / self.config.sub_level,
-            repo_root / "patches" / self.config.kernel_version,
-            repo_root / "patches",
-        ]
-
-        patch_dir = None
-        for cand in candidate_dirs:
-            if cand.exists() and cand.is_dir():
-                patch_dir = cand
-                break
-
-        if not patch_dir:
+        patch_dir = repo_root / "patches" / f"{self.config.kernel_version}.{self.config.sub_level}"
+        if not patch_dir.is_dir():
             logger.info("No vendor patches directory found, skipping.")
             return
 
@@ -672,7 +647,7 @@ class KernelBuilder:
                     raise RuntimeError(f"Required vendor patch missing: {patch_path}")
                 logger.warning(f"Vendor patch file not found: {patch_path}")
                 continue
-            if self._apply_patch_file(patch_path, required=required, allow_fuzz=not required):
+            if self._apply_patch_file(patch_path, required=required, allow_fuzz=False):
                 applied.append(patch_name)
             else:
                 failed_optional.append(patch_name)
@@ -688,8 +663,6 @@ class KernelBuilder:
         self._require_path(self._defconfig_path(), "gki_defconfig")
 
         updates = dict(self.KERNEL_CONFIG_UPDATES)
-        updates["CONFIG_KPM"] = "y" if self.config.use_kpm else "n"
-        updates["CONFIG_KSU_SUSFS_SUS_PATH"] = "n" if self.config.kernel_version == "6.6" else "y"
         if self.config.set_default_bbr:
             updates.update(self.BBR3_CONFIG_UPDATES)
         else:
@@ -802,6 +775,8 @@ class KernelBuilder:
         key_configs = {
             "CONFIG_KSU": "KernelSU",
             "CONFIG_KSU_SUSFS": "SUSFS",
+            "CONFIG_KSU_SUSFS_TRY_UMOUNT": "SUSFS try_umount",
+            "CONFIG_KSU_SUSFS_SUS_SU": "SUSFS sus_su",
             "CONFIG_TCP_CONG_BBR3": "BBRv3",
             "CONFIG_DEFAULT_TCP_CONG": "Default TCP cong",
             "CONFIG_ZRAM": "ZRAM",
@@ -881,6 +856,7 @@ class KernelBuilder:
         try:
             logger.info("Starting kernel compilation with build.sh...")
             build_cmd = (
+                "USE_CCACHE=1 "
                 "LTO=thin "
                 "BUILD_SYSTEM_DLKM=0 "
                 "BUILD_GKI_ARTIFACTS=0 "
@@ -908,59 +884,106 @@ class KernelBuilder:
             return False
 
     def prepare_boot_images(self) -> list:
-        logger.info("=== 准备启动镜像 ===")
+        logger.info("=== Preparing boot image ===")
         self._chdir(self.work_dir)
         bootimgs_dir = self.work_dir / "bootimgs"
         bootimgs_dir.mkdir(exist_ok=True)
-        artifacts = []
 
-        image_source = self.work_dir / f"out/{self.config.android_version}-{self.config.kernel_version}/dist"
-        for image_name in ["Image"]:
-            src = image_source / image_name
-            if src.exists():
-                self._run_cmd(f"cp {src} {bootimgs_dir}/ && cp {src} {self.work_dir}/", check=False)
+        image_src = self._kernel_image_path()
+        self._require_path(image_src, "compiled kernel Image")
+        self._run_cmd(f"cp {image_src} {bootimgs_dir}/Image && cp {image_src} {self.work_dir}/Image", check=True)
 
         self._chdir(bootimgs_dir)
-        for kernel_file, output_file in [("Image", "boot.img")]:
-            kernel_path = bootimgs_dir / kernel_file
-            if not kernel_path.exists():
-                continue
-            cmd = f"$MKBOOTIMG --header_version 4 --kernel {kernel_file} --output {output_file}"
-            self._run_cmd(cmd, check=False)
-            self._run_cmd(f"$AVBTOOL add_hash_footer --partition_name boot --partition_size $((64 * 1024 * 1024)) --image {output_file} --algorithm SHA256_RSA2048 --key $BOOT_SIGN_KEY_PATH", check=False)
-            dest = self.work_dir / f"{self.config.android_version}-{self.config.kernel_version}.{self.config.sub_level}-{self.config.os_patch_level}-{output_file}"
-            self._run_cmd(f"cp {output_file} {dest}", check=False)
-            artifacts.append(str(dest))
-        return artifacts
+        self._run_cmd("$MKBOOTIMG --header_version 4 --kernel Image --output boot.img", check=True)
+        self._run_cmd(
+            "$AVBTOOL add_hash_footer --partition_name boot --partition_size $((64 * 1024 * 1024)) "
+            "--image boot.img --algorithm SHA256_RSA2048 --key $BOOT_SIGN_KEY_PATH",
+            check=True,
+        )
+        dest = self.work_dir / (
+            f"{self.config.android_version}-{self.config.kernel_version}."
+            f"{self.config.sub_level}-{self.config.os_patch_level}-boot.img"
+        )
+        self._run_cmd(f"cp boot.img '{dest}'", check=True)
+        return [str(dest)]
 
     def create_anykernel_zips(self) -> list:
-        logger.info("=== 创建 AnyKernel3 ZIP 文件 ===")
+        logger.info("=== Creating AnyKernel3 zip ===")
         self._chdir(self.work_dir)
-        artifacts = []
         ak3_dir = self.anykernel_dir
 
         image_src = self._kernel_image_path()
         self._require_path(image_src, "compiled kernel Image")
         self._run_cmd(f"cp {image_src} {self.work_dir}/Image", check=True)
+        self._run_cmd(f"cp {self.work_dir}/Image {ak3_dir}/", check=True)
 
-        for suffix in [""]:
-            image_file = f"Image{suffix}"
-            image_path = self.work_dir / image_file
-            if not image_path.exists():
-                continue
-            zip_name = f"{self.config.android_version}-{self.config.kernel_version}.{self.config.sub_level}-{self.config.os_patch_level}-AnyKernel3{suffix}.zip"
-            self._run_cmd(f"cp {image_path} {ak3_dir}/", check=True)
-            self._chdir(ak3_dir)
-            zip_path = self.work_dir / zip_name
-            self._run_cmd(f"zip -r '{zip_path}' ./*", check=True)
-            self._run_cmd(f"rm -f {ak3_dir}/{image_file}", check=False)
-            if not zip_path.exists():
-                raise RuntimeError(f"AnyKernel3 zip was not created: {zip_path}")
-            artifacts.append(str(zip_path))
-            self._chdir(self.work_dir)
-        if not artifacts:
-            raise RuntimeError("No AnyKernel3 zip was produced")
-        return artifacts
+        zip_name = (
+            f"{self.config.android_version}-{self.config.kernel_version}."
+            f"{self.config.sub_level}-{self.config.os_patch_level}-AnyKernel3.zip"
+        )
+        zip_path = self.work_dir / zip_name
+        self._chdir(ak3_dir)
+        self._run_cmd(f"zip -qr '{zip_path}' ./*", check=True)
+        self._run_cmd(f"rm -f {ak3_dir}/Image", check=False)
+        self._chdir(self.work_dir)
+        if not zip_path.exists():
+            raise RuntimeError(f"AnyKernel3 zip was not created: {zip_path}")
+        return [str(zip_path)]
+
+    def _git_head(self, repo: Path) -> str:
+        if not repo.exists():
+            return "unknown"
+        sha = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            capture_output=True, text=True,
+        )
+        if sha.returncode != 0 or not sha.stdout.strip():
+            return "unknown"
+        branch = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True,
+        )
+        ref = (branch.stdout or "").strip()
+        commit = sha.stdout.strip()
+        if ref and ref != "HEAD":
+            return f"{commit} ({ref})"
+        return commit
+
+    def write_build_info(self, artifacts: list = None, build_time: float = None,
+                         success: bool = True, message: str = "") -> Path:
+        lines = [
+            f"## GKI Kernel {self.config.build_id}",
+            "",
+            f"- Status: {'success' if success else 'failed'}",
+            f"- Message: {message or ('Build succeeded' if success else 'Build failed')}",
+            f"- Android / kernel: {self.config.android_version}-{self.config.kernel_version}.{self.config.sub_level}",
+            f"- OS patch: {self.config.os_patch_level}",
+            f"- Makefile version: {self._read_kernel_version()}",
+            f"- SukiSU version: {self.config.kernelsu_version}",
+            f"- SukiSU setup ref: {self.config.ksu_setup_ref}",
+            f"- SukiSU-Ultra: `{self._git_head(self.work_dir / 'KernelSU')}`",
+            f"- SUSFS: `{self._git_head(self.susfs_dir)}`",
+            f"- SukiSU_patch: `{self._git_head(self.sukisu_patch_dir)}`",
+            f"- AnyKernel3: `{self._git_head(self.anykernel_dir)}`",
+            f"- ZRAM (LZ4KD): {'enabled' if self.config.use_zram else 'disabled'}",
+            f"- BBRv3 default: {'enabled' if self.config.set_default_bbr else 'not default'}",
+            f"- CONFIG_KSU_SUSFS_TRY_UMOUNT: {self.KERNEL_CONFIG_UPDATES.get('CONFIG_KSU_SUSFS_TRY_UMOUNT')}",
+            f"- CONFIG_KSU_SUSFS_SUS_SU: {self.KERNEL_CONFIG_UPDATES.get('CONFIG_KSU_SUSFS_SUS_SU')}",
+        ]
+        if self.config.custom_version:
+            lines.append(f"- Custom version: {self.config.custom_version}")
+        if build_time is not None:
+            lines.append(f"- Build time: {build_time:.2f}s")
+        if artifacts:
+            lines.append("")
+            lines.append("### Artifacts")
+            for artifact in artifacts:
+                lines.append(f"- `{Path(artifact).name}`")
+        content = "\n".join(lines) + "\n"
+        info_path = self.workspace / "BUILD_INFO.md"
+        info_path.write_text(content, encoding="utf-8")
+        logger.info(f"Wrote build info: {info_path}")
+        return info_path
 
     def build(self) -> BuildResult:
         import time
@@ -984,7 +1007,9 @@ class KernelBuilder:
             self.configure_kernel_name()
             self.show_kernel_config()
             if not self.build_kernel():
-                return BuildResult(success=False, config=self.config, message="Kernel compile failed", build_time=time.time() - start_time)
+                build_time = time.time() - start_time
+                self.write_build_info(build_time=build_time, success=False, message="Kernel compile failed")
+                return BuildResult(success=False, config=self.config, message="Kernel compile failed", build_time=build_time)
             artifacts = []
             artifacts.extend(self.create_anykernel_zips())
             try:
@@ -992,8 +1017,14 @@ class KernelBuilder:
             except Exception as boot_err:
                 logger.warning(f"boot.img packaging failed (AnyKernel3 zip is still valid): {boot_err}")
             build_time = time.time() - start_time
+            info_path = self.write_build_info(artifacts=artifacts, build_time=build_time, success=True)
+            artifacts.append(str(info_path))
             logger.info(f"Build succeeded in {build_time:.2f}s, {len(artifacts)} artifact(s)")
             return BuildResult(success=True, config=self.config, message="Build succeeded", artifacts=artifacts, build_time=build_time)
         except Exception as e:
             logger.exception(f"Build failed: {e}")
+            try:
+                self.write_build_info(build_time=time.time() - start_time, success=False, message=str(e))
+            except Exception:
+                pass
             return BuildResult(success=False, config=self.config, message=str(e), build_time=time.time() - start_time)
