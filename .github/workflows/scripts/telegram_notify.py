@@ -7,9 +7,7 @@ import os
 import sys
 import ssl
 import json
-import hashlib
 import urllib.request
-from pathlib import Path
 
 
 class TelegramNotifier:
@@ -19,8 +17,6 @@ class TelegramNotifier:
         self.thread_id = thread_id or os.environ.get("TELEGRAM_MESSAGE_THREAD_ID", "")
 
         self.ssl_ctx = ssl.create_default_context()
-        self.ssl_ctx.check_hostname = False
-        self.ssl_ctx.verify_mode = ssl.CERT_NONE
 
     def send_message(self, message: str, parse_mode: str = "HTML", disable_web_page_preview: bool = True) -> bool:
         """发送消息到 Telegram"""
@@ -57,69 +53,6 @@ class TelegramNotifier:
         except Exception as e:
             print(f"请求失败: {e}")
             return False
-
-    def send_document(self, file_path: str, caption: str = None) -> bool:
-        """发送文件到 Telegram"""
-        if not self.bot_token or not self.chat_id:
-            print("错误: 缺少 TELEGRAM_BOT_TOKEN 或 TELEGRAM_CHAT_ID")
-            return False
-
-        if not os.path.exists(file_path):
-            print(f"文件不存在: {file_path}")
-            return False
-
-        url = f"https://api.telegram.org/bot{self.bot_token}/sendDocument"
-
-        try:
-            with open(file_path, "rb") as f:
-                import multipart
-
-                form = multipart.MultipartForm()
-                form.add_field("chat_id", self.chat_id)
-                if self.thread_id:
-                    form.add_field("message_thread_id", self.thread_id)
-                if caption:
-                    form.add_field("caption", caption)
-                    form.add_field("parse_mode", "HTML")
-                form.add_file("document", os.path.basename(file_path), f)
-
-                req = urllib.request.Request(
-                    url,
-                    data=form.get_binary(),
-                    headers={"Content-Type": form.get_content_type()},
-                )
-                with urllib.request.urlopen(req, context=self.ssl_ctx) as response:
-                    result = json.loads(response.read())
-                    if result.get("ok"):
-                        print(f"文件发送成功 (message_id: {result['result']['message_id']})")
-                        return True
-                    else:
-                        print(f"文件发送失败: {result.get('description')}")
-                        return False
-        except ImportError:
-            print("需要安装 multipart 库: pip install python-multipart")
-            return False
-        except Exception as e:
-            print(f"文件发送失败: {e}")
-            return False
-
-
-def calculate_file_hashes(file_path: str) -> dict:
-    """计算文件的 SHA256 和 MD5 hash"""
-    hashes = {"sha256": "", "md5": ""}
-    try:
-        sha256_hash = hashlib.sha256()
-        md5_hash = hashlib.md5()
-        with open(file_path, "rb") as f:
-            for byte_block in iter(lambda: f.read(4096), b""):
-                sha256_hash.update(byte_block)
-                md5_hash.update(byte_block)
-        hashes["sha256"] = sha256_hash.hexdigest()
-        hashes["md5"] = md5_hash.hexdigest()
-    except Exception as e:
-        print(f"计算 hash 失败: {e}")
-    return hashes
-
 
 def parse_sha256sums(file_path: str) -> list:
     """解析 SHA256SUMS 文件"""
@@ -254,9 +187,6 @@ def main():
         )
         success = notifier.send_message(message)
 
-        if hashes_file:
-            notifier.send_document(hashes_file, "SHA256SUMS")
-
     elif action == "release":
         if len(sys.argv) < 4:
             print("错误: release 需要 <tag> <url> [notes_file] [hashes_file] [status_file] [success_count] [failed_count]")
@@ -289,9 +219,6 @@ def main():
 
         message = build_release_notify_message(tag, url, notes, hashes_file, status_file, success_count, failed_count)
         success = notifier.send_message(message)
-
-        if hashes_file:
-            notifier.send_document(hashes_file, "SHA256SUMS")
 
     else:
         print(f"未知操作: {action}")

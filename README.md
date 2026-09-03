@@ -34,7 +34,7 @@ Automated Generic Kernel Image (GKI) build system locked to **android13-5.15.180
    * **SukiSU Version**: `Stable(standard)` or `Dev(development)`
    * **ZRAM (LZ4KD)**: `true`
    * **BBR**: `true`
-5. Download output artifacts (`boot.img` and `AnyKernel3.zip`) upon completion.
+5. Download output artifacts (`*-AnyKernel3.zip` and optional `*-boot.img`) upon completion. Filenames include the variant (`lz4kd`/`nozram`, `bbr3`/`nobbr`, `sukisu-stable`/`sukisu-dev`).
 
 ### 2. Local CLI Build
 
@@ -42,13 +42,10 @@ Automated Generic Kernel Image (GKI) build system locked to **android13-5.15.180
 # Navigate to scripts directory
 cd .github/workflows/scripts
 
-# Install dependencies
-pip install PyYAML
-
 # Build android13-5.15.180
 python build.py --android android13 --kernel 5.15 --sub-level 180 --os-patch 2025-05
 
-# Dry-run validation
+# Dry-run validation (locked target + vendor patches)
 python build.py --dry-run
 ```
 
@@ -57,12 +54,13 @@ python build.py --dry-run
 ## Flashing Instructions
 
 ### AnyKernel3 (Recommended)
-Flash the generated `android13-5.15.180-2025-05-AnyKernel3.zip` via custom recovery or a kernel manager application such as [HorizonKernelFlasher](https://github.com/libxzr/HorizonKernelFlasher/releases).
+Flash the generated `android13-5.15.180-2025-05-lz4kd-bbr3-sukisu-stable-AnyKernel3.zip` via custom recovery or a kernel manager such as [HorizonKernelFlasher](https://github.com/libxzr/HorizonKernelFlasher/releases).
 
 ### Fastboot `boot.img`
-Reboot into Fastboot mode and flash directly:
+The `*-boot.img` artifact is a **ramdisk-less** GKI header v4 image with a test-key AVB footer. It is not a full boot image for devices that need a ramdisk. Prefer AnyKernel3 unless you know you only need to replace the kernel.
+
 ```bash
-fastboot flash boot android13-5.15.180-2025-05-boot.img
+fastboot flash boot android13-5.15.180-2025-05-lz4kd-bbr3-sukisu-stable-boot.img
 ```
 
 ---
@@ -94,8 +92,7 @@ Optional (applied cleanly or skipped with a warning):
 .
 ├── .github/
 │   └── workflows/
-│       ├── kernel-build.yml       # Optimized single-target build workflow
-│       ├── config/matrix.json     # Locked build matrix entry
+│       ├── kernel-build.yml       # Single-target android13-5.15.180 workflow
 │       └── scripts/               # Python build engine & config
 ├── patches/
 │   └── 5.15.180/                  # Vendor performance & BBRv3 patches

@@ -16,7 +16,10 @@ if hasattr(sys.stdout, 'reconfigure'):
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from config import BuildConfig, AndroidVersion, KernelVersion, ANDROID_KERNEL_MAP, KSUVersion
+from config import (
+    BuildConfig, AndroidVersion, KernelVersion, ANDROID_KERNEL_MAP, KSUVersion,
+    LOCKED_TARGET,
+)
 from kernel_builder import KernelBuilder, BuildResult
 
 logging.basicConfig(
@@ -25,13 +28,6 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger(__name__)
-
-LOCKED_TARGET = {
-    "android": "android13",
-    "kernel": "5.15",
-    "sub_level": "180",
-    "os_patch_level": "2025-05",
-}
 
 
 def parse_args() -> argparse.Namespace:
