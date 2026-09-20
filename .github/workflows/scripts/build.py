@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from config import (
     BuildConfig, AndroidVersion, KernelVersion, ANDROID_KERNEL_MAP, KSUVersion,
-    LOCKED_TARGET,
+    LOCKED_TARGET, SUPPORTED_TARGETS,
 )
 from kernel_builder import KernelBuilder, BuildResult
 
@@ -31,12 +31,12 @@ logger = logging.getLogger(__name__)
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="GKI Kernel Build System (android13-5.15.180)")
+    parser = argparse.ArgumentParser(description="GKI Kernel Build System (android13-5.15)")
 
     parser.add_argument("--android", "-a", choices=[v.value for v in AndroidVersion], default=LOCKED_TARGET["android"])
     parser.add_argument("--kernel", "-k", choices=[v.value for v in KernelVersion], default=LOCKED_TARGET["kernel"])
     parser.add_argument("--sub-level", "-s", default=LOCKED_TARGET["sub_level"])
-    parser.add_argument("--os-patch", default=LOCKED_TARGET["os_patch_level"])
+    parser.add_argument("--os-patch", default=None)
     parser.add_argument("--ksu-version", choices=[v.value for v in KSUVersion], default=KSUVersion.STABLE.value)
     parser.add_argument("--ksu-commit", default=None)
     parser.add_argument("--susfs-commit", default=None)
@@ -60,7 +60,7 @@ def create_build_config(args: argparse.Namespace) -> BuildConfig:
         android_version=args.android or LOCKED_TARGET["android"],
         kernel_version=args.kernel or LOCKED_TARGET["kernel"],
         sub_level=args.sub_level or LOCKED_TARGET["sub_level"],
-        os_patch_level=args.os_patch or LOCKED_TARGET["os_patch_level"],
+        os_patch_level=None if args.os_patch in (None, "", "auto") else args.os_patch,
         kernelsu_version=args.ksu_version,
         kernelsu_commit=args.ksu_commit,
         susfs_commit=args.susfs_commit,
@@ -73,12 +73,13 @@ def create_build_config(args: argparse.Namespace) -> BuildConfig:
 
 def list_configs():
     print("\n" + "=" * 60)
-    print("Locked GKI target")
+    print("Default GKI target")
     print("=" * 60)
     print(
         f"  {LOCKED_TARGET['android']}-{LOCKED_TARGET['kernel']}."
         f"{LOCKED_TARGET['sub_level']}  (OS patch {LOCKED_TARGET['os_patch_level']})"
     )
+    print(f"\nSupported sublevel / OS-patch pairs: {SUPPORTED_TARGETS}")
     print("\nSupported combinations:")
     for android, kernels in ANDROID_KERNEL_MAP.items():
         print(f"  {android.value}: {', '.join(k.value for k in kernels)}")
@@ -93,6 +94,10 @@ def _validate_vendor_patches(config: BuildConfig) -> list:
     repo_root = Path(__file__).resolve().parent.parent.parent.parent
     patch_dir = repo_root / "patches" / f"{config.kernel_version}.{config.sub_level}"
     missing = []
+    if config.sub_level == "211":
+        context_patch = repo_root / "patches/susfs/5.15.211-context.patch"
+        if not context_patch.is_file():
+            missing.append(str(context_patch))
     if not patch_dir.exists():
         return [f"patch directory missing: {patch_dir}"]
     order_file = patch_dir / "APPLY_ORDER.txt"

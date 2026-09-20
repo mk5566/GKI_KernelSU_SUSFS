@@ -1,0 +1,32 @@
+--- a/50_add_susfs_in_gki-android13-5.15.patch
++++ b/50_add_susfs_in_gki-android13-5.15.patch
+@@ -559,7 +559,7 @@
+ index ff5e6455c..f4d7b35c3 100644
+ --- a/fs/namespace.c
+ +++ b/fs/namespace.c
+-@@ -32,10 +32,20 @@
++@@ -32,11 +32,21 @@
+  #include <linux/fs_context.h>
+  #include <linux/shmem_fs.h>
+  #include <linux/mnt_idmapping.h>
+@@ -569,6 +569,7 @@
+  
+  #include "pnode.h"
+  #include "internal.h"
++ #include <trace/hooks/blk.h>
+  
+ +#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+ +extern bool susfs_is_current_ksu_domain(void);
+@@ -1254,10 +1255,10 @@
+ index 3823dfae5..8bf726c91 100644
+ --- a/fs/proc/task_mmu.c
+ +++ b/fs/proc/task_mmu.c
+-@@ -21,6 +21,9 @@
+- #include <linux/shmem_fs.h>
++@@ -22,6 +22,9 @@
+  #include <linux/uaccess.h>
+  #include <linux/pkeys.h>
++ #include <trace/hooks/mm.h>
+ +#if defined(CONFIG_KSU_SUSFS_SUS_KSTAT) || defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)
+ +#include <linux/susfs_def.h>
+ +#endif // #if defined(CONFIG_KSU_SUSFS_SUS_KSTAT) || defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)

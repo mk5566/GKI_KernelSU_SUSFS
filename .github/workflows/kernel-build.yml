@@ -25,19 +25,22 @@ on:
           - "5.15"
         default: "5.15"
       sub_level:
-        description: 'Sub Level Version (locked)'
+        description: 'Sub Level Version'
         required: true
         type: choice
         options:
+          - "211"
           - "180"
-        default: "180"
+        default: "211"
       os_patch_level:
-        description: 'OS Patch Level (locked)'
+        description: 'OS Patch Level (auto matches the kernel target)'
         required: true
         type: choice
         options:
+          - "auto"
+          - "2026-09"
           - "2025-05"
-        default: "2025-05"
+        default: "auto"
       kernelsu_version:
         description: 'SukiSU Version'
         required: true
@@ -102,7 +105,23 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Validate locked target and patches
+      - name: Resolve target OS patch level
+        env:
+          INPUT_SUBLEVEL: ${{ github.event.inputs.sub_level }}
+          INPUT_OS_PATCH: ${{ github.event.inputs.os_patch_level }}
+        run: |
+          python3 - <<'PY'
+          import os, sys
+          sys.path.insert(0, ".github/workflows/scripts")
+          from config import BuildConfig
+          patch = os.environ["INPUT_OS_PATCH"]
+          config = BuildConfig(sub_level=os.environ["INPUT_SUBLEVEL"],
+                               os_patch_level=None if patch == "auto" else patch)
+          with open(os.environ["GITHUB_ENV"], "a") as env:
+              env.write(f"RESOLVED_OS_PATCH={config.os_patch_level}\n")
+          PY
+
+      - name: Validate target and patches
         run: |
           set -euo pipefail
           cd ./.github/workflows/scripts
@@ -113,7 +132,7 @@ jobs:
             --android "${{ github.event.inputs.android_version }}" \
             --kernel "${{ github.event.inputs.kernel_version }}" \
             --sub-level "${{ github.event.inputs.sub_level }}" \
-            --os-patch "${{ github.event.inputs.os_patch_level }}" \
+            --os-patch "${{ env.RESOLVED_OS_PATCH }}" \
             --ksu-version "${{ github.event.inputs.kernelsu_version }}" \
             "${extra[@]}" \
             --dry-run
@@ -142,9 +161,9 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ~/.ccache
-          key: ccache-${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}.${{ github.event.inputs.sub_level }}-${{ github.event.inputs.os_patch_level }}-${{ hashFiles('patches/**') }}
+          key: ccache-${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}.${{ github.event.inputs.sub_level }}-${{ env.RESOLVED_OS_PATCH }}-${{ hashFiles('patches/**') }}
           restore-keys: |
-            ccache-${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}.${{ github.event.inputs.sub_level }}-${{ github.event.inputs.os_patch_level }}-
+            ccache-${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}.${{ github.event.inputs.sub_level }}-${{ env.RESOLVED_OS_PATCH }}-
 
       - name: Build kernel
         run: |
@@ -171,7 +190,7 @@ jobs:
             --android "${{ github.event.inputs.android_version }}" \
             --kernel "${{ github.event.inputs.kernel_version }}" \
             --sub-level "${{ github.event.inputs.sub_level }}" \
-            --os-patch "${{ github.event.inputs.os_patch_level }}" \
+            --os-patch "${{ env.RESOLVED_OS_PATCH }}" \
             --ksu-version "${{ github.event.inputs.kernelsu_version }}" \
             --workspace "${GKI_WORKSPACE}" \
             "${extra[@]}"
@@ -185,7 +204,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ~/.ccache
-          key: ccache-${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}.${{ github.event.inputs.sub_level }}-${{ github.event.inputs.os_patch_level }}-${{ hashFiles('patches/**') }}
+          key: ccache-${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}.${{ github.event.inputs.sub_level }}-${{ env.RESOLVED_OS_PATCH }}-${{ hashFiles('patches/**') }}
 
       - name: Prepare artifacts
         run: |
@@ -238,7 +257,7 @@ jobs:
           if [ -f "$STEM_FILE" ]; then
             TAG="$(tr -d '[:space:]' < "$STEM_FILE")"
           else
-            TAG="${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}.${{ github.event.inputs.sub_level }}-${{ github.event.inputs.os_patch_level }}"
+            TAG="${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}.${{ github.event.inputs.sub_level }}-${{ env.RESOLVED_OS_PATCH }}"
           fi
           NOTES_FILE="${GKI_WORKSPACE}/BUILD_INFO.md"
           if [ ! -f "$NOTES_FILE" ]; then
@@ -266,7 +285,7 @@ jobs:
             "${{ github.event.inputs.android_version }}" \
             "${{ github.event.inputs.kernel_version }}" \
             "${{ github.event.inputs.sub_level }}" \
-            "${{ github.event.inputs.os_patch_level }}" \
+            "${{ env.RESOLVED_OS_PATCH }}" \
             "${{ github.event.inputs.kernelsu_version }}" \
             "${{ github.event.inputs.use_zram }}" \
             "${{ github.event.inputs.set_defbbr }}" \

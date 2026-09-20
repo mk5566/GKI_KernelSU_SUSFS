@@ -17,13 +17,14 @@ class KSUVersion(Enum):
     DEV = "Dev(development)"
 
 
-# Single canonical lock for this slim tree. Workflow choices and BuildConfig
-# both enforce these values.
+# Supported kernel / OS-patch pairs; the newest target is the default.
+SUPPORTED_TARGETS = {"180": "2025-05", "211": "2026-09"}
+KERNEL_REVISIONS = {"211": "dc9467e8f9bfdec0d012f9345ac5f12f63dc7eba"}
 LOCKED_TARGET = {
     "android": AndroidVersion.ANDROID13.value,
     "kernel": KernelVersion.KERNEL_5_15.value,
-    "sub_level": "180",
-    "os_patch_level": "2025-05",
+    "sub_level": "211",
+    "os_patch_level": "2026-09",
 }
 
 ANDROID_KERNEL_MAP = {
@@ -35,6 +36,9 @@ KSU_REPO_CONFIG = {
     "branch": "main",
 }
 
+# A matched SUSFS-capable pair; the main/v4.2.0 KSU tree has no SUSFS Kconfig.
+SUKISU_SUSFS_REVISION = "b20dee702035af09cb2ecb5f35443bbc1747f3e6"
+SUSFS_REVISION = "e565931d19256fd821ada01b35263506e7c7a364"
 SUSFS_REPO_CONFIG = {"repo_url": "https://github.com/ShirkNeko/susfs4ksu.git"}
 
 SUKISU_PATCH_REPO_CONFIG = {"repo_url": "https://github.com/ShirkNeko/SukiSU_patch.git"}
@@ -82,7 +86,7 @@ class BuildConfig:
     android_version: str = LOCKED_TARGET["android"]
     kernel_version: str = LOCKED_TARGET["kernel"]
     sub_level: str = LOCKED_TARGET["sub_level"]
-    os_patch_level: str = LOCKED_TARGET["os_patch_level"]
+    os_patch_level: Optional[str] = None
     kernelsu_version: str = KSUVersion.STABLE.value
     kernelsu_commit: Optional[str] = None
     susfs_commit: Optional[str] = None
@@ -93,9 +97,11 @@ class BuildConfig:
     build_id: Optional[str] = None
 
     def __post_init__(self):
+        if self.os_patch_level is None:
+            self.os_patch_level = SUPPORTED_TARGETS.get(self.sub_level)
         self._normalize_ksu_version()
         self.kernelsu_commit = validate_git_ref(self.kernelsu_commit or "", "kernelsu_commit") or None
-        self.susfs_commit = validate_git_ref(self.susfs_commit or "", "susfs_commit") or None
+        self.susfs_commit = validate_git_ref(self.susfs_commit or SUSFS_REVISION, "susfs_commit")
         self.custom_version = sanitize_custom_version(self.custom_version)
         self._validate_android_version()
         self._validate_kernel_version()
@@ -126,21 +132,16 @@ class BuildConfig:
             raise ValueError(f"Android {self.android_version} does not support Kernel {self.kernel_version}")
 
     def _validate_locked_target(self):
-        expected = (
-            f"{LOCKED_TARGET['android']}-{LOCKED_TARGET['kernel']}."
-            f"{LOCKED_TARGET['sub_level']} (OS patch {LOCKED_TARGET['os_patch_level']})"
-        )
-        if (
-            self.android_version != LOCKED_TARGET["android"]
-            or self.kernel_version != LOCKED_TARGET["kernel"]
-            or self.sub_level != LOCKED_TARGET["sub_level"]
-            or self.os_patch_level != LOCKED_TARGET["os_patch_level"]
-        ):
+        expected_patch = SUPPORTED_TARGETS.get(self.sub_level)
+        if expected_patch is None or self.os_patch_level != expected_patch:
             raise ValueError(
-                f"This tree is locked to {expected}; got "
-                f"{self.android_version}-{self.kernel_version}.{self.sub_level} "
-                f"(OS patch {self.os_patch_level})"
+                f"Unsupported target {self.sub_level} / {self.os_patch_level}; "
+                f"supported sublevel / OS-patch pairs: {SUPPORTED_TARGETS}"
             )
+
+    @property
+    def kernel_revision(self) -> Optional[str]:
+        return KERNEL_REVISIONS.get(self.sub_level)
 
     def _set_build_id(self):
         if self.build_id is None:
@@ -167,8 +168,8 @@ class BuildConfig:
             return self.kernelsu_commit
         if self.kernelsu_version == KSUVersion.DEV.value:
             return "builtin"
-        # Stable: setup.sh with no args checks out the latest tagged release.
-        return None
+        # Stable: pinned SUSFS-capable builtin revision.
+        return SUKISU_SUSFS_REVISION
 
     @property
     def variant_suffix(self) -> str:

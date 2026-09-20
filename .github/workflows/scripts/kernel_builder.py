@@ -48,20 +48,20 @@ class KernelBuilder:
     KERNEL_CONFIG_UPDATES = {
         "CONFIG_KSU": "y",
         "CONFIG_KSU_DEBUG": "n",
+        # Device audit: no path/stat/map/spoof rules; retain mount hiding only.
         "CONFIG_KSU_SUSFS": "y",
-        "CONFIG_KSU_SUSFS_SUS_PATH": "y",
+        "CONFIG_KSU_SUSFS_SUS_PATH": "n",
         "CONFIG_KSU_SUSFS_SUS_MOUNT": "y",
-        "CONFIG_KSU_SUSFS_SUS_KSTAT": "y",
-        "CONFIG_KSU_SUSFS_SUS_MAP": "y",
-        "CONFIG_KSU_SUSFS_SPOOF_UNAME": "y",
+        "CONFIG_KSU_SUSFS_SUS_KSTAT": "n",
+        "CONFIG_KSU_SUSFS_SUS_MAP": "n",
+        "CONFIG_KSU_SUSFS_SPOOF_UNAME": "n",
         "CONFIG_KSU_SUSFS_ENABLE_LOG": "n",
-        "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS": "y",
-        "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG": "y",
-        "CONFIG_KSU_SUSFS_OPEN_REDIRECT": "y",
-        # TRY_UMOUNT is a separate hiding path from SUS_SU. SUSFS Kconfig
-        # defaults it to y and gates susfs_try_umount_all() on the symbol.
-        "CONFIG_KSU_SUSFS_TRY_UMOUNT": "y",
-        "CONFIG_KSU_SUSFS_SUS_SU": "y",
+        "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS": "n",
+        "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG": "n",
+        "CONFIG_KSU_SUSFS_OPEN_REDIRECT": "n",
+        # Legacy options are explicitly off; SUSFS 2.3 uses KernelSU umount.
+        "CONFIG_KSU_SUSFS_TRY_UMOUNT": "n",
+        "CONFIG_KSU_SUSFS_SUS_SU": "n",
         "CONFIG_KPM": "n",
         "CONFIG_TMPFS_XATTR": "y",
         "CONFIG_TMPFS_POSIX_ACL": "y",
@@ -209,7 +209,7 @@ class KernelBuilder:
     def _apply_patch_file(self, patch_path: Path, required: bool = False,
                           allow_fuzz: bool = False) -> bool:
         def _run_patch(fuzz: int = 0, dry: bool = False) -> subprocess.CompletedProcess:
-            fuzz_arg = f"-F {fuzz} " if fuzz else ""
+            fuzz_arg = f"-F {fuzz} "
             dry_arg = "--dry-run " if dry else ""
             return self._run_cmd(
                 f"patch -p1 --forward --no-backup-if-mismatch -l {dry_arg}{fuzz_arg}< '{patch_path}'",
@@ -413,6 +413,16 @@ class KernelBuilder:
                 manifest_path.write_text(content, encoding="utf-8")
                 logger.info(f"Rewrote manifest revision to deprecated/{formatted_branch}")
 
+        # Pin the selected source even as the monthly branch moves.
+        if self.config.kernel_revision:
+            local_manifests = self.work_dir / ".repo/local_manifests"
+            local_manifests.mkdir(parents=True, exist_ok=True)
+            (local_manifests / "kernel-revision.xml").write_text(
+                '<manifest><extend-project name="kernel/common" path="common" '
+                f'revision="{self.config.kernel_revision}" /></manifest>\n',
+                encoding="utf-8",
+            )
+
         self.env["REMOTE_BRANCH"] = remote
         logger.info("Syncing kernel sources...")
         self._run_cmd("$REPO sync -c -j$(nproc --all) --no-tags --fail-fast --no-clone-bundle", check=True)
@@ -484,10 +494,17 @@ class KernelBuilder:
             self._run_cmd(f"cp -r {src}/* {dst}", check=True)
         patch_file = common_dir / self.config.get_susfs_patch_filename()
         self._chdir(common_dir)
+        if self.config.sub_level == "211":
+            context_patch = (Path(__file__).resolve().parents[3] / "patches" /
+                             "susfs/5.15.211-context.patch")
+            self._apply_patch_file(context_patch, required=True, allow_fuzz=False)
         self._apply_patch_file(patch_file, required=True)
         self._chdir(self.work_dir)
 
     def apply_sukisu_patches(self):
+        if self.KERNEL_CONFIG_UPDATES["CONFIG_KSU_SUSFS_SUS_MAP"] != "y":
+            logger.info("Map hiding disabled; skipping optional hide helpers")
+            return
         logger.info("=== Applying SukiSU hide patches ===")
         self._chdir(self.work_dir / "common")
         task_mmu = Path("fs/proc/task_mmu.c")
@@ -673,7 +690,7 @@ class KernelBuilder:
         if not patch_dir.is_dir():
             raise RuntimeError(
                 f"Required vendor patch directory missing: {patch_dir}. "
-                "This slim tree only builds android13-5.15.180."
+                "Select a supported android13-5.15 target."
             )
 
         logger.info(f"Loading vendor patches from: {patch_dir}")
@@ -714,7 +731,16 @@ class KernelBuilder:
         self._chdir(self.work_dir)
         self._require_path(self._defconfig_path(), "gki_defconfig")
 
+        kconfig = self.work_dir / "KernelSU/kernel/Kconfig"
+        declared = set(re.findall(r"^config\s+(\w+)", kconfig.read_text(encoding="utf-8"), re.M))
+        for key, value in self.KERNEL_CONFIG_UPDATES.items():
+            if key.startswith("CONFIG_KSU_SUSFS") and value == "y" and key[7:] not in declared:
+                raise RuntimeError(f"Selected SukiSU source does not support {key}")
         updates = dict(self.KERNEL_CONFIG_UPDATES)
+        # New upstream SUSFS options default off unless explicitly audited here.
+        for symbol in declared:
+            if symbol.startswith("KSU_SUSFS_"):
+                updates.setdefault(f"CONFIG_{symbol}", "n")
         if self.config.set_default_bbr:
             updates.update(self.BBR3_CONFIG_UPDATES)
         else:
@@ -921,11 +947,24 @@ class KernelBuilder:
             if not image_path.exists():
                 logger.error(f"Compile reported success but Image is missing: {image_path}")
                 return False
+            final_config = (self.work_dir / "out" /
+                            f"{self.config.android_version}-{self.config.kernel_version}" /
+                            "common/.config")
+            self._verify_susfs_config(final_config)
             logger.info(f"=== Kernel compile succeeded: {image_path} ===")
             return True
         except Exception as e:
             logger.error(f"Compile error: {e}")
             return False
+
+    def _verify_susfs_config(self, config_path: Path):
+        self._require_path(config_path, "compiled kernel .config")
+        enabled = set(re.findall(r"^(CONFIG_KSU_SUSFS\w*)=y$",
+                                 config_path.read_text(encoding="utf-8"), re.M))
+        expected = {key for key, value in self.KERNEL_CONFIG_UPDATES.items()
+                    if key.startswith("CONFIG_KSU_SUSFS") and value == "y"}
+        if enabled != expected:
+            raise RuntimeError(f"SUSFS profile mismatch: expected {sorted(expected)}, got {sorted(enabled)}")
 
     def prepare_boot_images(self) -> list:
         logger.info("=== Preparing boot image ===")
@@ -996,6 +1035,7 @@ class KernelBuilder:
             f"- Message: {message or ('Build succeeded' if success else 'Build failed')}",
             f"- Android / kernel: {self.config.android_version}-{self.config.kernel_version}.{self.config.sub_level}",
             f"- OS patch: {self.config.os_patch_level}",
+            f"- Kernel source: `{self._git_head(self.work_dir / 'common')}`",
             f"- Makefile version: {self._read_kernel_version()}",
             f"- SukiSU version: {self.config.kernelsu_version}",
             f"- SukiSU setup ref: {self.config.ksu_setup_ref or 'latest-tag'}",
@@ -1006,6 +1046,7 @@ class KernelBuilder:
             f"- AnyKernel3: `{self._git_head(self.anykernel_dir)}`",
             f"- ZRAM (LZ4KD): {'enabled' if self.config.use_zram else 'disabled'}",
             f"- BBRv3 default: {'enabled' if self.config.set_default_bbr else 'not default'}",
+            "- SUSFS profile: mount-only (core + SUS_MOUNT)",
             f"- CONFIG_KSU_SUSFS_TRY_UMOUNT: {self.KERNEL_CONFIG_UPDATES.get('CONFIG_KSU_SUSFS_TRY_UMOUNT')}",
             f"- CONFIG_KSU_SUSFS_SUS_SU: {self.KERNEL_CONFIG_UPDATES.get('CONFIG_KSU_SUSFS_SUS_SU')}",
         ]
