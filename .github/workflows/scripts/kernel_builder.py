@@ -479,6 +479,40 @@ class KernelBuilder:
                                               fix + "static const struct ksu_feature_handler kernel_umount_handler")
                     umount_path.write_text(content, encoding="utf-8")
 
+        # Fix missing ksu_handle_post_execveat_sucompat in SukiSU-Ultra for SUSFS v2.3+
+        for sucompat_path in [
+            self.work_dir / "common/drivers/kernelsu/feature/sucompat.c",
+            self.work_dir / "KernelSU/kernel/feature/sucompat.c",
+        ]:
+            if sucompat_path.exists():
+                content = sucompat_path.read_text(encoding="utf-8")
+                if "ksu_handle_post_execveat_sucompat" not in content:
+                    logger.info("Applying ksu_handle_post_execveat_sucompat compatibility stub...")
+                    stub = (
+                        "\n// SUSFS v2.3+ compatibility stub for SukiSU-Ultra\n"
+                        "int ksu_handle_post_execveat_sucompat(int *fd, struct filename **filename_ptr,\n"
+                        "                                     void *argv, void *envp,\n"
+                        "                                     int *flags, int *retval)\n"
+                        "{\n"
+                        "    return 0;\n"
+                        "}\n"
+                    )
+                    sucompat_path.write_text(content + stub, encoding="utf-8")
+
+        for sucompat_h_path in [
+            self.work_dir / "common/drivers/kernelsu/feature/sucompat.h",
+            self.work_dir / "KernelSU/kernel/feature/sucompat.h",
+        ]:
+            if sucompat_h_path.exists():
+                content = sucompat_h_path.read_text(encoding="utf-8")
+                if "ksu_handle_post_execveat_sucompat" not in content:
+                    decl = (
+                        "\nint ksu_handle_post_execveat_sucompat(int *fd, struct filename **filename_ptr,\n"
+                        "                                     void *argv, void *envp,\n"
+                        "                                     int *flags, int *retval);\n"
+                    )
+                    sucompat_h_path.write_text(content + decl, encoding="utf-8")
+
     def apply_susfs_patches(self):
         logger.info("=== Applying SUSFS patches ===")
         self._chdir(self.work_dir)
