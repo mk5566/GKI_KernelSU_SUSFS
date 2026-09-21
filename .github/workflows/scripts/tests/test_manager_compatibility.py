@@ -45,6 +45,39 @@ class ManagerCompatibilityTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "SukiSU checkout mismatch"):
                 self.builder.add_kernelsu()
 
+    def test_old_or_unknown_uapi_is_rejected_before_patching(self):
+        requested = self.builder.config.ksu_setup_ref
+        for uapi in (None, 2, 3, 5):
+            with self.subTest(uapi=uapi), \
+                 patch.object(self.builder, "_run_cmd"), \
+                 patch.object(self.builder, "_chdir"), \
+                 patch.object(self.builder, "_require_path"), \
+                 patch.object(self.builder, "_read_ksu_uapi_version", return_value=uapi), \
+                 patch.object(self.builder, "_apply_patch_file") as apply_patch, \
+                 patch("kernel_builder.subprocess.run", return_value=
+                       subprocess.CompletedProcess([], 0, stdout=requested + "\n")):
+                with self.assertRaisesRegex(RuntimeError, "requires SukiSU UAPI 4"):
+                    self.builder.add_kernelsu()
+                apply_patch.assert_not_called()
+
+    def test_compiled_config_requires_builtin_and_hooks(self):
+        symbols = ("CONFIG_KSU", "CONFIG_KPROBES", "CONFIG_KRETPROBES",
+                   "CONFIG_HAVE_SYSCALL_TRACEPOINTS", "CONFIG_KSU_SUSFS",
+                   "CONFIG_KSU_SUSFS_SUS_MOUNT")
+        config_file = self.builder.work_dir / ".config"
+        valid = "".join(f"{symbol}=y\n" for symbol in symbols)
+        config_file.write_text(valid, encoding="utf-8")
+        self.builder._verify_susfs_config(config_file)
+        for symbol in symbols:
+            with self.subTest(symbol=symbol):
+                config_file.write_text(valid.replace(f"{symbol}=y", f"{symbol}=m"),
+                                       encoding="utf-8")
+                with self.assertRaises(RuntimeError):
+                    self.builder._verify_susfs_config(config_file)
+        config_file.write_text(valid + "CONFIG_KSU_SUSFS_SUS_PATH=y\n", encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, "SUSFS profile mismatch"):
+            self.builder._verify_susfs_config(config_file)
+
 
 if __name__ == "__main__":
     unittest.main()
