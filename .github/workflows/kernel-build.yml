@@ -42,7 +42,7 @@ on:
           - "2025-05"
         default: "auto"
       kernelsu_version:
-        description: 'SukiSU Version'
+        description: 'SukiSU UAPI 4 + SUSFS (Stable: pinned main; Dev: latest main)'
         required: true
         type: choice
         options:
@@ -136,6 +136,9 @@ jobs:
             --ksu-version "${{ github.event.inputs.kernelsu_version }}" \
             "${extra[@]}" \
             --dry-run
+
+      - name: Test source selection and manager compatibility
+        run: python3 -m unittest discover -s .github/workflows/scripts/tests -v
 
       - name: Install dependencies
         run: |

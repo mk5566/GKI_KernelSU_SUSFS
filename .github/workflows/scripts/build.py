@@ -94,6 +94,11 @@ def _validate_vendor_patches(config: BuildConfig) -> list:
     repo_root = Path(__file__).resolve().parent.parent.parent.parent
     patch_dir = repo_root / "patches" / f"{config.kernel_version}.{config.sub_level}"
     missing = []
+    for name in ("0001-sukisu-main-uapi4-mount-support.patch",
+                 "0002-common-susfs-reboot-dispatch.patch"):
+        integration_patch = repo_root / "patches/susfs" / name
+        if not integration_patch.is_file():
+            missing.append(str(integration_patch))
     if config.sub_level == "211":
         context_patch = repo_root / "patches/susfs/5.15.211-context.patch"
         if not context_patch.is_file():

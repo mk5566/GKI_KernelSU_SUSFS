@@ -36,8 +36,9 @@ KSU_REPO_CONFIG = {
     "branch": "main",
 }
 
-# A matched SUSFS-capable pair; the main/v4.2.0 KSU tree has no SUSFS Kconfig.
-SUKISU_SUSFS_REVISION = "b20dee702035af09cb2ecb5f35443bbc1747f3e6"
+# Current upstream main, with the local mount-only SUSFS integration patch.
+SUKISU_MAIN_REVISION = "cf87e3f4ddd3f6e5464d85acf56aaa6950e70841"
+SUKISU_UAPI_VERSION = 4
 SUSFS_REVISION = "e565931d19256fd821ada01b35263506e7c7a364"
 SUSFS_REPO_CONFIG = {"repo_url": "https://github.com/ShirkNeko/susfs4ksu.git"}
 
@@ -167,9 +168,9 @@ class BuildConfig:
         if self.kernelsu_commit:
             return self.kernelsu_commit
         if self.kernelsu_version == KSUVersion.DEV.value:
-            return "builtin"
-        # Stable: pinned SUSFS-capable builtin revision.
-        return SUKISU_SUSFS_REVISION
+            return "main"
+        # Stable: reproducible main revision; SUSFS is added by this builder.
+        return SUKISU_MAIN_REVISION
 
     @property
     def variant_suffix(self) -> str:

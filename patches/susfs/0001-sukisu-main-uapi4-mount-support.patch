@@ -1,0 +1,258 @@
+diff --git a/kernel/Kbuild b/kernel/Kbuild
+index 71d8e3a6..546baf9f 100644
+--- a/kernel/Kbuild
++++ b/kernel/Kbuild
+@@ -1,6 +1,7 @@
+ kernelsu-objs := core/init.o
+ 
+ kernelsu-objs += feature/kernel_umount.o
++kernelsu-$(CONFIG_KSU_SUSFS) += feature/susfs.o
+ kernelsu-objs += feature/sulog.o
+ kernelsu-objs += feature/sucompat.o
+ 
+diff --git a/kernel/Kconfig b/kernel/Kconfig
+index e84cffc8..ebf4cac8 100644
+--- a/kernel/Kconfig
++++ b/kernel/Kconfig
+@@ -18,6 +18,21 @@ config KSU_DEBUG
+ 	help
+ 	  Enable KernelSU debug mode.
+ 
++config KSU_SUSFS
++	bool "SUSFS mount-only integration"
++	depends on KSU=y && ARM64
++	default n
++	help
++	  Integrate SUSFS 2.3 filesystem support with the current SukiSU hooks.
++	  Requires the matching filesystem patches. Built-in kernels only.
++
++config KSU_SUSFS_SUS_MOUNT
++	bool "SUSFS mount hiding"
++	depends on KSU_SUSFS
++	default y
++	help
++	  Track KernelSU mounts and apply the app profile's unmount policy.
++
+ config KSU_MANUAL_SU
+     bool "Use manual su"
+     depends on KSU
+diff --git a/kernel/core/init.c b/kernel/core/init.c
+index 765370a7..f17fe4df 100644
+--- a/kernel/core/init.c
++++ b/kernel/core/init.c
+@@ -6,6 +6,9 @@
+ #include <linux/sched.h>
+ #include <linux/workqueue.h>
+ #include <linux/moduleparam.h>
++#ifdef CONFIG_KSU_SUSFS
++#include <linux/susfs.h>
++#endif
+ 
+ #include "policy/allowlist.h"
+ #include "policy/app_profile.h"
+@@ -140,6 +143,10 @@ int __init kernelsu_init(void)
+ 
+     ksu_init_symbol_resolver();
+ 
++#ifdef CONFIG_KSU_SUSFS
++    susfs_init();
++#endif
++
+     if (spoof_release || spoof_version) {
+         ksu_spoof_version(spoof_release, spoof_version);
+     }
+diff --git a/kernel/feature/susfs.c b/kernel/feature/susfs.c
+new file mode 100644
+index 00000000..fcf4f3ca
+--- /dev/null
++++ b/kernel/feature/susfs.c
+@@ -0,0 +1,68 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#include <linux/cred.h>
++#include <linux/errno.h>
++#include <linux/sched.h>
++#include <linux/susfs.h>
++
++#include "feature/susfs.h"
++#include "manager/manager_identity.h"
++#include "policy/allowlist.h"
++
++extern bool susfs_is_current_zygote_domain(void);
++
++void ksu_susfs_clear_task(void)
++{
++    susfs_clear_current_proc_umounted();
++    susfs_clear_current_proc_no_su();
++    susfs_clear_current_proc_umounted_for_zygote_next();
++}
++
++/* Called after upstream's unmount handling, while the zygote SELinux
++ * context is still active. Never unmount the shared zygote_next namespace.
++ */
++void ksu_susfs_setuid(uid_t new_uid)
++{
++    if (!susfs_is_current_zygote_domain())
++        return;
++
++    ksu_susfs_clear_task();
++    if (is_uid_manager(new_uid))
++        return;
++
++    if (!ksu_is_allow_uid_for_current(new_uid))
++        susfs_set_current_proc_no_su();
++
++    if (is_isolated_process(new_uid) ||
++        ((is_appuid(new_uid) || new_uid == WEBVIEW_ZYGOTE_UID) &&
++         ksu_uid_should_umount(new_uid)))
++        susfs_set_current_proc_umounted();
++}
++
++/* The SUSFS userspace protocol is separate from KernelSU's driver UAPI.
++ * This runs in the reboot syscall's process context, not a kprobe callback:
++ * SUSFS handlers allocate memory, copy userspace buffers, and may sleep.
++ */
++int ksu_susfs_reboot(unsigned int cmd, void __user *arg)
++{
++    if (!uid_eq(current_uid(), GLOBAL_ROOT_UID))
++        return -EPERM;
++
++    switch (cmd) {
++    case CMD_SUSFS_SHOW_VERSION:
++        susfs_show_version(&arg);
++        return 0;
++    case CMD_SUSFS_SHOW_ENABLED_FEATURES:
++        susfs_get_enabled_features(&arg);
++        return 0;
++    case CMD_SUSFS_SHOW_VARIANT:
++        susfs_show_variant(&arg);
++        return 0;
++#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
++    case CMD_SUSFS_HIDE_SUS_MNTS_FOR_NON_SU_PROCS:
++        susfs_set_hide_sus_mnts_for_non_su_procs(&arg);
++        return 0;
++#endif
++    default:
++        return -EOPNOTSUPP;
++    }
++}
+diff --git a/kernel/feature/susfs.h b/kernel/feature/susfs.h
+new file mode 100644
+index 00000000..96cef93b
+--- /dev/null
++++ b/kernel/feature/susfs.h
+@@ -0,0 +1,15 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef KSU_FEATURE_SUSFS_H
++#define KSU_FEATURE_SUSFS_H
++
++#include <linux/types.h>
++
++#ifdef CONFIG_KSU_SUSFS
++void ksu_susfs_setuid(uid_t new_uid);
++void ksu_susfs_clear_task(void);
++#else
++static inline void ksu_susfs_setuid(uid_t new_uid) {}
++static inline void ksu_susfs_clear_task(void) {}
++#endif
++
++#endif
+diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
+index d3f3ac49..70a1d5a9 100644
+--- a/kernel/hook/setuid_hook.c
++++ b/kernel/hook/setuid_hook.c
+@@ -20,6 +20,7 @@
+ #include "supercall/supercall.h"
+ #include "hook/tp_marker.h"
+ #include "feature/kernel_umount.h"
++#include "feature/susfs.h"
+ 
+ int ksu_handle_setresuid(uid_t old_uid, uid_t new_uid)
+ {
+@@ -28,6 +29,7 @@ int ksu_handle_setresuid(uid_t old_uid, uid_t new_uid)
+     pr_info("handle_setresuid from %d to %d\n", old_uid, new_uid);
+ 
+     if (unlikely(is_uid_manager(new_uid))) {
++        ksu_susfs_clear_task();
+         spin_lock_irq(&current->sighand->siglock);
+         ksu_seccomp_allow_cache(current->seccomp.filter, __NR_reboot);
+         ksu_set_task_tracepoint_flag(current);
+@@ -51,6 +53,7 @@ int ksu_handle_setresuid(uid_t old_uid, uid_t new_uid)
+ 
+     // Handle kernel umount
+     ksu_handle_umount(old_uid, new_uid);
++    ksu_susfs_setuid(new_uid);
+ 
+     return 0;
+ }
+diff --git a/kernel/policy/app_profile.c b/kernel/policy/app_profile.c
+index 01f13a2f..ce6140c1 100644
+--- a/kernel/policy/app_profile.c
++++ b/kernel/policy/app_profile.c
+@@ -20,6 +20,7 @@
+ #include "selinux/selinux.h"
+ #include "infra/su_mount_ns.h"
+ #include "hook/tp_marker.h"
++#include "feature/susfs.h"
+ 
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 7, 0)
+ static struct group_info root_groups = { .usage = REFCOUNT_INIT(2) };
+@@ -206,6 +207,7 @@ int escape_with_root_profile(void)
+ 
+     commit_creds(cred);
+ 
++    ksu_susfs_clear_task();
+     disable_seccomp();
+ 
+     if (profile->flags & FLAG_KSU_NO_NEW_PRIVS) {
+diff --git a/kernel/runtime/boot_event.c b/kernel/runtime/boot_event.c
+index 7fcb1d9d..75c841c8 100644
+--- a/kernel/runtime/boot_event.c
++++ b/kernel/runtime/boot_event.c
+@@ -3,6 +3,9 @@
+ #include <linux/fs.h>
+ #include <linux/namei.h>
+ #include <linux/printk.h>
++#ifdef CONFIG_KSU_SUSFS
++#include <linux/susfs.h>
++#endif
+ 
+ #include "policy/allowlist.h"
+ #include "klog.h" // IWYU pragma: keep
+@@ -31,6 +34,9 @@ void on_post_fs_data(void)
+     // Sanity check for safe mode only needs early-boot input samples.
+     ksu_stop_input_hook_runtime();
+     ksu_selinux_hide_handle_post_fs_data();
++#ifdef CONFIG_KSU_SUSFS
++    susfs_start_sdcard_monitor_fn();
++#endif
+ }
+ 
+ extern void ext4_unregister_sysfs(struct super_block *sb);
+diff --git a/kernel/selinux/selinux.c b/kernel/selinux/selinux.c
+index 7bc6d6d0..248bcf5d 100644
+--- a/kernel/selinux/selinux.c
++++ b/kernel/selinux/selinux.c
+@@ -195,6 +195,23 @@ bool is_ksu_domain(void)
+     return is_task_ksu_domain(current_cred());
+ }
+ 
++#ifdef CONFIG_KSU_SUSFS
++/* Called in filesystem allocation paths; never take the string-lookup
++ * fallback while a mount spinlock might be held. SID caching happens
++ * before ksud starts mounting modules.
++ */
++bool susfs_is_current_ksu_domain(void)
++{
++    return cached_su_sid && is_task_ksu_domain(current_cred());
++}
++
++bool susfs_is_current_zygote_domain(void)
++{
++    return is_zygote(current_cred()) ||
++           is_sid_match(current_cred(), 0, "u:r:zygote_next:s0");
++}
++#endif
++
+ bool is_zygote(const struct cred *cred)
+ {
+     return is_sid_match(cred, cached_zygote_sid, ZYGOTE_CONTEXT);

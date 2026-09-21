@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass, field
 from config import (BuildConfig, KSU_REPO_CONFIG, SUSFS_REPO_CONFIG, SUKISU_PATCH_REPO_CONFIG,
-                   ANYKERNEL_CONFIG, TOOLCHAIN_CONFIG)
+                   ANYKERNEL_CONFIG, TOOLCHAIN_CONFIG, SUKISU_UAPI_VERSION)
+from susfs_integration import select_mount_patch
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,9 @@ class ShellCommand:
 class KernelBuilder:
     KERNEL_CONFIG_UPDATES = {
         "CONFIG_KSU": "y",
+        "CONFIG_KPROBES": "y",
+        "CONFIG_KRETPROBES": "y",
+        "CONFIG_HAVE_SYSCALL_TRACEPOINTS": "y",
         "CONFIG_KSU_DEBUG": "n",
         # Device audit: no path/stat/map/spoof rules; retain mount hiding only.
         "CONFIG_KSU_SUSFS": "y",
@@ -456,28 +460,32 @@ class KernelBuilder:
             self._run_cmd(f"bash '{setup_script}'", check=True)
         self._require_path(self.work_dir / "common/drivers/kernelsu", "KernelSU driver symlink")
         self._require_path(self.work_dir / "KernelSU", "KernelSU checkout")
+        # Upstream setup.sh reports success even when its requested checkout fails.
+        # Verify the actual revision instead of silently building the default branch.
+        ksu_dir = self.work_dir / "KernelSU"
+        requested = subprocess.run(
+            ["git", "-C", str(ksu_dir), "rev-parse", "--verify", f"{setup_ref}^{{commit}}"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        actual = subprocess.run(
+            ["git", "-C", str(ksu_dir), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        if actual != requested:
+            raise RuntimeError(f"SukiSU checkout mismatch: requested {requested}, got {actual}")
+        uapi = self._read_ksu_uapi_version()
+        if uapi != SUKISU_UAPI_VERSION:
+            raise RuntimeError(
+                f"This integration requires SukiSU UAPI {SUKISU_UAPI_VERSION}, got {uapi}. "
+                "Use current main; the old builtin/UAPI-2 branch is incompatible."
+            )
+        logger.info(f"SukiSU kernel UAPI: {uapi}; the manager must use the same UAPI")
 
-        # Fix missing kernel_umount_feature_set in SukiSU-Ultra v4.2.0 if present
-        for umount_path in [
-            self.work_dir / "common/drivers/kernelsu/feature/kernel_umount.c",
-            self.work_dir / "KernelSU/kernel/feature/kernel_umount.c",
-        ]:
-            if umount_path.exists():
-                content = umount_path.read_text(encoding="utf-8")
-                if "kernel_umount_feature_set" in content and "static int kernel_umount_feature_set" not in content:
-                    logger.info("Applying kernel_umount_feature_set compatibility fix...")
-                    fix = (
-                        "static int kernel_umount_feature_set(u64 value)\n"
-                        "{\n"
-                        "    bool enable = value != 0;\n"
-                        "    ksu_kernel_umount_enabled = enable;\n"
-                        "    pr_info(\"kernel_umount: set to %d\\n\", enable);\n"
-                        "    return 0;\n"
-                        "}\n\n"
-                    )
-                    content = content.replace("static const struct ksu_feature_handler kernel_umount_handler",
-                                              fix + "static const struct ksu_feature_handler kernel_umount_handler")
-                    umount_path.write_text(content, encoding="utf-8")
+        self._chdir(ksu_dir)
+        integration_patch = (Path(__file__).resolve().parents[3] / "patches/susfs/"
+                             "0001-sukisu-main-uapi4-mount-support.patch")
+        self._apply_patch_file(integration_patch, required=True, allow_fuzz=False)
+        self._chdir(self.work_dir)
 
     def apply_susfs_patches(self):
         logger.info("=== Applying SUSFS patches ===")
@@ -498,7 +506,13 @@ class KernelBuilder:
             context_patch = (Path(__file__).resolve().parents[3] / "patches" /
                              "susfs/5.15.211-context.patch")
             self._apply_patch_file(context_patch, required=True, allow_fuzz=False)
-        self._apply_patch_file(patch_file, required=True)
+        mount_patch = common_dir / "susfs-mount-only.patch"
+        mount_patch.write_text(select_mount_patch(patch_file.read_text(encoding="utf-8")),
+                               encoding="utf-8")
+        self._apply_patch_file(mount_patch, required=True, allow_fuzz=False)
+        reboot_patch = (Path(__file__).resolve().parents[3] / "patches/susfs/"
+                        "0002-common-susfs-reboot-dispatch.patch")
+        self._apply_patch_file(reboot_patch, required=True, allow_fuzz=False)
         self._chdir(self.work_dir)
 
     def apply_sukisu_patches(self):
@@ -959,8 +973,13 @@ class KernelBuilder:
 
     def _verify_susfs_config(self, config_path: Path):
         self._require_path(config_path, "compiled kernel .config")
+        config_text = config_path.read_text(encoding="utf-8")
+        for symbol in ("CONFIG_KSU", "CONFIG_KPROBES", "CONFIG_KRETPROBES",
+                       "CONFIG_HAVE_SYSCALL_TRACEPOINTS"):
+            if not re.search(rf"^{symbol}=y$", config_text, re.M):
+                raise RuntimeError(f"Built-in SukiSU requires {symbol}=y in the compiled config")
         enabled = set(re.findall(r"^(CONFIG_KSU_SUSFS\w*)=y$",
-                                 config_path.read_text(encoding="utf-8"), re.M))
+                                 config_text, re.M))
         expected = {key for key, value in self.KERNEL_CONFIG_UPDATES.items()
                     if key.startswith("CONFIG_KSU_SUSFS") and value == "y"}
         if enabled != expected:
@@ -1007,6 +1026,20 @@ class KernelBuilder:
             raise RuntimeError(f"AnyKernel3 zip was not created: {zip_path}")
         return [str(zip_path)]
 
+    def _read_ksu_uapi_version(self) -> Optional[int]:
+        # builtin uses DECLARE() in kernel/include; main uses a C constant in uapi/.
+        for relative in ("kernel/include/uapi/supercall.h", "uapi/supercall.h"):
+            header = self.work_dir / "KernelSU" / relative
+            if not header.is_file():
+                continue
+            match = re.search(
+                r"\bKERNEL_SU_UAPI_VERSION\s*(?:,|=)\s*(\d+)\b",
+                header.read_text(encoding="utf-8"),
+            )
+            if match:
+                return int(match.group(1))
+        return None
+
     def _git_head(self, repo: Path) -> str:
         if not repo.exists():
             return "unknown"
@@ -1041,6 +1074,9 @@ class KernelBuilder:
             f"- SukiSU setup ref: {self.config.ksu_setup_ref or 'latest-tag'}",
             f"- Artifact stem: `{self.config.artifact_stem}`",
             f"- SukiSU-Ultra: `{self._git_head(self.work_dir / 'KernelSU')}`",
+            f"- SukiSU kernel UAPI: {self._read_ksu_uapi_version()}",
+            "- Manager compatibility: manager and kernel UAPI must match; the v4.2.0 label alone is insufficient.",
+            "- Integration: current SukiSU main, built-in CONFIG_KSU=y, local SUSFS 2.3 mount-only port",
             f"- SUSFS: `{self._git_head(self.susfs_dir)}`",
             f"- SukiSU_patch: `{self._git_head(self.sukisu_patch_dir)}`",
             f"- AnyKernel3: `{self._git_head(self.anykernel_dir)}`",

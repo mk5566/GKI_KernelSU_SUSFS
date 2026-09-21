@@ -108,12 +108,38 @@ with kernel/common pinned to `dc9467e8f9bfdec0d012f9345ac5f12f63dc7eba`.
 5.15.211 is the kernel version; the KMI family remains **android13-5.15**.
 This does not certify vendor-module ABI compatibility or bootability.
 
-The stable option selects the SUSFS-capable SukiSU builtin revision
-`b20dee702035af09cb2ecb5f35443bbc1747f3e6`, paired with SUSFS 2.3.0 at
-`e565931d19256fd821ada01b35263506e7c7a364`. Current SukiSU main/v4.2.0
-lacks the required SUSFS Kconfig. Dev tracks builtin; incompatible explicit
-source overrides fail validation. The final compiled `.config` must match
-the minimal profile before packaging.
+Stable selects SukiSU main revision
+`cf87e3f4ddd3f6e5464d85acf56aaa6950e70841` (latest checked 2026-09-21),
+paired with SUSFS 2.3.0 at `e565931d19256fd821ada01b35263506e7c7a364`.
+Dev tracks `main`. Both compile SukiSU into the kernel (`CONFIG_KSU=y`)
+and apply this repository's mount-only SUSFS integration. The branch name
+`builtin` is not required to compile SukiSU into a kernel.
+
+### Manager compatibility (checked 2026-09-21)
+
+This build requires **UAPI 4**, matching Manager `40922-4`. It retains
+upstream's scoped su-session driver descriptors and version-matching behavior;
+the UAPI constant is not modified. Old kernels built from `builtin` expose
+UAPI 2 and still need a UAPI-2 manager until the new kernel is flashed.
+
+The build verifies the requested checkout, rejects other UAPI versions,
+applies all integration patches with zero fuzz, and records the actual source
+and UAPI in `BUILD_INFO.md`. Dev may fail when upstream changes require a port
+refresh; use Stable for a reproducible source revision. After flashing, reboot
+and check manager root access, profiles, modules, and `ksud susfs status` /
+`ksud susfs version`. Matching UAPI alone does not verify bootability.
+
+### Integration design
+
+The local SukiSU patch adds SUSFS initialization, the post-fs-data storage
+monitor, SELinux-domain helpers, app-profile mount visibility, and a root-only
+SUSFS command dispatcher. Root escalation clears inherited SUSFS task flags.
+The Linux patch selection includes only the filesystem changes needed for
+mount hiding. It excludes the legacy exec, setuid, input, read, and SELinux
+hooks, preserving current SukiSU's root, safe-mode, and daemon startup hooks.
+SUSFS commands execute in sleepable reboot syscall context; KernelSU's normal
+driver-fd requests retain the upstream path. Unsupported SUSFS commands return
+an error rather than reporting a feature that is disabled.
 
 Only `CONFIG_KSU_SUSFS` and `CONFIG_KSU_SUSFS_SUS_MOUNT` are enabled.
 Path, kstat, map, uname, cmdline/bootconfig, open-redirect, symbol hiding,

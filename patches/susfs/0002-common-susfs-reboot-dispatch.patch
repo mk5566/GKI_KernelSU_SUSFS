@@ -1,0 +1,28 @@
+diff --git a/kernel/reboot.c b/kernel/reboot.c
+--- a/kernel/reboot.c
++++ b/kernel/reboot.c
+@@ -294,6 +294,10 @@
+ 
+ DEFINE_MUTEX(system_transition_mutex);
+ 
++#ifdef CONFIG_KSU_SUSFS
++extern int ksu_susfs_reboot(unsigned int cmd, void __user *arg);
++#endif
++
+ /*
+  * Reboot system call: for obvious reasons only root may call it,
+  * and even root needs to set up some magic numbers in the registers
+@@ -311,6 +315,13 @@
+ 	char buffer[256];
+ 	int ret = 0;
+ 
++#ifdef CONFIG_KSU_SUSFS
++	/* SUSFS commands run in sleepable process context. The normal KSU
++	 * driver-fd request continues through SukiSU's upstream reboot hook. */
++	if ((unsigned int)magic1 == 0xDEADBEEF &&
++	    (unsigned int)magic2 == 0xFAFAFAFA)
++		return ksu_susfs_reboot(cmd, arg);
++#endif
+ 	/* We only trust the superuser with rebooting the system. */
+ 	if (!ns_capable(pid_ns->user_ns, CAP_SYS_BOOT))
+ 		return -EPERM;
