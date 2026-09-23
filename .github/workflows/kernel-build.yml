@@ -95,8 +95,11 @@ jobs:
           ccache --max-size=3G
           ccache --set-config=compression=true
           ccache --set-config=compression_level=1
+          ccache --set-config=hard_link=false
           ccache -z
           echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
+          echo "CCACHE_HARDLINK=false" >> "$GITHUB_ENV"
+          echo "CCACHE_NOHARDLINK=true" >> "$GITHUB_ENV"
 
       - name: Build fixed ishtar kernel
         id: build

@@ -51,24 +51,8 @@ class ShellCommand:
 class KernelBuilder:
     KERNEL_CONFIG_UPDATES = {
         "CONFIG_KSU": "y",
-        "CONFIG_KPROBES": "y",
-        "CONFIG_KRETPROBES": "y",
-        "CONFIG_HAVE_SYSCALL_TRACEPOINTS": "y",
-        "CONFIG_KSU_DEBUG": "n",
-        # Device audit: no path/stat/map/spoof rules; retain mount hiding only.
         "CONFIG_KSU_SUSFS": "y",
-        "CONFIG_KSU_SUSFS_SUS_PATH": "n",
         "CONFIG_KSU_SUSFS_SUS_MOUNT": "y",
-        "CONFIG_KSU_SUSFS_SUS_KSTAT": "n",
-        "CONFIG_KSU_SUSFS_SUS_MAP": "n",
-        "CONFIG_KSU_SUSFS_SPOOF_UNAME": "n",
-        "CONFIG_KSU_SUSFS_ENABLE_LOG": "n",
-        "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS": "n",
-        "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG": "n",
-        "CONFIG_KSU_SUSFS_OPEN_REDIRECT": "n",
-        # Legacy options are explicitly off; SUSFS 2.3 uses KernelSU umount.
-        "CONFIG_KSU_SUSFS_TRY_UMOUNT": "n",
-        "CONFIG_KSU_SUSFS_SUS_SU": "n",
     }
 
     BBR_CONFIG_UPDATES = {
@@ -103,7 +87,8 @@ class KernelBuilder:
             self.env["CCACHE_EXEC"] = ccache
         self.env["CCACHE_COMPILERCHECK"] = "%compiler% -dumpmachine; %compiler% -dumpversion"
         self.env["CCACHE_NOHASHDIR"] = "true"
-        self.env["CCACHE_HARDLINK"] = "true"
+        self.env["CCACHE_HARDLINK"] = "false"
+        self.env["CCACHE_NOHARDLINK"] = "true"
         self.env.setdefault("CCACHE_DIR", os.path.expanduser("~/.ccache"))
         self.env.setdefault("GIT_TERMINAL_PROMPT", "0")
         self.shell.env = self.env
@@ -458,7 +443,7 @@ class KernelBuilder:
         self._chdir(self.work_dir)
 
     def apply_sukisu_patches(self):
-        if self.KERNEL_CONFIG_UPDATES["CONFIG_KSU_SUSFS_SUS_MAP"] != "y":
+        if self.KERNEL_CONFIG_UPDATES.get("CONFIG_KSU_SUSFS_SUS_MAP") != "y":
             logger.info("Map hiding disabled; skipping optional hide helpers")
             return
         logger.info("=== Applying SukiSU hide patches ===")
@@ -586,12 +571,7 @@ class KernelBuilder:
         for key, value in self.KERNEL_CONFIG_UPDATES.items():
             if key.startswith("CONFIG_KSU_SUSFS") and value == "y" and key[7:] not in declared:
                 raise RuntimeError(f"Selected SukiSU source does not support {key}")
-        updates = dict(self.KERNEL_CONFIG_UPDATES)
-        # New upstream SUSFS options default off unless explicitly audited here.
-        for symbol in declared:
-            if symbol.startswith("KSU_SUSFS_"):
-                updates.setdefault(f"CONFIG_{symbol}", "n")
-        self._upsert_defconfig(updates)
+        self._configure_ksu_susfs()
         if self.config.set_default_bbr:
             self._configure_bbr()
 
@@ -599,6 +579,21 @@ class KernelBuilder:
             self._configure_zram()
         self._verify_ishtar_zram_plan(self._defconfig_path())
         verify_no_retired_config(self._defconfig_path())
+
+    def _configure_ksu_susfs(self):
+        config_file = self._defconfig_path()
+        content = config_file.read_text(encoding="utf-8")
+        marker = "CONFIG_INTERCONNECT=y\n"
+        ksu_lines = (
+            "CONFIG_KSU=y\n"
+            "CONFIG_KSU_SUSFS=y\n"
+        )
+        if "CONFIG_KSU=y" not in content:
+            if marker in content:
+                content = content.replace(marker, marker + ksu_lines, 1)
+                config_file.write_text(content, encoding="utf-8")
+            else:
+                self._upsert_defconfig({"CONFIG_KSU": "y", "CONFIG_KSU_SUSFS": "y"})
 
     def _configure_bbr(self):
         config_file = self._defconfig_path()
@@ -951,8 +946,8 @@ class KernelBuilder:
             f"- Final config SHA-256: `{self._sha256(self.work_dir / 'final.config')}`",
             f"- Build log SHA-256: `{self._sha256(self.work_dir / 'build.log')}`",
             "- SUSFS profile: mount-only (core + SUS_MOUNT)",
-            f"- CONFIG_KSU_SUSFS_TRY_UMOUNT: {self.KERNEL_CONFIG_UPDATES.get('CONFIG_KSU_SUSFS_TRY_UMOUNT')}",
-            f"- CONFIG_KSU_SUSFS_SUS_SU: {self.KERNEL_CONFIG_UPDATES.get('CONFIG_KSU_SUSFS_SUS_SU')}",
+            f"- CONFIG_KSU_SUSFS_TRY_UMOUNT: {self.KERNEL_CONFIG_UPDATES.get('CONFIG_KSU_SUSFS_TRY_UMOUNT', 'n')}",
+            f"- CONFIG_KSU_SUSFS_SUS_SU: {self.KERNEL_CONFIG_UPDATES.get('CONFIG_KSU_SUSFS_SUS_SU', 'n')}",
         ]
         if self.config.custom_version:
             lines.append(f"- Custom version: {self.config.custom_version}")

@@ -78,6 +78,30 @@ class ManagerCompatibilityTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "SUSFS profile mismatch"):
             self.builder._verify_susfs_config(config_file)
 
+    def test_configure_ksu_susfs_canonical_placement(self):
+        defconfig = self.builder._defconfig_path()
+        defconfig.parent.mkdir(parents=True, exist_ok=True)
+        defconfig.write_text(
+            "CONFIG_INTERCONNECT=y\n"
+            "CONFIG_EXT4_FS=y\n",
+            encoding="utf-8",
+        )
+        self.builder._configure_ksu_susfs()
+        expected = (
+            "CONFIG_INTERCONNECT=y\n"
+            "CONFIG_KSU=y\n"
+            "CONFIG_KSU_SUSFS=y\n"
+            "CONFIG_EXT4_FS=y\n"
+        )
+        self.assertEqual(defconfig.read_text(encoding="utf-8"), expected)
+        # Calling again must be idempotent and not duplicate
+        self.builder._configure_ksu_susfs()
+        self.assertEqual(defconfig.read_text(encoding="utf-8"), expected)
+
+    def test_ccache_hardlink_is_disabled(self):
+        self.assertEqual(self.builder.env.get("CCACHE_HARDLINK"), "false")
+        self.assertEqual(self.builder.env.get("CCACHE_NOHARDLINK"), "true")
+
 
 if __name__ == "__main__":
     unittest.main()
