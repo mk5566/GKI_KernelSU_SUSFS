@@ -5,12 +5,21 @@ permissions:
 
 on:
   workflow_dispatch:
+    inputs:
+      ksu_version:
+        description: 'SukiSU Version'
+        required: true
+        type: choice
+        default: 'Stable(standard)'
+        options:
+          - 'Stable(standard)'
+          - 'Dev(development)'
 
 env:
   PYTHON_VERSION: '3.10'
   GKI_WORKSPACE: /tmp/gki-build
   DEBIAN_FRONTEND: noninteractive
-  FIXED_KSU_VERSION: 'Stable(standard)'
+  KSU_VERSION: ${{ github.event.inputs.ksu_version || 'Stable(standard)' }}
 
 jobs:
   build:
@@ -57,7 +66,7 @@ jobs:
             --android android13 \
             --kernel 5.15 \
             --target-file "${GKI_TARGET_FILE}" \
-            --ksu-version "${FIXED_KSU_VERSION}" \
+            --ksu-version "${KSU_VERSION}" \
             --no-zram \
             --bbr \
             --optional-patches="" \
@@ -98,7 +107,7 @@ jobs:
             --android android13 \
             --kernel 5.15 \
             --target-file "${GKI_TARGET_FILE}" \
-            --ksu-version "${FIXED_KSU_VERSION}" \
+            --ksu-version "${KSU_VERSION}" \
             --no-zram \
             --bbr \
             --optional-patches="" \

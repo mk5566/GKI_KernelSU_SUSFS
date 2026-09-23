@@ -9,19 +9,20 @@ WORKFLOW = Path(__file__).resolve().parents[2] / "kernel-build.yml"
 
 
 class WorkflowContractTests(unittest.TestCase):
-    def test_kernel_workflow_is_manual_only_and_has_no_inputs(self):
+    def test_kernel_workflow_is_manual_only_and_allows_ksu_selection(self):
         content = WORKFLOW.read_text(encoding="utf-8")
         trigger = re.search(r"(?ms)^on:\n(?P<body>.*?)(?=^[^ \n#][^\n]*:|\Z)", content)
         self.assertIsNotNone(trigger)
         events = re.findall(r"^  ([a-z_]+):", trigger.group("body"), re.M)
         self.assertEqual(events, ["workflow_dispatch"])
-        self.assertNotIn("inputs:", trigger.group("body"))
-        self.assertNotIn("github.event.inputs", content)
+        self.assertIn("ksu_version:", trigger.group("body"))
+        self.assertIn("Stable(standard)", trigger.group("body"))
+        self.assertIn("Dev(development)", trigger.group("body"))
 
     def test_fixed_ishtar_profile_is_used_for_validation_and_build(self):
         content = WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn("FIXED_KSU_VERSION: 'Stable(standard)'", content)
-        self.assertEqual(content.count('--ksu-version "${FIXED_KSU_VERSION}"'), 2)
+        self.assertIn("KSU_VERSION: ${{ github.event.inputs.ksu_version || 'Stable(standard)' }}", content)
+        self.assertEqual(content.count('--ksu-version "${KSU_VERSION}"'), 2)
         self.assertEqual(content.count("--no-zram"), 2)
         self.assertEqual(content.count("--bbr"), 2)
         self.assertEqual(content.count('--optional-patches=""'), 2)
