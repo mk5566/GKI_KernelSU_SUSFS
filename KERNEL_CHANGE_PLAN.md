@@ -23,6 +23,11 @@ All ten saved performance patches passed exact sequential application against
 the selected common SHA with Linux line endings. That establishes source
 context only, not correctness or a measured gain.
 
+They are now individually selectable through the manual workflow's
+`optional_patches` field. All are off by default. Selecting a patch requires
+exact application and records its name and hash in the build information;
+selection does not establish runtime correctness or device compatibility.
+
 | Saved patch | Review result | Default build decision |
 |---|---|---|
 | BBRv3 backport | `bbr3_init()` can return after `kmalloc(GFP_ATOMIC)` fails; later callbacks dereference the unset pointer. It also masks shared TCP layout changes from `__GENKSYMS__`. | Inactive pending a corrected backport, ABI review and failure-path test. |

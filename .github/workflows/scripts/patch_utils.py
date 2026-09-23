@@ -5,28 +5,60 @@ import subprocess
 from typing import List, Tuple
 
 
-def read_patch_order(directory: Path) -> List[Tuple[Path, bool]]:
+def parse_optional_patches(value: str) -> tuple[str, ...]:
+    """Parse workflow aliases without allowing paths or empty CSV entries."""
+    if not value.strip():
+        return ()
+    aliases = tuple(part.strip() for part in value.split(","))
+    if any(not re.fullmatch(r"[a-z][a-z0-9-]*", alias) for alias in aliases):
+        raise ValueError("Optional patches must be comma-separated aliases from APPLY_ORDER.txt")
+    if len(set(aliases)) != len(aliases):
+        raise ValueError("Duplicate optional patch alias")
+    return tuple(sorted(aliases))
+
+
+def read_patch_order(directory: Path, selected_optional=()) -> List[Tuple[Path, bool]]:
     directory = Path(directory).resolve(strict=True)
     order = directory / "APPLY_ORDER.txt"
     if not order.is_file():
         raise ValueError(f"Missing patch manifest: {order}")
+    selected = tuple(selected_optional)
+    if len(set(selected)) != len(selected):
+        raise ValueError("Duplicate optional patch alias")
     entries = []
-    seen = set()
+    seen_files = set()
+    seen_aliases = set()
     for number, raw in enumerate(order.read_text(encoding="utf-8-sig").splitlines(), 1):
         text = raw.strip()
         if not text or text.startswith("#"):
             continue
+        selectable = text.startswith("?")
         required = text.startswith("!")
-        name = text[1:].strip() if required else text
+        if not selectable and not required:
+            raise ValueError(f"Patch entry needs ! or ?alias: at {order}:{number}")
+        if selectable:
+            alias, separator, name = text[1:].partition(":")
+            if not separator or not re.fullmatch(r"[a-z][a-z0-9-]*", alias):
+                raise ValueError(f"Invalid optional patch alias at {order}:{number}")
+            if alias in seen_aliases:
+                raise ValueError(f"Duplicate optional patch alias at {order}:{number}: {alias}")
+            seen_aliases.add(alias)
+        else:
+            name = text[1:].strip()
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*\.patch", name):
             raise ValueError(f"Invalid patch basename at {order}:{number}: {name!r}")
-        if name in seen:
+        if name in seen_files:
             raise ValueError(f"Duplicate patch at {order}:{number}: {name}")
-        seen.add(name)
+        seen_files.add(name)
         path = directory / name
         if path.is_symlink() or not path.is_file():
             raise ValueError(f"Patch is missing, not regular, or a symlink: {path}")
-        entries.append((path, required))
+        if required or (selectable and alias in selected):
+            # An explicitly selected patch is required for this build.
+            entries.append((path, True))
+    unknown = set(selected) - seen_aliases
+    if unknown:
+        raise ValueError(f"Unknown optional patch alias(es): {', '.join(sorted(unknown))}")
     return entries
 
 

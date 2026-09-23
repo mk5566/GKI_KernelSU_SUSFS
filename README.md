@@ -1,6 +1,6 @@
 # GKI SukiSU-Ultra + SUSFS Build System (Slim 5.15)
 
-Automated Generic Kernel Image (GKI) build system tracking the newest published **android13-5.15** monthly branch, with integrated SukiSU-Ultra and a limited SUSFS profile. The current September 2026 branch reports **5.15.211** (checked 2026-09-23). The default build leaves upstream TCP and zRAM settings unchanged; optional native ZSTD and upstream BBRv1 requests require separate validation. An ishtar-specific gate blocks compilation until zRAM deployment matches the connected phone.
+Automated Generic Kernel Image (GKI) build system tracking the newest published **android13-5.15** monthly branch, with integrated SukiSU-Ultra and a limited SUSFS profile. The current September 2026 branch reports **5.15.211** (checked 2026-09-23). The default source candidate uses built-in ishtar LZ4KD zRAM and leaves upstream TCP unchanged. Native ZSTD, upstream BBRv1, and the saved performance patches are per-build choices.
 
 > [!NOTE]
 > The current engineering target is Xiaomi 13 Ultra (`ishtar`). The connected device baseline is in [DEVICE_BASELINE.md](DEVICE_BASELINE.md). A successful repository dry run does not qualify an image for flashing.
@@ -14,8 +14,8 @@ Automated Generic Kernel Image (GKI) build system tracking the newest published 
 | [SukiSU-Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra) | Advanced kernel-based root solution | Included |
 | SUSFS | Limited mount profile; correctness and module compatibility still need a full build and device checks | Included |
 | TCP | Preserve the branch default; `--bbr` requests upstream BBRv1 | No override by default |
-| zRAM | Leave upstream config alone by default; `--zram` requests native ZSTD. The ishtar deployment gate requires a compatible built-in plan. | Build blocked until resolved |
-| Performance patches | Prior patches remain review references; only the new-file ZSTD fragment is in `APPLY_ORDER.txt` | Disabled by default |
+| zRAM | Built-in zRAM/zsmalloc and LZ4KD by default; `--zram` requests native ZSTD. | Source candidate; full build unverified |
+| Performance patches | Each saved patch can be selected by alias in a manual run. | All off by default |
 
 ---
 
@@ -32,11 +32,12 @@ This project builds only in GitHub Actions. The workflow has a single `workflow_
    * **SUSFS**: tracks the `gki-android13-5.15` branch unless a commit is supplied
    * **Native ZSTD request**: `false` by default; leave off for the current `lz4kd` phone baseline.
    * **Upstream BBRv1 request**: `false` by default.
+   * **Optional patches**: leave blank for none, or enter comma-separated aliases from the table below.
 5. Review the uploaded `Image`, AnyKernel candidate, build log, `BUILD_INFO.md`, final `.config`, locked manifest, target selection, and `SHA256SUMS.txt`. The target is selected once per run; a changed common branch causes a failed build instead of silently building different source. No boot image is generated. The GitHub workflow has not been run for the modified tree in this Windows session.
 
 The `make_release` and `send_telegram` options are off by default. A release is handled in a separate job after the uploaded files pass checksum verification. The build job uses read-only repository permission; only the optional release job receives `contents: write`. The Python CLI is an internal workflow component; local runs are for diagnostics only.
 
-The current ishtar build gate will stop a full build because upstream GKI has module-only zRAM/zsmalloc and the connected phone relies on built-in `lz4kd` swap. Resolve that deployment and pass the GKI/KMI checks before expecting a candidate image.
+The ishtar built-in LZ4KD source patch addresses the earlier pre-build zRAM gate. The full Linux build, canonical defconfig, KMI and module checks have not yet been run for this candidate.
 
 ---
 
@@ -48,7 +49,22 @@ The builder does not produce a generic `boot.img`: its previous header-v4/test-k
 
 ## Patch policy (`patches/5.15`)
 
-`APPLY_ORDER.txt` is authoritative. It requires the native ZSTD fragment and the ishtar built-in LZ4KD patch. The default retains the phone's built-in zRAM/zsmalloc and LZ4KD compressor; `--zram` selects ZSTD for a separate experiment. The LZ4KD codec files are copied from the freshly cloned SukiSU_patch revision, while its `kernel/module.c` changes are excluded. The saved BBRv3, SIMD `memcmp`, suspend, IRQ and F2FS patches remain review references because the current backport has known correctness and device-qualification gaps. Required patches apply exactly with zero fuzz. See [KERNEL_CHANGE_PLAN.md](KERNEL_CHANGE_PLAN.md).
+`APPLY_ORDER.txt` is authoritative. `!` entries always apply; `?alias:filename.patch` entries apply only when their alias is selected for that run. The default retains built-in zRAM/zsmalloc and LZ4KD; `--zram` selects ZSTD for a separate experiment. The LZ4KD codec files come from the freshly cloned SukiSU_patch revision; its `kernel/module.c` changes are excluded. A selected patch must apply exactly or the build fails. The artifact name and `BUILD_INFO.md` record the selected set.
+
+| Alias for `optional_patches` | Saved patch |
+|---|---|
+| `cpu-scan` | `adjust_cpu_scan_order.patch` |
+| `clear-page` | `clear_page_16bytes_align.patch` |
+| `f2fs-fsync` | `f2fs_enlarge_min_fsync_blocks.patch` |
+| `f2fs-congestion` | `f2fs_reduce_congestion.patch` |
+| `alarm-wakeup` | `minimise_wakeup_time.patch` |
+| `s2idle-wake` | `avoid_extra_s2idle_wake_attempts.patch` |
+| `irq-log` | `silence_irq_cpu_logspam.patch` |
+| `memcmp` | `optimise_memcmp.patch` |
+| `freeze-timeout` | `reduce_freeze_timeout.patch` |
+| `bbrv3` | `0001-net-tcp-backport-BBRv3-to-android13-5.15.patch` |
+
+Example manual input: `cpu-scan,clear-page`. Selecting `bbrv3` builds it in and makes it the default TCP congestion control; leave **Upstream BBRv1 request** off for that run. These patches remain unverified, and the [change plan](KERNEL_CHANGE_PLAN.md) identifies concrete defects in `bbrv3`, `memcmp`, and `freeze-timeout`. A build with them selected is an experiment, not a device-qualified release. Keep `make_release` off while testing.
 
 ---
 

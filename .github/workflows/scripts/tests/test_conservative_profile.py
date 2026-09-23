@@ -19,6 +19,33 @@ class ConservativeProfileTests(unittest.TestCase):
         self.assertFalse(self.builder.config.set_default_bbr)
         self.assertNotIn("CONFIG_TCP_CONG_BBR3", self.builder.BBR_CONFIG_UPDATES)
         self.assertIn("lz4kd-builtin", self.builder.config.artifact_stem)
+        self.assertEqual(self.builder.config.optional_patches, ())
+
+    def test_bbrv3_selection_configures_bbrv3_and_rejects_bbrv1(self):
+        selected = BuildConfig(sub_level="211", os_patch_level="2026-09",
+                               optional_patches=("bbrv3",))
+        self.assertIn("bbr3-default", selected.artifact_stem)
+        self.assertEqual(self.builder.BBR3_CONFIG_UPDATES["CONFIG_TCP_CONG_BBR3"], "y")
+        with self.assertRaisesRegex(ValueError, "either upstream BBRv1"):
+            BuildConfig(sub_level="211", os_patch_level="2026-09",
+                        optional_patches=("bbrv3",), set_default_bbr=True)
+
+    def test_patch_artifact_name_is_stable_for_selection_order(self):
+        first = BuildConfig(sub_level="211", os_patch_level="2026-09",
+                            optional_patches=("cpu-scan", "clear-page"))
+        second = BuildConfig(sub_level="211", os_patch_level="2026-09",
+                             optional_patches=("clear-page", "cpu-scan"))
+        self.assertEqual(first.artifact_stem, second.artifact_stem)
+        self.assertNotEqual(first.artifact_stem, self.builder.config.artifact_stem)
+
+    def test_selected_bbrv3_compiled_config_is_checked(self):
+        path = self.builder.work_dir / ".config"
+        path.write_text('CONFIG_TCP_CONG_BBR3=y\nCONFIG_DEFAULT_BBR3=y\n'
+                        'CONFIG_DEFAULT_TCP_CONG="bbr3"\n')
+        self.builder._verify_bbr3_config(path)
+        path.write_text(path.read_text().replace("CONFIG_TCP_CONG_BBR3=y", "CONFIG_TCP_CONG_BBR3=m"))
+        with self.assertRaisesRegex(RuntimeError, "CONFIG_TCP_CONG_BBR3=y"):
+            self.builder._verify_bbr3_config(path)
 
     def test_lz4kd_copy_never_touches_module_loader(self):
         helper = self.builder.sukisu_patch_dir / "other/zram/lz4k"

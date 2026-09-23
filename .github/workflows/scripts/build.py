@@ -21,7 +21,7 @@ from config import (
 )
 from kernel_builder import KernelBuilder, BuildResult
 from target import TargetSelection, resolve_latest_target
-from patch_utils import read_patch_order
+from patch_utils import parse_optional_patches, read_patch_order
 
 logging.basicConfig(
     level=logging.INFO,
@@ -46,6 +46,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-zram", action="store_false", dest="zram", help="Use the ishtar built-in LZ4KD default")
     parser.add_argument("--bbr", action="store_true", default=False, help="Select upstream BBRv1 as default")
     parser.add_argument("--no-bbr", action="store_false", dest="bbr", help="Preserve upstream TCP defaults")
+    parser.add_argument("--optional-patches", default="", help="Comma-separated aliases from patches/5.15/APPLY_ORDER.txt")
     parser.add_argument("--no-release", action="store_true", help="Do not create GitHub Release")
     parser.add_argument("--custom-version", dest="custom_version", default=None)
     parser.add_argument("--list-configs", action="store_true")
@@ -77,6 +78,7 @@ def create_build_config(args: argparse.Namespace, selection: TargetSelection | N
         susfs_commit=args.susfs_commit,
         use_zram=args.zram,
         set_default_bbr=args.bbr,
+        optional_patches=parse_optional_patches(args.optional_patches),
         make_release=not args.no_release,
         custom_version=args.custom_version,
     )
@@ -110,7 +112,7 @@ def _validate_vendor_patches(config: BuildConfig) -> list:
     if not context_patch.is_file():
         missing.append(str(context_patch))
     try:
-        read_patch_order(patch_dir)
+        read_patch_order(patch_dir, config.optional_patches)
     except (OSError, ValueError) as error:
         missing.append(str(error))
     return missing
@@ -120,12 +122,13 @@ def build_single(config: BuildConfig, workspace: str, dry_run: bool = False,
                  expected_common_revision: str | None = None) -> BuildResult:
     if dry_run:
         logger.info(f"[DRY RUN] Validating config: {config.config_name}")
-        missing = _validate_vendor_patches(config)
-        if missing:
-            logger.error("Missing vendor patches:")
-            for path in missing:
-                logger.error(f"  - {path}")
-            return BuildResult(success=False, config=config, message="Missing vendor patches")
+        errors = _validate_vendor_patches(config)
+        if errors:
+            logger.error("Patch manifest or selection error:")
+            for error in errors:
+                logger.error(f"  - {error}")
+            return BuildResult(success=False, config=config,
+                               message="Patch manifest or selection validation failed")
         logger.info("[DRY RUN] Manifest/files valid; kernel applicability NOT tested")
         return BuildResult(success=True, config=config, message="Manifest validation passed; no kernel checkout tested")
 

@@ -5,11 +5,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from patch_utils import apply_patch_exact, read_patch_order
+from patch_utils import apply_patch_exact, parse_optional_patches, read_patch_order
 from config import BuildConfig
 from kernel_builder import KernelBuilder
 
 DIFF = "--- a/one\n+++ b/one\n@@ -1 +1 @@\n-old\n+new\n--- a/two\n+++ b/two\n@@ -1 +1 @@\n-old\n+new\n"
+PROJECT_PATCHES = Path(__file__).resolve().parents[4] / "patches/5.15"
 
 class PatchSafetyTests(unittest.TestCase):
     def setUp(self):
@@ -49,29 +50,59 @@ class PatchSafetyTests(unittest.TestCase):
         (self.tree / "one").write_text(" context\nold\n")
         with self.assertRaises(RuntimeError):
             apply_patch_exact(self.tree, self.patch)
-    def manifest(self, text):
+    def manifest(self, text, selected=()):
         (self.root / "APPLY_ORDER.txt").write_text(text)
         (self.root / "safe.patch").write_text(DIFF)
-        return read_patch_order(self.root)
-    def test_manifest_required_and_optional(self):
+        return read_patch_order(self.root, selected)
+    def test_manifest_required(self):
         entries = self.manifest("# note\n!safe.patch\n")
         self.assertTrue(entries[0][1])
+    def test_selectable_patch_is_off_by_default_and_required_when_selected(self):
+        self.assertEqual(self.manifest("?cpu-scan:safe.patch\n"), [])
+        entries = self.manifest("?cpu-scan:safe.patch\n", ("cpu-scan",))
+        self.assertEqual([entry[0].name for entry in entries], ["safe.patch"])
+        self.assertTrue(entries[0][1])
+    def test_unknown_or_duplicate_optional_selection_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Unknown optional"):
+            self.manifest("?cpu-scan:safe.patch\n", ("bad-name",))
+        with self.assertRaisesRegex(ValueError, "Duplicate optional"):
+            self.manifest("?cpu-scan:safe.patch\n", ("cpu-scan", "cpu-scan"))
+        with self.assertRaisesRegex(ValueError, "Duplicate optional"):
+            self.manifest("?cpu-scan:safe.patch\n?cpu-scan:other.patch\n")
+    def test_optional_csv_rejects_paths_empty_entries_and_duplicates(self):
+        self.assertEqual(parse_optional_patches("cpu-scan, clear-page"),
+                         ("clear-page", "cpu-scan"))
+        for value in ("../cpu-scan", "cpu-scan,", "cpu-scan,,clear-page",
+                      "cpu-scan,cpu-scan"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                parse_optional_patches(value)
     def test_manifest_duplicates_rejected(self):
-        with self.assertRaises(ValueError): self.manifest("safe.patch\n!safe.patch\n")
+        with self.assertRaises(ValueError): self.manifest("!safe.patch\n!safe.patch\n")
     def test_manifest_traversal_rejected(self):
-        with self.assertRaises(ValueError): self.manifest("../safe.patch\n")
+        with self.assertRaises(ValueError): self.manifest("!../safe.patch\n")
+    def test_implicit_patch_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "needs ! or"):
+            self.manifest("safe.patch\n")
     def test_manifest_symlink_rejected(self):
         try:
             (self.root / "link.patch").symlink_to(self.patch)
         except OSError as error:
             self.skipTest(f"Symlink creation unavailable on this host: {error}")
-        with self.assertRaises(ValueError): self.manifest("link.patch\n")
+        with self.assertRaises(ValueError): self.manifest("!link.patch\n")
     def test_manifest_missing_rejected(self):
         with self.assertRaises(ValueError): read_patch_order(self.root)
     def test_manifest_missing_patch_rejected(self):
-        with self.assertRaises(ValueError): self.manifest("missing.patch\n")
+        with self.assertRaises(ValueError): self.manifest("!missing.patch\n")
     def test_comment_only_manifest_is_valid(self):
         self.assertEqual(self.manifest("# baseline: no optional kernel patches\n"), [])
+    def test_real_manifest_off_by_default_and_all_ten_selectable(self):
+        default = read_patch_order(PROJECT_PATCHES)
+        aliases = tuple(line[1:].split(":", 1)[0]
+                        for line in (PROJECT_PATCHES / "APPLY_ORDER.txt").read_text().splitlines()
+                        if line.startswith("?"))
+        self.assertEqual(len(default), 2)
+        self.assertEqual(len(aliases), 10)
+        self.assertEqual(len(read_patch_order(PROJECT_PATCHES, aliases)), 12)
     def test_stale_clone_rejected(self):
         builder = KernelBuilder(BuildConfig(sub_level="211", os_patch_level="2026-09"), str(self.root))
         repo = self.root / "checkout"

@@ -2,3 +2,15 @@
 # updates the matching Kconfig, defconfig, and GKI module lists.
 !0001-add-ishtar-native-zstd-fragment.patch
 !0002-ishtar-builtin-lz4kd.patch
+# Selectable by alias through the manual workflow's optional_patches input.
+# A selected patch is mandatory for that run and must apply without fuzz.
+?cpu-scan:adjust_cpu_scan_order.patch
+?clear-page:clear_page_16bytes_align.patch
+?f2fs-fsync:f2fs_enlarge_min_fsync_blocks.patch
+?f2fs-congestion:f2fs_reduce_congestion.patch
+?alarm-wakeup:minimise_wakeup_time.patch
+?s2idle-wake:avoid_extra_s2idle_wake_attempts.patch
+?irq-log:silence_irq_cpu_logspam.patch
+?memcmp:optimise_memcmp.patch
+?freeze-timeout:reduce_freeze_timeout.patch
+?bbrv3:0001-net-tcp-backport-BBRv3-to-android13-5.15.patch

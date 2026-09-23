@@ -25,6 +25,12 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("contents: read", content)
         self.assertIn("contents: write", content)
 
+    def test_optional_patch_selection_reaches_validation_and_build(self):
+        content = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("      optional_patches:\n", content)
+        self.assertEqual(content.count("INPUT_OPTIONAL_PATCHES: ${{ github.event.inputs.optional_patches }}"), 2)
+        self.assertEqual(content.count('extra+=(--optional-patches="${INPUT_OPTIONAL_PATCHES}")'), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

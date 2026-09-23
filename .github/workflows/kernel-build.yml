@@ -39,6 +39,11 @@ on:
         required: true
         type: boolean
         default: false
+      optional_patches:
+        description: 'Comma-separated patch aliases from README; blank applies none'
+        required: false
+        type: string
+        default: ''
       make_release:
         description: 'Create GitHub Release'
         required: true
@@ -100,6 +105,7 @@ jobs:
           INPUT_KERNELSU_COMMIT: ${{ github.event.inputs.kernelsu_commit }}
           INPUT_KERNELSU_VERSION: ${{ github.event.inputs.kernelsu_version }}
           INPUT_SET_DEFBBR: ${{ github.event.inputs.set_defbbr }}
+          INPUT_OPTIONAL_PATCHES: ${{ github.event.inputs.optional_patches }}
           INPUT_SUSFS_COMMIT: ${{ github.event.inputs.susfs_commit }}
           INPUT_USE_ZRAM: ${{ github.event.inputs.use_zram }}
         run: |
@@ -108,6 +114,7 @@ jobs:
           extra=()
           [ "${INPUT_USE_ZRAM}" = "true" ] && extra+=(--zram) || extra+=(--no-zram)
           [ "${INPUT_SET_DEFBBR}" = "true" ] && extra+=(--bbr) || extra+=(--no-bbr)
+          extra+=(--optional-patches="${INPUT_OPTIONAL_PATCHES}")
           [ -z "${INPUT_KERNELSU_COMMIT}" ] || extra+=(--ksu-commit="${INPUT_KERNELSU_COMMIT}")
           [ -z "${INPUT_SUSFS_COMMIT}" ] || extra+=(--susfs-commit="${INPUT_SUSFS_COMMIT}")
           [ -z "${INPUT_CUSTOM_VERSION}" ] || extra+=(--custom-version="${INPUT_CUSTOM_VERSION}")
@@ -152,6 +159,7 @@ jobs:
           INPUT_KERNELSU_VERSION: ${{ github.event.inputs.kernelsu_version }}
           INPUT_MAKE_RELEASE: ${{ github.event.inputs.make_release }}
           INPUT_SET_DEFBBR: ${{ github.event.inputs.set_defbbr }}
+          INPUT_OPTIONAL_PATCHES: ${{ github.event.inputs.optional_patches }}
           INPUT_SUSFS_COMMIT: ${{ github.event.inputs.susfs_commit }}
           INPUT_USE_ZRAM: ${{ github.event.inputs.use_zram }}
         run: |
@@ -169,6 +177,7 @@ jobs:
           else
             extra+=(--no-bbr)
           fi
+          extra+=(--optional-patches="${INPUT_OPTIONAL_PATCHES}")
           [ -z "${INPUT_KERNELSU_COMMIT}" ] || extra+=(--ksu-commit="${INPUT_KERNELSU_COMMIT}")
           [ -z "${INPUT_SUSFS_COMMIT}" ] || extra+=(--susfs-commit="${INPUT_SUSFS_COMMIT}")
           [ -z "${INPUT_CUSTOM_VERSION}" ] || extra+=(--custom-version="${INPUT_CUSTOM_VERSION}")

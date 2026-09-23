@@ -52,7 +52,7 @@ class TargetTests(unittest.TestCase):
             sub_level="auto", os_patch="auto", android="android13",
             kernel="5.15", ksu_version="Dev(development)",
             ksu_commit=None, susfs_commit=None, zram=False, bbr=False,
-            no_release=True, custom_version=None,
+            no_release=True, custom_version=None, optional_patches="",
         )
         selection = TargetSelection("211", "2026-09", "a" * 40)
         with patch("build.resolve_latest_target", side_effect=AssertionError("re-resolved")):
@@ -74,7 +74,7 @@ class TargetTests(unittest.TestCase):
             sub_level="180", os_patch="2025-05", android="android13",
             kernel="5.15", ksu_version="Dev(development)",
             ksu_commit=None, susfs_commit=None, zram=False, bbr=False,
-            no_release=True, custom_version=None,
+            no_release=True, custom_version=None, optional_patches="",
         )
         with patch("build.resolve_latest_target", return_value=("211", "2026-09")):
             with self.assertRaisesRegex(ValueError, "latest GKI"):

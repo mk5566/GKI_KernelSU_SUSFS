@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Optional
 from enum import Enum
 import re
+import hashlib
 
 
 class AndroidVersion(Enum):
@@ -82,6 +83,7 @@ class BuildConfig:
     susfs_commit: Optional[str] = None
     use_zram: bool = False
     set_default_bbr: bool = False
+    optional_patches: tuple[str, ...] = ()
     make_release: bool = False
     custom_version: Optional[str] = None
     build_id: Optional[str] = None
@@ -91,6 +93,13 @@ class BuildConfig:
         self.kernelsu_commit = validate_git_ref(self.kernelsu_commit or "", "kernelsu_commit") or None
         self.susfs_commit = validate_git_ref(self.susfs_commit or "", "susfs_commit") or None
         self.custom_version = sanitize_custom_version(self.custom_version)
+        if (len(set(self.optional_patches)) != len(self.optional_patches) or
+                any(not re.fullmatch(r"[a-z][a-z0-9-]*", alias)
+                    for alias in self.optional_patches)):
+            raise ValueError("Invalid or duplicate optional patch alias")
+        self.optional_patches = tuple(sorted(self.optional_patches))
+        if self.set_default_bbr and "bbrv3" in self.optional_patches:
+            raise ValueError("Select either upstream BBRv1 default or the BBRv3 patch")
         self._validate_android_version()
         self._validate_kernel_version()
         self._validate_kernel_android_compat()
@@ -157,9 +166,13 @@ class BuildConfig:
     def variant_suffix(self) -> str:
         parts = [
             "zstd-requested" if self.use_zram else "lz4kd-builtin",
-            "bbr1-default" if self.set_default_bbr else "rom-tcp",
+            ("bbr3-default" if "bbrv3" in self.optional_patches else
+             "bbr1-default" if self.set_default_bbr else "rom-tcp"),
             "sukisu-dev" if self.kernelsu_version == KSUVersion.DEV.value else "sukisu-stable",
         ]
+        if self.optional_patches:
+            digest = hashlib.sha256(",".join(self.optional_patches).encode("ascii")).hexdigest()[:12]
+            parts.append(f"patches-{len(self.optional_patches)}-{digest}")
         if self.custom_version:
             parts.append(self.custom_version)
         return "-".join(parts)
@@ -186,6 +199,7 @@ class BuildConfig:
             "ksu_setup_ref": self.ksu_setup_ref,
             "use_zram": self.use_zram,
             "set_default_bbr": self.set_default_bbr,
+            "optional_patches": list(self.optional_patches),
             "make_release": self.make_release,
             "custom_version": self.custom_version,
             "build_id": self.build_id,

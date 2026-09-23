@@ -86,6 +86,15 @@ class KernelBuilder:
         "CONFIG_NET_SCH_FQ": "y",
     }
 
+    BBR3_CONFIG_UPDATES = {
+        "CONFIG_TCP_CONG_ADVANCED": "y",
+        "CONFIG_TCP_CONG_BBR3": "y",
+        "CONFIG_DEFAULT_BBR3": "y",
+        "CONFIG_DEFAULT_CUBIC": None,
+        "CONFIG_DEFAULT_TCP_CONG": '"bbr3"',
+        "CONFIG_NET_SCH_FQ": "y",
+    }
+
     def __init__(self, config: BuildConfig, workspace: str,
                  expected_common_revision: Optional[str] = None):
         self.config = config
@@ -562,7 +571,7 @@ class KernelBuilder:
         logger.info(f"Loading vendor patches from: {patch_dir}")
         self._chdir(common_dir)
 
-        patch_list = read_patch_order(patch_dir)
+        patch_list = read_patch_order(patch_dir, self.config.optional_patches)
         applied, failed_optional = [], []
         for patch_path, required in patch_list:
             if self._apply_patch_file(patch_path, required=required, allow_fuzz=False):
@@ -592,6 +601,8 @@ class KernelBuilder:
                 updates.setdefault(f"CONFIG_{symbol}", "n")
         if self.config.set_default_bbr:
             updates.update(self.BBR_CONFIG_UPDATES)
+        if "bbrv3" in self.config.optional_patches:
+            updates.update(self.BBR3_CONFIG_UPDATES)
         self._upsert_defconfig(updates)
 
         if self.config.use_zram:
@@ -713,6 +724,8 @@ class KernelBuilder:
                 self._verify_zstd_config(final_config)
             else:
                 self._verify_lz4kd_config(final_config)
+            if "bbrv3" in self.config.optional_patches:
+                self._verify_bbr3_config(final_config)
             shutil.copyfile(final_config, self.work_dir / "final.config")
             logger.info(f"=== Kernel compile succeeded: {image_path} ===")
             return True
@@ -816,6 +829,14 @@ class KernelBuilder:
             if setting not in text:
                 raise RuntimeError(f"Ishtar LZ4KD deployment missing in .config: {setting}")
 
+    @staticmethod
+    def _verify_bbr3_config(config_path: Path):
+        text = config_path.read_text(encoding="utf-8").splitlines()
+        for setting in ('CONFIG_TCP_CONG_BBR3=y', 'CONFIG_DEFAULT_BBR3=y',
+                        'CONFIG_DEFAULT_TCP_CONG="bbr3"'):
+            if setting not in text:
+                raise RuntimeError(f"Selected BBRv3 patch is not active in .config: {setting}")
+
     def create_anykernel_zips(self) -> list:
         logger.info("=== Creating AnyKernel3 zip ===")
         self._chdir(self.work_dir)
@@ -894,6 +915,7 @@ class KernelBuilder:
             f"- AnyKernel3: `{self._git_head(self.anykernel_dir)}`",
             f"- ZRAM: {'built-in ZSTD experiment requested' if self.config.use_zram else 'built-in LZ4KD default'}",
             f"- Upstream BBRv1 default: {'requested' if self.config.set_default_bbr else 'unchanged'}",
+            f"- Selected unverified patches: {', '.join(self.config.optional_patches) or 'none'}",
             "- Qualification: GKI build checks enabled; device compatibility still requires boot/module validation",
             f"- Image SHA-256: `{self._sha256(self._kernel_image_path())}`",
             f"- Final config SHA-256: `{self._sha256(self.work_dir / 'final.config')}`",
@@ -909,7 +931,7 @@ class KernelBuilder:
         lines.extend(["", "### Active kernel patches"])
         try:
             patch_dir = Path(__file__).resolve().parents[3] / "patches" / self.config.kernel_version
-            for patch_path, required in read_patch_order(patch_dir):
+            for patch_path, required in read_patch_order(patch_dir, self.config.optional_patches):
                 lines.append(
                     f"- `{patch_path.name}` ({'required' if required else 'optional'}): "
                     f"`{self._sha256(patch_path)}`"

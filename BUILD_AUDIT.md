@@ -1,5 +1,18 @@
 # Build audit — 2026-09-23
 
+## Per-build optional patch selection
+
+The ten saved performance patches are listed as selectable `?alias:filename`
+entries in `patches/5.15/APPLY_ORDER.txt`. The manual GitHub Action leaves all
+ten off when `optional_patches` is blank. It accepts comma-separated aliases,
+rejects unknown or duplicate names before source sync, and applies selected
+patches exactly in manifest order. A selected patch is required for that run;
+it cannot be silently skipped. `bbrv3` also requests a built-in BBRv3 default
+and cannot be combined with the upstream BBRv1 default input. The artifact
+name and build information record the selected set. Exact source application
+does not establish compile success, KMI compatibility, runtime safety, or a
+performance gain; the known defects remain documented in the change plan.
+
 ## Follow-up source candidate (not built)
 
 After the manual build failed at the intentional zRAM gate, the repository
