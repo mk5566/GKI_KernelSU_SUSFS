@@ -58,7 +58,7 @@
  	tristate "Compressed RAM block device support"
  	depends on BLOCK && SYSFS && ZSMALLOC && CRYPTO
 -	depends on CRYPTO_LZO || CRYPTO_ZSTD || CRYPTO_LZ4 || CRYPTO_LZ4HC || CRYPTO_842
-+	depends on CRYPTO_LZO || CRYPTO_ZSTD || CRYPTO_LZ4 || CRYPTO_LZ4HC || CRYPTO_LZ4KD || CRYPTO_842
++	depends on CRYPTO_LZ4KD || CRYPTO_ZSTD
  	help
  	  Creates virtual block devices called /dev/zramX (X = 0, 1, ...).
  	  Pages written to these disks are compressed and stored in memory
@@ -83,16 +83,64 @@
  config ZRAM_WRITEBACK
 --- a/drivers/block/zram/zcomp.c
 +++ b/drivers/block/zram/zcomp.c
-@@ -24,6 +24,9 @@
- #endif
- #if IS_ENABLED(CONFIG_CRYPTO_LZ4HC)
- 	"lz4hc",
-+#endif
+@@ -15,18 +15,8 @@
+ #include "zcomp.h"
+ 
+ static const char * const backends[] = {
+-#if IS_ENABLED(CONFIG_CRYPTO_LZO)
+-	"lzo",
+-	"lzo-rle",
+-#endif
+-#if IS_ENABLED(CONFIG_CRYPTO_LZ4)
+-	"lz4",
+-#endif
+-#if IS_ENABLED(CONFIG_CRYPTO_LZ4HC)
+-	"lz4hc",
+-#endif
+-#if IS_ENABLED(CONFIG_CRYPTO_842)
+-	"842",
 +#if IS_ENABLED(CONFIG_CRYPTO_LZ4KD)
 +	"lz4kd",
  #endif
- #if IS_ENABLED(CONFIG_CRYPTO_842)
- 	"842",
+ #if IS_ENABLED(CONFIG_CRYPTO_ZSTD)
+ 	"zstd",
+@@ -63,14 +53,13 @@ static int zcomp_strm_init(struct zcomp_strm *zstrm, struct zcomp *comp)
+ 
+ bool zcomp_available_algorithm(const char *comp)
+ {
+-	/*
+-	 * Crypto does not ignore a trailing new line symbol,
+-	 * so make sure you don't supply a string containing
+-	 * one.
+-	 * This also means that we permit zcomp initialisation
+-	 * with any compressing algorithm known to crypto api.
+-	 */
+-	return crypto_has_comp(comp, 0, 0) == 1;
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(backends); i++) {
++		if (!strcmp(comp, backends[i]))
++			return crypto_has_comp(comp, 0, 0) == 1;
++	}
++	return false;
+ }
+ 
+ /* show available compressors */
+@@ -91,14 +80,6 @@ ssize_t zcomp_available_show(const char *comp, char *buf)
+ 		}
+ 	}
+ 
+-	/*
+-	 * Out-of-tree module known to crypto api or a missing
+-	 * entry in `backends'.
+-	 */
+-	if (!known_algorithm && crypto_has_comp(comp, 0, 0) == 1)
+-		sz += scnprintf(buf + sz, PAGE_SIZE - sz - 2,
+-				"[%s] ", comp);
+-
+ 	sz += scnprintf(buf + sz, PAGE_SIZE - sz, "\n");
+ 	return sz;
+ }
 --- a/arch/arm64/configs/gki_defconfig
 +++ b/arch/arm64/configs/gki_defconfig
 @@ -123,7 +123,7 @@

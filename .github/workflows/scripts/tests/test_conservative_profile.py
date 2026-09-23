@@ -41,6 +41,39 @@ class ConservativeProfileTests(unittest.TestCase):
         selected = BuildConfig(sub_level="211", os_patch_level="2026-09", set_default_bbr=False)
         self.assertIn("rom-tcp", selected.artifact_stem)
         self.assertEqual(self.builder.BBR_CONFIG_UPDATES["CONFIG_TCP_CONG_BBR"], "y")
+        self.assertEqual(self.builder.BBR_CONFIG_UPDATES["CONFIG_TCP_CONG_BIC"], "n")
+        self.assertEqual(self.builder.BBR_CONFIG_UPDATES["CONFIG_TCP_CONG_WESTWOOD"], "n")
+        self.assertEqual(self.builder.BBR_CONFIG_UPDATES["CONFIG_TCP_CONG_HTCP"], "n")
+
+    def test_bbr_and_cubic_only_congestion_control_validates(self):
+        path = self.builder.work_dir / ".config"
+        valid_text = (
+            "CONFIG_TCP_CONG_BBR=y\n"
+            "CONFIG_DEFAULT_BBR=y\n"
+            'CONFIG_DEFAULT_TCP_CONG="bbr"\n'
+            "CONFIG_TCP_CONG_CUBIC=y\n"
+            "# CONFIG_TCP_CONG_BIC is not set\n"
+        )
+        path.write_text(valid_text)
+        self.builder._verify_bbr_config(path)
+
+        # Forbidden CCAs must fail verification
+        for forbidden in ("CONFIG_TCP_CONG_BIC=y", "CONFIG_TCP_CONG_BIC=m",
+                          "CONFIG_TCP_CONG_WESTWOOD=y", "CONFIG_TCP_CONG_WESTWOOD=m",
+                          "CONFIG_TCP_CONG_HTCP=y", "CONFIG_TCP_CONG_HTCP=m"):
+            path.write_text(valid_text + forbidden + "\n")
+            with self.assertRaisesRegex(RuntimeError, "Unused congestion algorithm"):
+                self.builder._verify_bbr_config(path)
+
+    def test_zram_patch_only_allows_lz4kd_and_zstd(self):
+        patch_path = Path(__file__).resolve().parents[4] / "patches/5.15/0002-ishtar-builtin-lz4kd.patch"
+        content = patch_path.read_text(encoding="utf-8")
+        self.assertIn('depends on CRYPTO_LZ4KD || CRYPTO_ZSTD', content)
+        self.assertIn('"lz4kd"', content)
+        self.assertIn('"zstd"', content)
+        # Verify unused compressors are removed from backends
+        for unused in ('"lzo"', '"lzo-rle"', '"lz4"', '"lz4hc"', '"842"'):
+            self.assertIn(f'-	{unused}', content)
 
     def test_lz4kd_copy_never_touches_module_loader(self):
         helper = self.builder.sukisu_patch_dir / "other/zram/lz4k"

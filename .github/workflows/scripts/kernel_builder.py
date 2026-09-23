@@ -73,6 +73,9 @@ class KernelBuilder:
 
     BBR_CONFIG_UPDATES = {
         "CONFIG_TCP_CONG_ADVANCED": "y",
+        "CONFIG_TCP_CONG_BIC": "n",
+        "CONFIG_TCP_CONG_WESTWOOD": "n",
+        "CONFIG_TCP_CONG_HTCP": "n",
         "CONFIG_TCP_CONG_BBR": "y",
         "CONFIG_DEFAULT_BBR": "y",
     }
@@ -603,6 +606,9 @@ class KernelBuilder:
         marker = "CONFIG_INET_DIAG_DESTROY=y\n"
         bbr_lines = (
             "CONFIG_TCP_CONG_ADVANCED=y\n"
+            "# CONFIG_TCP_CONG_BIC is not set\n"
+            "# CONFIG_TCP_CONG_WESTWOOD is not set\n"
+            "# CONFIG_TCP_CONG_HTCP is not set\n"
             "CONFIG_TCP_CONG_BBR=y\n"
             "CONFIG_DEFAULT_BBR=y\n"
         )
@@ -840,9 +846,15 @@ class KernelBuilder:
     def _verify_bbr_config(config_path: Path):
         text = config_path.read_text(encoding="utf-8").splitlines()
         for setting in ('CONFIG_TCP_CONG_BBR=y', 'CONFIG_DEFAULT_BBR=y',
-                        'CONFIG_DEFAULT_TCP_CONG="bbr"'):
+                        'CONFIG_DEFAULT_TCP_CONG="bbr"',
+                        'CONFIG_TCP_CONG_CUBIC=y'):
             if setting not in text:
                 raise RuntimeError(f"Upstream BBRv1 deployment missing in .config: {setting}")
+        for forbidden in ('CONFIG_TCP_CONG_BIC=y', 'CONFIG_TCP_CONG_BIC=m',
+                          'CONFIG_TCP_CONG_WESTWOOD=y', 'CONFIG_TCP_CONG_WESTWOOD=m',
+                          'CONFIG_TCP_CONG_HTCP=y', 'CONFIG_TCP_CONG_HTCP=m'):
+            if forbidden in text:
+                raise RuntimeError(f"Unused congestion algorithm present in .config: {forbidden}")
 
     def _verify_patch_safety(self):
         reject_retired_aliases(self.config.optional_patches)
