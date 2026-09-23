@@ -59,7 +59,7 @@ jobs:
             --target-file "${GKI_TARGET_FILE}" \
             --ksu-version "${FIXED_KSU_VERSION}" \
             --no-zram \
-            --no-bbr \
+            --bbr \
             --optional-patches="" \
             --no-release \
             --dry-run
@@ -100,7 +100,7 @@ jobs:
             --target-file "${GKI_TARGET_FILE}" \
             --ksu-version "${FIXED_KSU_VERSION}" \
             --no-zram \
-            --no-bbr \
+            --bbr \
             --optional-patches="" \
             --no-release \
             --workspace "${GKI_WORKSPACE}"

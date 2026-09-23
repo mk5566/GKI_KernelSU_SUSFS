@@ -14,11 +14,12 @@ class ConservativeProfileTests(unittest.TestCase):
         self.builder = KernelBuilder(
             BuildConfig(sub_level="211", os_patch_level="2026-09"), self.temp.name
         )
-    def test_defaults_keep_tcp_unchanged_and_select_phone_compressor(self):
+    def test_defaults_select_bbr_and_phone_compressor(self):
         self.assertFalse(self.builder.config.use_zram)
-        self.assertFalse(self.builder.config.set_default_bbr)
+        self.assertTrue(self.builder.config.set_default_bbr)
         self.assertNotIn("CONFIG_TCP_CONG_BBR3", self.builder.BBR_CONFIG_UPDATES)
         self.assertIn("lz4kd-builtin", self.builder.config.artifact_stem)
+        self.assertIn("bbr1-default", self.builder.config.artifact_stem)
         self.assertEqual(self.builder.config.optional_patches, ())
 
     def test_bbrv3_selection_is_rejected_without_silent_fallback(self):
@@ -36,9 +37,9 @@ class ConservativeProfileTests(unittest.TestCase):
         self.assertEqual(first.artifact_stem, second.artifact_stem)
         self.assertNotEqual(first.artifact_stem, self.builder.config.artifact_stem)
 
-    def test_upstream_bbrv1_remains_an_explicit_option(self):
-        selected = BuildConfig(sub_level="211", os_patch_level="2026-09", set_default_bbr=True)
-        self.assertIn("bbr1-default", selected.artifact_stem)
+    def test_rom_tcp_remains_an_explicit_option(self):
+        selected = BuildConfig(sub_level="211", os_patch_level="2026-09", set_default_bbr=False)
+        self.assertIn("rom-tcp", selected.artifact_stem)
         self.assertEqual(self.builder.BBR_CONFIG_UPDATES["CONFIG_TCP_CONG_BBR"], "y")
 
     def test_lz4kd_copy_never_touches_module_loader(self):

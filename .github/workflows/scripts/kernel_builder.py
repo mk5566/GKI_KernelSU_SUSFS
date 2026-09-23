@@ -69,23 +69,12 @@ class KernelBuilder:
         # Legacy options are explicitly off; SUSFS 2.3 uses KernelSU umount.
         "CONFIG_KSU_SUSFS_TRY_UMOUNT": "n",
         "CONFIG_KSU_SUSFS_SUS_SU": "n",
-        "CONFIG_KPM": "n",
-        "CONFIG_TMPFS_XATTR": "y",
-        "CONFIG_TMPFS_POSIX_ACL": "y",
-        "CONFIG_IP_NF_TARGET_TTL": "y",
-        "CONFIG_IP6_NF_TARGET_HL": "y",
-        "CONFIG_IP6_NF_MATCH_HL": "y",
-        "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE": "y",
-        "CONFIG_CC_OPTIMIZE_FOR_SIZE": None,
     }
 
     BBR_CONFIG_UPDATES = {
         "CONFIG_TCP_CONG_ADVANCED": "y",
         "CONFIG_TCP_CONG_BBR": "y",
         "CONFIG_DEFAULT_BBR": "y",
-        "CONFIG_DEFAULT_CUBIC": None,
-        "CONFIG_DEFAULT_TCP_CONG": '"bbr"',
-        "CONFIG_NET_SCH_FQ": "y",
     }
 
     def __init__(self, config: BuildConfig, workspace: str,
@@ -599,14 +588,30 @@ class KernelBuilder:
         for symbol in declared:
             if symbol.startswith("KSU_SUSFS_"):
                 updates.setdefault(f"CONFIG_{symbol}", "n")
-        if self.config.set_default_bbr:
-            updates.update(self.BBR_CONFIG_UPDATES)
         self._upsert_defconfig(updates)
+        if self.config.set_default_bbr:
+            self._configure_bbr()
 
         if self.config.use_zram:
             self._configure_zram()
         self._verify_ishtar_zram_plan(self._defconfig_path())
         verify_no_retired_config(self._defconfig_path())
+
+    def _configure_bbr(self):
+        config_file = self._defconfig_path()
+        content = config_file.read_text(encoding="utf-8")
+        marker = "CONFIG_INET_DIAG_DESTROY=y\n"
+        bbr_lines = (
+            "CONFIG_TCP_CONG_ADVANCED=y\n"
+            "CONFIG_TCP_CONG_BBR=y\n"
+            "CONFIG_DEFAULT_BBR=y\n"
+        )
+        if "CONFIG_TCP_CONG_BBR=y" not in content:
+            if marker in content:
+                content = content.replace(marker, marker + bbr_lines, 1)
+                config_file.write_text(content, encoding="utf-8")
+            else:
+                self._upsert_defconfig(self.BBR_CONFIG_UPDATES)
 
     def _configure_zram(self):
         fragment = (self.work_dir / "common/arch/arm64/configs/"
@@ -724,6 +729,8 @@ class KernelBuilder:
                 self._verify_zstd_config(final_config)
             else:
                 self._verify_lz4kd_config(final_config)
+            if self.config.set_default_bbr:
+                self._verify_bbr_config(final_config)
             verify_no_retired_config(final_config)
             self._verify_patch_safety()
             shutil.copyfile(final_config, self.work_dir / "final.config")
@@ -828,6 +835,14 @@ class KernelBuilder:
                         'CONFIG_ZRAM_DEF_COMP="lz4kd"'):
             if setting not in text:
                 raise RuntimeError(f"Ishtar LZ4KD deployment missing in .config: {setting}")
+
+    @staticmethod
+    def _verify_bbr_config(config_path: Path):
+        text = config_path.read_text(encoding="utf-8").splitlines()
+        for setting in ('CONFIG_TCP_CONG_BBR=y', 'CONFIG_DEFAULT_BBR=y',
+                        'CONFIG_DEFAULT_TCP_CONG="bbr"'):
+            if setting not in text:
+                raise RuntimeError(f"Upstream BBRv1 deployment missing in .config: {setting}")
 
     def _verify_patch_safety(self):
         reject_retired_aliases(self.config.optional_patches)

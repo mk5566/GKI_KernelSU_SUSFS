@@ -83,7 +83,7 @@ class BuildConfig:
     kernelsu_commit: Optional[str] = None
     susfs_commit: Optional[str] = None
     use_zram: bool = False
-    set_default_bbr: bool = False
+    set_default_bbr: bool = True
     optional_patches: tuple[str, ...] = ()
     make_release: bool = False
     custom_version: Optional[str] = None

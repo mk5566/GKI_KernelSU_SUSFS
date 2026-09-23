@@ -23,7 +23,7 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("FIXED_KSU_VERSION: 'Stable(standard)'", content)
         self.assertEqual(content.count('--ksu-version "${FIXED_KSU_VERSION}"'), 2)
         self.assertEqual(content.count("--no-zram"), 2)
-        self.assertEqual(content.count("--no-bbr"), 2)
+        self.assertEqual(content.count("--bbr"), 2)
         self.assertEqual(content.count('--optional-patches=""'), 2)
         self.assertEqual(content.count("--no-release"), 2)
 

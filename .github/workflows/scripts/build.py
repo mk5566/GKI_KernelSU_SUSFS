@@ -44,7 +44,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--susfs-commit", default=None)
     parser.add_argument("--zram", action="store_true", default=False, help="Request built-in ZSTD instead of the ishtar LZ4KD default")
     parser.add_argument("--no-zram", action="store_false", dest="zram", help="Use the ishtar built-in LZ4KD default")
-    parser.add_argument("--bbr", action="store_true", default=False, help="Select upstream BBRv1 as default")
+    parser.add_argument("--bbr", action="store_true", default=True, help="Select upstream BBRv1 as default")
     parser.add_argument("--no-bbr", action="store_false", dest="bbr", help="Preserve upstream TCP defaults")
     parser.add_argument("--optional-patches", default="", help="Comma-separated aliases from patches/5.15/APPLY_ORDER.txt")
     parser.add_argument("--no-release", action="store_true", help="Do not create GitHub Release")
