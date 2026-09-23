@@ -87,7 +87,7 @@ class KernelBuilder:
             self.env["CCACHE_EXEC"] = ccache
         self.env["CCACHE_COMPILERCHECK"] = "%compiler% -dumpmachine; %compiler% -dumpversion"
         self.env["CCACHE_NOHASHDIR"] = "true"
-        self.env["CCACHE_HARDLINK"] = "false"
+        self.env.pop("CCACHE_HARDLINK", None)
         self.env["CCACHE_NOHARDLINK"] = "true"
         self.env.setdefault("CCACHE_DIR", os.path.expanduser("~/.ccache"))
         self.env.setdefault("GIT_TERMINAL_PROMPT", "0")
@@ -583,17 +583,21 @@ class KernelBuilder:
     def _configure_ksu_susfs(self):
         config_file = self._defconfig_path()
         content = config_file.read_text(encoding="utf-8")
+        # In SukiSU-Ultra, CONFIG_KSU defaults to y when KPROBES and EXT4_FS are set,
+        # so savedefconfig omits CONFIG_KSU and outputs only CONFIG_KSU_SUSFS=y.
+        # Ensure CONFIG_KSU=y is not in gki_defconfig to prevent savedefconfig mismatch.
+        if "CONFIG_KSU=y\n" in content:
+            content = content.replace("CONFIG_KSU=y\n", "")
         marker = "CONFIG_INTERCONNECT=y\n"
-        ksu_lines = (
-            "CONFIG_KSU=y\n"
-            "CONFIG_KSU_SUSFS=y\n"
-        )
-        if "CONFIG_KSU=y" not in content:
+        ksu_lines = "CONFIG_KSU_SUSFS=y\n"
+        if "CONFIG_KSU_SUSFS=y" not in content:
             if marker in content:
                 content = content.replace(marker, marker + ksu_lines, 1)
                 config_file.write_text(content, encoding="utf-8")
             else:
-                self._upsert_defconfig({"CONFIG_KSU": "y", "CONFIG_KSU_SUSFS": "y"})
+                self._upsert_defconfig({"CONFIG_KSU_SUSFS": "y"})
+        else:
+            config_file.write_text(content, encoding="utf-8")
 
     def _configure_bbr(self):
         config_file = self._defconfig_path()

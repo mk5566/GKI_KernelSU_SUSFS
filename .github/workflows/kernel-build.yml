@@ -98,7 +98,6 @@ jobs:
           ccache --set-config=hard_link=false
           ccache -z
           echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
-          echo "CCACHE_HARDLINK=false" >> "$GITHUB_ENV"
           echo "CCACHE_NOHARDLINK=true" >> "$GITHUB_ENV"
 
       - name: Build fixed ishtar kernel
