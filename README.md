@@ -48,7 +48,7 @@ The builder does not produce a generic `boot.img`: its previous header-v4/test-k
 
 ## Patch policy (`patches/5.15`)
 
-`APPLY_ORDER.txt` is authoritative. It currently requires only `0001-add-ishtar-native-zstd-fragment.patch`, which adds a configuration file to the checked-out kernel. It does not select ZSTD unless `--zram` is used. The former BBRv3, generic SIMD `memcmp`, suspend, IRQ and F2FS patches are retained solely for review and are not in the active order. Required patches must apply exactly with zero fuzz. See [KERNEL_CHANGE_PLAN.md](KERNEL_CHANGE_PLAN.md).
+`APPLY_ORDER.txt` is authoritative. It requires the native ZSTD fragment and the ishtar built-in LZ4KD patch. The default retains the phone's built-in zRAM/zsmalloc and LZ4KD compressor; `--zram` selects ZSTD for a separate experiment. The LZ4KD codec files are copied from the freshly cloned SukiSU_patch revision, while its `kernel/module.c` changes are excluded. The saved BBRv3, SIMD `memcmp`, suspend, IRQ and F2FS patches remain review references because the current backport has known correctness and device-qualification gaps. Required patches apply exactly with zero fuzz. See [KERNEL_CHANGE_PLAN.md](KERNEL_CHANGE_PLAN.md).
 
 ---
 

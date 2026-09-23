@@ -477,9 +477,33 @@ class KernelBuilder:
             logger.warning("69_hide_stuff.patch not found, continuing")
 
     def apply_zram_patches(self):
-        # Android 5.15 already has native ZSTD; no third-party compressor copy.
-        if self.config.use_zram:
-            logger.info("Native ZSTD requested; no external zram patches")
+        # Copy only the LZ4KD codec from the freshly cloned helper revision.
+        # The helper's lz4kd.patch also changes kernel/module.c; never apply it.
+        source = self.sukisu_patch_dir / "other/zram/lz4k"
+        common = self.work_dir / "common"
+        files = [
+            "crypto/lz4kd.c",
+            "include/linux/lz4kd.h",
+            "lib/lz4kd/Makefile",
+            "lib/lz4kd/lz4kd_private.h",
+            "lib/lz4kd/lz4kd_encode_private.h",
+            "lib/lz4kd/lz4kd_encode.c",
+            "lib/lz4kd/lz4kd_encode_delta.c",
+            "lib/lz4kd/lz4kd_decode.c",
+            "lib/lz4kd/lz4kd_decode_delta.c",
+        ]
+        for relative in files:
+            src, dst = source / relative, common / relative
+            if not src.is_file() or src.is_symlink():
+                raise RuntimeError(f"Required LZ4KD source missing or unsafe: {src}")
+            if dst.exists() or dst.is_symlink():
+                raise RuntimeError(f"LZ4KD destination already exists: {dst}")
+        for relative in files:
+            src, dst = source / relative, common / relative
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dst)
+        logger.info("Copied %d LZ4KD source files from helper %s", len(files),
+                    self._git_head(self.sukisu_patch_dir))
 
     def _strip_duplicate_c_function(self, content: str, signature: str) -> str:
         starts = []
@@ -589,8 +613,8 @@ class KernelBuilder:
             elif line and not line.startswith("#"):
                 raise RuntimeError(f"Unsupported fragment line: {line!r}")
         self._upsert_defconfig(updates)
-        # Do not force ZRAM/ZSMALLOC built-in, change MODULE_SIG_FORCE,
-        # enable writeback, or remove entries from vendor/GKI module lists.
+        # One Kconfig choice can have only one default compressor.
+        self._upsert_defconfig({"CONFIG_ZRAM_DEF_COMP_LZ4KD": None})
 
     def _verify_ishtar_zram_plan(self, defconfig_path: Path):
         """Fail before compilation if Image-only output would lose ishtar swap."""
@@ -687,6 +711,8 @@ class KernelBuilder:
             self._verify_susfs_config(final_config)
             if self.config.use_zram:
                 self._verify_zstd_config(final_config)
+            else:
+                self._verify_lz4kd_config(final_config)
             shutil.copyfile(final_config, self.work_dir / "final.config")
             logger.info(f"=== Kernel compile succeeded: {image_path} ===")
             return True
@@ -780,6 +806,16 @@ class KernelBuilder:
             if setting not in text.splitlines():
                 raise RuntimeError(f"Native ZSTD request not resolved in .config: {setting}")
 
+    @staticmethod
+    def _verify_lz4kd_config(config_path: Path):
+        text = config_path.read_text(encoding="utf-8").splitlines()
+        for setting in ('CONFIG_ZRAM=y', 'CONFIG_ZSMALLOC=y',
+                        'CONFIG_CRYPTO_LZ4KD=y',
+                        'CONFIG_ZRAM_DEF_COMP_LZ4KD=y',
+                        'CONFIG_ZRAM_DEF_COMP="lz4kd"'):
+            if setting not in text:
+                raise RuntimeError(f"Ishtar LZ4KD deployment missing in .config: {setting}")
+
     def create_anykernel_zips(self) -> list:
         logger.info("=== Creating AnyKernel3 zip ===")
         self._chdir(self.work_dir)
@@ -856,7 +892,7 @@ class KernelBuilder:
             f"- SUSFS: `{self._git_head(self.susfs_dir)}`",
             f"- SukiSU_patch: `{self._git_head(self.sukisu_patch_dir)}`",
             f"- AnyKernel3: `{self._git_head(self.anykernel_dir)}`",
-            f"- ZRAM: {'native ZSTD requested' if self.config.use_zram else 'upstream configuration unchanged; ishtar deployment requires review'}",
+            f"- ZRAM: {'built-in ZSTD experiment requested' if self.config.use_zram else 'built-in LZ4KD default'}",
             f"- Upstream BBRv1 default: {'requested' if self.config.set_default_bbr else 'unchanged'}",
             "- Qualification: GKI build checks enabled; device compatibility still requires boot/module validation",
             f"- Image SHA-256: `{self._sha256(self._kernel_image_path())}`",

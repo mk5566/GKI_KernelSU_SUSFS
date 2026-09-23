@@ -14,10 +14,32 @@ class ConservativeProfileTests(unittest.TestCase):
         self.builder = KernelBuilder(
             BuildConfig(sub_level="211", os_patch_level="2026-09"), self.temp.name
         )
-    def test_defaults_make_no_automatic_tuning_request(self):
+    def test_defaults_keep_tcp_unchanged_and_select_phone_compressor(self):
         self.assertFalse(self.builder.config.use_zram)
         self.assertFalse(self.builder.config.set_default_bbr)
         self.assertNotIn("CONFIG_TCP_CONG_BBR3", self.builder.BBR_CONFIG_UPDATES)
+        self.assertIn("lz4kd-builtin", self.builder.config.artifact_stem)
+
+    def test_lz4kd_copy_never_touches_module_loader(self):
+        helper = self.builder.sukisu_patch_dir / "other/zram/lz4k"
+        common = self.builder.work_dir / "common"
+        module = common / "kernel/module.c"
+        module.parent.mkdir(parents=True)
+        module.write_text("strict module version check\n")
+        for relative in (
+            "crypto/lz4kd.c", "include/linux/lz4kd.h",
+            "lib/lz4kd/Makefile", "lib/lz4kd/lz4kd_private.h",
+            "lib/lz4kd/lz4kd_encode_private.h", "lib/lz4kd/lz4kd_encode.c",
+            "lib/lz4kd/lz4kd_encode_delta.c", "lib/lz4kd/lz4kd_decode.c",
+            "lib/lz4kd/lz4kd_decode_delta.c",
+        ):
+            src = helper / relative
+            src.parent.mkdir(parents=True, exist_ok=True)
+            src.write_text(relative)
+        with patch.object(self.builder, "_git_head", return_value="test-revision"):
+            self.builder.apply_zram_patches()
+        self.assertEqual(module.read_text(), "strict module version check\n")
+        self.assertEqual((common / "crypto/lz4kd.c").read_text(), "crypto/lz4kd.c")
     def test_mount_only_does_not_rewrite_task_mmu(self):
         path = self.builder.work_dir / "common/fs/proc/task_mmu.c"
         path.parent.mkdir(parents=True)
@@ -62,6 +84,18 @@ class ConservativeProfileTests(unittest.TestCase):
             "CONFIG_CRYPTO_LZ4KD=y\nCONFIG_ZRAM_DEF_COMP_LZ4KD=y\n"
         )
         self.builder._verify_ishtar_zram_plan(path)
+
+    def test_compiled_lz4kd_must_be_builtin_and_default(self):
+        path = self.builder.work_dir / ".config"
+        path.write_text(
+            "CONFIG_ZRAM=y\nCONFIG_ZSMALLOC=y\n"
+            "CONFIG_CRYPTO_LZ4KD=y\nCONFIG_ZRAM_DEF_COMP_LZ4KD=y\n"
+            'CONFIG_ZRAM_DEF_COMP="lz4kd"\n'
+        )
+        self.builder._verify_lz4kd_config(path)
+        path.write_text(path.read_text().replace("CONFIG_ZRAM=y", "CONFIG_ZRAM=m"))
+        with self.assertRaisesRegex(RuntimeError, "CONFIG_ZRAM=y"):
+            self.builder._verify_lz4kd_config(path)
 
     def test_kernel_name_step_preserves_upstream_scripts(self):
         scripts = self.builder.work_dir / "common/scripts"

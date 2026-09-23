@@ -1,5 +1,21 @@
 # Build audit — 2026-09-23
 
+## Follow-up source candidate (not built)
+
+After the manual build failed at the intentional zRAM gate, the repository
+gained a required ishtar LZ4KD patch. It sets zRAM, zsmalloc and LZ4KD built
+in, removes their now-obsolete GKI module-list entries, and copies nine codec
+files from the freshly cloned SukiSU_patch tree. It never applies that
+helper's `kernel/module.c` hunk. Both required patches applied sequentially
+with exact checks to the selected September common SHA. The Python suite ran
+44 tests (43 passed, one Windows symlink test skipped), strict repo guard
+passed, and the manual-only workflow trigger remained unchanged. These checks
+do not establish canonical defconfig, a successful Linux build, KMI/module
+compatibility, or a bootable ishtar image. The owner must manually run GitHub
+Actions to expose those results. The saved BBRv3/SIMD/suspend/F2FS/IRQ series
+is still inactive for the defects and missing device evidence in the change
+plan.
+
 ## Outcome
 
 **No release image was produced or flashed.** The GitHub Actions build was not dispatched. The exact upstream GKI defconfig differs from the phone's built-in zRAM/zsmalloc deployment. The two on-disk system_dlkm modules are from 5.15.194 and are unqualified for this 5.15.211 build. The builder now rejects the mismatch before compilation. Passing a manifest-only dry run is not a kernel build.

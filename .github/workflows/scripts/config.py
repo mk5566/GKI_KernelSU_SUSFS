@@ -156,7 +156,7 @@ class BuildConfig:
     @property
     def variant_suffix(self) -> str:
         parts = [
-            "zstd-requested" if self.use_zram else "upstream-zram",
+            "zstd-requested" if self.use_zram else "lz4kd-builtin",
             "bbr1-default" if self.set_default_bbr else "rom-tcp",
             "sukisu-dev" if self.kernelsu_version == KSUVersion.DEV.value else "sukisu-stable",
         ]

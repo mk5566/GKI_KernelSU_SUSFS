@@ -30,7 +30,7 @@ on:
         type: string
         default: ''
       use_zram:
-        description: 'Request native ZSTD; requires a validated zRAM deployment'
+        description: 'Use built-in ZSTD instead of the phone LZ4KD default (experiment)'
         required: true
         type: boolean
         default: false

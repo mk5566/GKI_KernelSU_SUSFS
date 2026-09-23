@@ -1,5 +1,41 @@
 # Kernel change plan — ishtar / latest Android 13 GKI 5.15
 
+## 2026-09-23 follow-up
+
+The owner requested restoration of the saved performance series after the
+previous build stopped at the built-in zRAM gate. A new required patch now
+integrates LZ4KD and changes the two upstream GKI zRAM modules to built-ins,
+matching the observed phone config. It removes the two module-list entries and
+copies only the codec files from the current helper revision. The helper's
+module-version bypass is excluded. This is a source candidate: canonical
+defconfig, Linux compilation, KMI and module checks, and device boot remain
+unverified until the owner manually runs the workflow and validates a build.
+
+The full saved series is not active. In particular, the saved BBRv3 backport
+has an unhandled allocation failure followed by state dereferences, the SIMD
+`memcmp` loop uses vector registers without a kernel SIMD context, and the
+freeze-timeout patch returns before applying a sysfs write. The connected
+phone's stable running kernel does not prove that these repository patches
+are the same code or safe on the selected GKI source. The other suspend,
+storage and IRQ changes need separate device measurements and failure checks.
+
+All ten saved performance patches passed exact sequential application against
+the selected common SHA with Linux line endings. That establishes source
+context only, not correctness or a measured gain.
+
+| Saved patch | Review result | Default build decision |
+|---|---|---|
+| BBRv3 backport | `bbr3_init()` can return after `kmalloc(GFP_ATOMIC)` fails; later callbacks dereference the unset pointer. It also masks shared TCP layout changes from `__GENKSYMS__`. | Inactive pending a corrected backport, ABI review and failure-path test. |
+| `optimise_memcmp` | Its long-input path uses AArch64 vector registers in generic kernel `memcmp` without a kernel SIMD context. | Inactive pending a kernel-safe implementation and correctness/performance tests. |
+| `reduce_freeze_timeout` | An early `return n` in `pm_freeze_timeout_store()` discards writes while claiming success; shortening 20 seconds to one also needs suspend validation. | Inactive. |
+| `silence_irq_cpu_logspam` | Downgrades an IRQ-affinity failure warning, obscuring a useful failure signal. | Inactive. |
+| `avoid_extra_s2idle_wake_attempts` | Changes abort wakeup signaling while ishtar uses s2idle; no wakeup/abort race validation exists. | Inactive. |
+| `minimise_wakeup_time` | Changes alarmtimer wake hold duration; no alarm, suspend and idle power comparison exists. | Inactive. |
+| `f2fs_reduce_congestion` | Reduces the F2FS congestion wait from 20 ms to 6 ms without device write-pressure or thermal evidence. | Inactive. |
+| `f2fs_enlarge_min_fsync_blocks` | Sets a 20-block default; the running phone already exposes 20, but the source of that runtime value and durability impact are unverified. | Inactive. |
+| `adjust_cpu_scan_order` | Small scheduler scan order change applies, but vendor WALT and frame/thermal effects have not been measured. | Inactive. |
+| `clear_page_16bytes_align` | Alignment-only arm64 change applies; no ishtar benchmark demonstrates a gain. | Inactive. |
+
 This plan uses the read-only [device baseline](DEVICE_BASELINE.md) and the supplied 2026-09-23 audit. The current worktree already contains uncommitted changes to use a shared `patches/5.15/` directory and resolve the latest monthly branch; preserve those edits. Ignore the removed 5.15.180 target.
 
 ## Must fix before next build
