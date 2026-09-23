@@ -95,14 +95,14 @@ class PatchSafetyTests(unittest.TestCase):
         with self.assertRaises(ValueError): self.manifest("!missing.patch\n")
     def test_comment_only_manifest_is_valid(self):
         self.assertEqual(self.manifest("# baseline: no optional kernel patches\n"), [])
-    def test_real_manifest_off_by_default_and_all_ten_selectable(self):
+    def test_real_manifest_off_by_default_and_only_two_selectable(self):
         default = read_patch_order(PROJECT_PATCHES)
         aliases = tuple(line[1:].split(":", 1)[0]
                         for line in (PROJECT_PATCHES / "APPLY_ORDER.txt").read_text().splitlines()
                         if line.startswith("?"))
         self.assertEqual(len(default), 2)
-        self.assertEqual(len(aliases), 10)
-        self.assertEqual(len(read_patch_order(PROJECT_PATCHES, aliases)), 12)
+        self.assertEqual(set(aliases), {"cpu-scan", "clear-page"})
+        self.assertEqual(len(read_patch_order(PROJECT_PATCHES, aliases)), 4)
     def test_stale_clone_rejected(self):
         builder = KernelBuilder(BuildConfig(sub_level="211", os_patch_level="2026-09"), str(self.root))
         repo = self.root / "checkout"

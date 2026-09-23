@@ -1,6 +1,6 @@
 # GKI SukiSU-Ultra + SUSFS Build System (Slim 5.15)
 
-Automated Generic Kernel Image (GKI) build system tracking the newest published **android13-5.15** monthly branch, with integrated SukiSU-Ultra and a limited SUSFS profile. The current September 2026 branch reports **5.15.211** (checked 2026-09-23). The default source candidate uses built-in ishtar LZ4KD zRAM and leaves upstream TCP unchanged. Native ZSTD, upstream BBRv1, and the saved performance patches are per-build choices.
+Automated Generic Kernel Image (GKI) build system for Xiaomi 13 Ultra (`ishtar`) tracking the newest published **android13-5.15** monthly branch, with integrated SukiSU-Ultra and a limited SUSFS profile. The GitHub workflow is intentionally single-profile: stable pinned SukiSU, built-in ishtar LZ4KD zRAM, upstream TCP behavior, no optional tuning patches, no release job, and no notification branch. Eight unsafe or unqualified overrides have been removed and are rejected if reintroduced.
 
 > [!NOTE]
 > The current engineering target is Xiaomi 13 Ultra (`ishtar`). The connected device baseline is in [DEVICE_BASELINE.md](DEVICE_BASELINE.md). A successful repository dry run does not qualify an image for flashing.
@@ -13,31 +13,26 @@ Automated Generic Kernel Image (GKI) build system tracking the newest published 
 |---|---|---|
 | [SukiSU-Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra) | Advanced kernel-based root solution | Included |
 | SUSFS | Limited mount profile; correctness and module compatibility still need a full build and device checks | Included |
-| TCP | Preserve the branch default; `--bbr` requests upstream BBRv1 | No override by default |
-| zRAM | Built-in zRAM/zsmalloc and LZ4KD by default; `--zram` requests native ZSTD. | Source candidate; full build unverified |
-| Performance patches | Each saved patch can be selected by alias in a manual run. | All off by default |
+| TCP | Preserve the branch default; the CI workflow does not override the congestion controller. | Fixed profile |
+| zRAM | Built-in zRAM/zsmalloc with ishtar LZ4KD. | Fixed profile; full device qualification still required |
+| Patch safety | Eight overrides retired; pinned-source regression checks before integration, compilation and packaging. | Build-time policy; not device qualification |
+| Optional tuning patches | Present only for local engineering review; the CI workflow applies none. | Disabled in CI |
 
 ---
 
 ## Manual GitHub Actions build
 
-This project builds only in GitHub Actions. The workflow has a single `workflow_dispatch` trigger: pushing a commit does not start a build. Run it yourself from the repository's default branch after reviewing the inputs.
+This project builds only through a manually dispatched GitHub Actions workflow. Pushing a commit does not start a build, and the workflow exposes **no build choices**.
 
-1. Navigate to the **Actions** tab in your repository.
-2. Select **Kernel Build**.
+1. Open the repository **Actions** tab.
+2. Select **Build Xiaomi 13 Ultra Kernel**.
 3. Click **Run workflow**.
-4. Review the fixed target (`android13` / `5.15`) and configure options:
-   * **Sublevel and OS patch**: resolved from the newest published Android GKI monthly branch
-   * **SukiSU Version**: `Dev(development)` tracks `main`; `Stable(standard)` uses a recorded revision
-   * **SUSFS**: tracks the `gki-android13-5.15` branch unless a commit is supplied
-   * **Native ZSTD request**: `false` by default; leave off for the current `lz4kd` phone baseline.
-   * **Upstream BBRv1 request**: `false` by default.
-   * **Optional patches**: leave blank for none, or enter comma-separated aliases from the table below.
-5. Review the uploaded `Image`, AnyKernel candidate, build log, `BUILD_INFO.md`, final `.config`, locked manifest, target selection, and `SHA256SUMS.txt`. The target is selected once per run; a changed common branch causes a failed build instead of silently building different source. No boot image is generated. The GitHub workflow has not been run for the modified tree in this Windows session.
+4. The workflow resolves the newest published Android 13 / 5.15 GKI target once, validates the repository safety policy, and builds the fixed ishtar profile.
+5. Download the uploaded artifacts and review `Image`, the AnyKernel candidate, `BUILD_INFO.md`, `final.config`, `manifest.lock.xml`, `source-safety.json`, `target-selection.json`, the build log, and `SHA256SUMS.txt`.
 
-The `make_release` and `send_telegram` options are off by default. A release is handled in a separate job after the uploaded files pass checksum verification. The build job uses read-only repository permission; only the optional release job receives `contents: write`. The Python CLI is an internal workflow component; local runs are for diagnostics only.
+The fixed CI profile uses `Stable(standard)` SukiSU, built-in LZ4KD, upstream TCP defaults, an empty optional-patch selection, and no GitHub release or Telegram notification path. The command-line backend retains engineering switches for local diagnostics, but GitHub Actions does not expose them.
 
-The ishtar built-in LZ4KD source patch addresses the earlier pre-build zRAM gate. The full Linux build, canonical defconfig, KMI and module checks have not yet been run for this candidate.
+The ishtar built-in LZ4KD source patch addresses the earlier pre-build zRAM gate. A successful CI build still does not prove bootability, vendor-module compatibility, suspend behavior, storage durability, thermals, battery life, or performance on the phone.
 
 ---
 
@@ -49,22 +44,41 @@ The builder does not produce a generic `boot.img`: its previous header-v4/test-k
 
 ## Patch policy (`patches/5.15`)
 
-`APPLY_ORDER.txt` is authoritative. `!` entries always apply; `?alias:filename.patch` entries apply only when their alias is selected for that run. The default retains built-in zRAM/zsmalloc and LZ4KD; `--zram` selects ZSTD for a separate experiment. The LZ4KD codec files come from the freshly cloned SukiSU_patch revision; its `kernel/module.c` changes are excluded. A selected patch must apply exactly or the build fails. The artifact name and `BUILD_INFO.md` record the selected set.
+Use a clean extraction of the hardened project, or apply the repository-level
+delivery diff to the matching original project. Merely overlaying ZIP contents
+can leave the eight deleted patch files behind; the new guard deliberately
+rejects those leftovers. Do not put the delivery diff into the kernel patch
+manifest or apply it to `kernel/common`.
 
-| Alias for `optional_patches` | Saved patch |
+`APPLY_ORDER.txt` is authoritative. Required `!` entries apply exactly or the build fails. Optional entries remain available only to the local engineering backend; the GitHub workflow always passes an empty optional selection. CI retains built-in zRAM/zsmalloc and LZ4KD and does not request ZSTD or a TCP congestion-controller override. The LZ4KD codec files come from the freshly cloned SukiSU_patch revision; its `kernel/module.c` changes are excluded.
+
+| Alias for `optional_patches` | Retained experiment |
 |---|---|
 | `cpu-scan` | `adjust_cpu_scan_order.patch` |
 | `clear-page` | `clear_page_16bytes_align.patch` |
-| `f2fs-fsync` | `f2fs_enlarge_min_fsync_blocks.patch` |
-| `f2fs-congestion` | `f2fs_reduce_congestion.patch` |
-| `alarm-wakeup` | `minimise_wakeup_time.patch` |
-| `s2idle-wake` | `avoid_extra_s2idle_wake_attempts.patch` |
-| `irq-log` | `silence_irq_cpu_logspam.patch` |
-| `memcmp` | `optimise_memcmp.patch` |
-| `freeze-timeout` | `reduce_freeze_timeout.patch` |
-| `bbrv3` | `0001-net-tcp-backport-BBRv3-to-android13-5.15.patch` |
 
-Example manual input: `cpu-scan,clear-page`. Selecting `bbrv3` builds it in and makes it the default TCP congestion control; leave **Upstream BBRv1 request** off for that run. These patches remain unverified, and the [change plan](KERNEL_CHANGE_PLAN.md) identifies concrete defects in `bbrv3`, `memcmp`, and `freeze-timeout`. A build with them selected is an experiment, not a device-qualified release. Keep `make_release` off while testing.
+The GitHub workflow always leaves `optional_patches` empty. The two retained experiments are not performance- or device-qualified and are not part of the CI build.
+
+**Retired and rejected:** `bbrv3`, `memcmp`, `freeze-timeout`, `s2idle-wake`,
+`alarm-wakeup`, `f2fs-congestion`, `f2fs-fsync`, and `irq-log`. Their patch files
+have been removed, not replaced by no-ops. Stale local aliases and restored patch files fail validation; CI has no tuning-patch input to select them. Original names,
+SHA-256 hashes and reasons are in
+[`RETIRED_PATCHES.json`](patches/5.15/RETIRED_PATCHES.json).
+
+This correction retains the selected upstream TCP, scalar AArch64 `memcmp`,
+freezer, s2idle, alarmtimer, F2FS policy and rate-limited IRQ failure warning.
+It **does not supply a repaired BBRv3 backport**. The GitHub workflow does not enable upstream BBRv1 as a fallback either. Existing ROM scripts that request `bbr3` must be reviewed before trying an image without it; the build does not rewrite the phone's settings.
+
+Protected source bytes are checked against the common commit captured before
+helper setup, not a helper-modified `HEAD`. The checks reject changed protected
+files, new BBRv3/PLB backport source, and enabled BBR3 configuration. They run at
+multiple integration/build/package boundaries and emit `source-safety.json`.
+An upstream monthly change that violates this policy stops the build for
+review. These checks do not replace canonical defconfig, full compilation,
+ABI/KMI or module validation. See [PATCH_SAFETY_AUDIT.md](PATCH_SAFETY_AUDIT.md)
+for verified findings, scope and limitations.
+
+The safety checks add build-time work only; no new kernel hot-path logic was introduced. Performance equality with the removed patches or the running custom kernel has **not** been measured. The simplified workflow uploads artifacts only and has no release path.
 
 ---
 
@@ -77,7 +91,7 @@ Example manual input: `cpu-scan,clear-page`. Selecting `bbrv3` builds it in and 
 │       ├── kernel-build.yml       # latest android13-5.15 workflow
 │       └── scripts/               # Python build engine & config
 ├── patches/
-│   ├── 5.15/                      # Active patch order and inactive review references
+│   ├── 5.15/                      # Active order, retained experiments and retirement inventory
 │   └── susfs/                     # SUSFS patch context adaptation
 └── README.md
 ```
@@ -90,10 +104,7 @@ selects the newest, and reads the matching kernel/common Makefile at the selecte
 The KMI family remains **android13-5.15**.
 This does not certify vendor-module ABI compatibility or bootability.
 
-The default SukiSU option tracks `main`; Stable selects the recorded SukiSU
-revision `cf87e3f4ddd3f6e5464d85acf56aaa6950e70841`.
-SUSFS tracks `gki-android13-5.15`. Optional SukiSU and SUSFS commit inputs
-can pin either checkout. Both SukiSU options compile it into the kernel (`CONFIG_KSU=y`)
+The GitHub workflow uses the recorded stable SukiSU revision `cf87e3f4ddd3f6e5464d85acf56aaa6950e70841`. SUSFS tracks `gki-android13-5.15`. The command-line backend can still pin engineering checkouts, but CI exposes no source-selection inputs. The selected SukiSU build compiles it into the kernel (`CONFIG_KSU=y`)
 and apply this repository's mount-only SUSFS integration. The branch name
 `builtin` is not required to compile SukiSU into a kernel.
 

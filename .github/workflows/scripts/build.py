@@ -59,6 +59,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def create_build_config(args: argparse.Namespace, selection: TargetSelection | None = None) -> BuildConfig:
+    optional_patches = parse_optional_patches(args.optional_patches)
     if selection is None:
         latest_sublevel, latest_patch = resolve_latest_target()
     else:
@@ -78,7 +79,7 @@ def create_build_config(args: argparse.Namespace, selection: TargetSelection | N
         susfs_commit=args.susfs_commit,
         use_zram=args.zram,
         set_default_bbr=args.bbr,
-        optional_patches=parse_optional_patches(args.optional_patches),
+        optional_patches=optional_patches,
         make_release=not args.no_release,
         custom_version=args.custom_version,
     )

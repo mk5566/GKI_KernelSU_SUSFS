@@ -1,6 +1,40 @@
 # Build audit — 2026-09-23
 
-## Per-build optional patch selection
+## Current patch-safety audit addendum
+
+The safety-by-retirement changes are documented in
+[PATCH_SAFETY_AUDIT.md](PATCH_SAFETY_AUDIT.md). Eight risky overrides are removed
+and hard-rejected; only `cpu-scan` and `clear-page` remain optional. The default
+selects neither. BBRv3 is no longer provided. No replacement kernel algorithm
+or timing heuristic was introduced.
+
+The regression suite passes 87 tests on Linux. New coverage checks all eight
+aliases, restored/renamed patches, enabled BBR3 config, 32 protected source
+files against the initially pinned SHA, staged/committed changes, symlinks,
+forbidden source additions and compile/package refusal. Source-guard tests use
+synthetic Git repositories, not a complete Android kernel. The workflow now
+retains and checksums `source-safety.json` with successful artifacts, and uploads
+it with failure diagnostics where available.
+
+Existing upstream build configs and `kernel/module.c` are protected byte-for-byte
+along with the audited subsystem files. This closes the specific possibility of
+accepting helper-committed changes merely because mutable `HEAD` agrees with the
+worktree. It is not a general third-party-script security sandbox or ABI checker.
+The required zRAM/LZ4KD source patches are unchanged and still require full-build
+and module-list qualification. Do not disable strict checks to get a build out.
+
+**Not run in this audit:** exact application to the selected full Android
+common tree, canonical defconfig, full compilation, ABI/KMI diff, module load,
+installer review on real images, or device testing. No workflow was dispatched,
+release published, notification sent, or phone setting changed. The input is a
+build project, not a built or flash-qualified image.
+
+## Historical per-build optional patch selection (superseded)
+
+The records below predate retirement. Their earlier source-application and
+Windows test results were supplied with the archive; they were not rerun on
+those kernel revisions during this audit. The old ten-alias selection policy
+and BBRv3 default path no longer exist.
 
 The ten saved performance patches are listed as selectable `?alias:filename`
 entries in `patches/5.15/APPLY_ORDER.txt`. The manual GitHub Action leaves all
@@ -35,7 +69,7 @@ plan.
 
 The working tree was already uncommitted when this run began. Its latest-month target resolver and removal of the 5.15.180 layout were preserved; this run adds the conservative patch/build changes on top. Do not assume the current worktree is a clean checkout.
 
-The project build path is now manual GitHub Actions only. The workflow retains `workflow_dispatch` as its sole event, resolves the target once, records the selected common SHA, checks the synced SHA, uses per-run ccache keys, creates checksums before artifact upload, and gives repository write permission only to the optional release job. No workflow was dispatched during these edits.
+The project build path is now manual GitHub Actions only. The workflow retains `workflow_dispatch` as its sole event, exposes no build inputs, resolves the target once, records the selected common SHA, checks the synced SHA, uses per-run ccache keys, and creates checksums before artifact upload. Repository permission remains read-only and the workflow has no release or notification job. No workflow was dispatched during these edits.
 
 ## Source and phone evidence
 
@@ -79,9 +113,9 @@ Google common source came from `android.googlesource.com/kernel/common`; the mon
 | SUSFS monitor lifetime candidate | Failed exact application; deferred |
 | Full Linux compile, canonical defconfig, KMI/ABI diff, module load, device boot | **Not run; release blockers** |
 
-## Remaining blockers and manual rollback
+## Release blockers and manual rollback (historical details retained)
 
-1. Implement a safe built-in zRAM/zsmalloc compressor path that preserves the phone's init/runtime behavior. The available third-party LZ4KD patch is unsuitable as-is: it changes `kernel/module.c` to accept module-version mismatches and adds module blacklist behavior. Do not re-enable it wholesale.
+1. Qualify the existing built-in zRAM/zsmalloc compressor source candidate against the exact target; its addition does not prove the phone's init/runtime behavior is preserved. The available third-party LZ4KD patch is unsuitable as-is: it changes `kernel/module.c` to accept module-version mismatches and adds module blacklist behavior. Do not re-enable it wholesale.
 2. Manually dispatch the GitHub Actions workflow when the deployment gate is resolved. Its clean Linux workspace must retain `manifest.lock.xml`, pass `check_defconfig` and strict ABI/KMI/module-list checks, then provide the final `.config` and full log. Do not remove a check because it exposes a mismatch.
 3. Compare vendor/ODM/system_dlkm module dependencies and KMI symbol versions to the built image. The baseline has 405 loaded modules, 295 distinct vendor `.ko` basenames in two partition views, and two nested 5.15.194 system_dlkm `.ko` files. A basename-only reconciliation leaves 115 loaded names without a path match in these mounted directories; trace them before release. The raw private inventory is under `device_profiles/20260923T040039Z/`.
 4. Review packaging for ishtar before flashing. The phone is on slot `_a`; its `boot_a` partition is **201,326,592 bytes**, while the removed generic test-key boot recipe used a fixed 64 MiB footer. `init_boot_a` is 8 MiB and `vendor_boot_a` is 96 MiB. No boot image is generated by the revised build; the AnyKernel installer remains unqualified.

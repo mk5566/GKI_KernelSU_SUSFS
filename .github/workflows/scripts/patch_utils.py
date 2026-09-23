@@ -3,6 +3,7 @@ from pathlib import Path
 import re
 import subprocess
 from typing import List, Tuple
+from patch_policy import reject_retired_aliases, check_patch_policy
 
 
 def parse_optional_patches(value: str) -> tuple[str, ...]:
@@ -14,6 +15,7 @@ def parse_optional_patches(value: str) -> tuple[str, ...]:
         raise ValueError("Optional patches must be comma-separated aliases from APPLY_ORDER.txt")
     if len(set(aliases)) != len(aliases):
         raise ValueError("Duplicate optional patch alias")
+    reject_retired_aliases(aliases)
     return tuple(sorted(aliases))
 
 
@@ -23,6 +25,7 @@ def read_patch_order(directory: Path, selected_optional=()) -> List[Tuple[Path, 
     if not order.is_file():
         raise ValueError(f"Missing patch manifest: {order}")
     selected = tuple(selected_optional)
+    reject_retired_aliases(selected)
     if len(set(selected)) != len(selected):
         raise ValueError("Duplicate optional patch alias")
     entries = []
@@ -42,6 +45,7 @@ def read_patch_order(directory: Path, selected_optional=()) -> List[Tuple[Path, 
                 raise ValueError(f"Invalid optional patch alias at {order}:{number}")
             if alias in seen_aliases:
                 raise ValueError(f"Duplicate optional patch alias at {order}:{number}: {alias}")
+            reject_retired_aliases((alias,))
             seen_aliases.add(alias)
         else:
             name = text[1:].strip()
@@ -53,9 +57,16 @@ def read_patch_order(directory: Path, selected_optional=()) -> List[Tuple[Path, 
         path = directory / name
         if path.is_symlink() or not path.is_file():
             raise ValueError(f"Patch is missing, not regular, or a symlink: {path}")
+        check_patch_policy(path)
         if required or (selectable and alias in selected):
             # An explicitly selected patch is required for this build.
             entries.append((path, True))
+    # Also reject unlisted retired/renamed patches left in the active directory.
+    for candidate in directory.glob("*.patch"):
+        if candidate.name not in seen_files:
+            if candidate.is_symlink() or not candidate.is_file():
+                raise ValueError(f"Unlisted patch is not regular or is a symlink: {candidate}")
+            check_patch_policy(candidate)
     unknown = set(selected) - seen_aliases
     if unknown:
         raise ValueError(f"Unknown optional patch alias(es): {', '.join(sorted(unknown))}")

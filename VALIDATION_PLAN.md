@@ -1,6 +1,34 @@
 # Ishtar validation plan
 
-This plan starts only after the build blockers in [BUILD_AUDIT.md](BUILD_AUDIT.md) are closed and the owner chooses to flash. It is not a claim that an image currently exists. Keep the private [device baseline](DEVICE_BASELINE.md) as the A/B reference.
+Device testing in this plan starts only after the build blockers in [BUILD_AUDIT.md](BUILD_AUDIT.md) are closed and the owner chooses to flash. It is not a claim that an image currently exists. Keep the private [device baseline](DEVICE_BASELINE.md) as the A/B reference.
+
+## Repository and build evidence before any device test
+
+Run the Python regression suite and review
+[PATCH_SAFETY_AUDIT.md](PATCH_SAFETY_AUDIT.md). Keep `optional_patches` empty for
+the control candidate. All eight retired aliases must fail validation. Do not
+restore their source files or weaken the guard to bypass a helper conflict.
+
+After a manually dispatched build, verify `source-safety.json` says `passed`,
+its `baseline_revision` matches the selected common SHA, and every protected
+file has equal expected/actual hashes. Check the report hash against
+`BUILD_INFO.md` and `SHA256SUMS.txt`. Then review the *separate* canonical
+config, compiler, ABI/KMI and module-list results. A source-byte report is not
+proof that these other gates passed. A legitimate monthly/helper change to a
+protected file requires an explicit port review.
+
+Record the actual final default/available TCP algorithms. BBRv3 was removed;
+upstream BBRv1 is not silently substituted. The supplied phone baseline uses
+`bbr3`, so inspect any ROM/init/script request for it before trying this
+candidate. This audit does not change or validate those scripts.
+
+Record runtime F2FS `min_fsync_blocks` after boot without rewriting it. The
+supplied baseline reports 20, while the retired patch changed the source
+constant from 8 to 20. The candidate follows selected upstream source plus ROM
+sysfs policy, so equality with the running value cannot be assumed. Compare
+actual runtime configuration before attributing an fsync or network performance
+change to another patch. This threshold selects in-place-update behavior; it
+is not permission to acknowledge fsync before required persistence completes.
 
 ## Before the owner flashes
 

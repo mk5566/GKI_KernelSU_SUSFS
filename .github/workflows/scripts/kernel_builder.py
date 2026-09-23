@@ -11,6 +11,8 @@ from config import (BuildConfig, KSU_REPO_CONFIG, SUSFS_REPO_CONFIG, SUKISU_PATC
                    ANYKERNEL_CONFIG, SUKISU_UAPI_VERSION)
 from susfs_integration import select_mount_patch
 from patch_utils import apply_patch_exact, read_patch_order
+from patch_policy import reject_retired_aliases, verify_no_retired_config
+from source_safety import verify_upstream_sources
 
 logger = logging.getLogger(__name__)
 
@@ -86,19 +88,11 @@ class KernelBuilder:
         "CONFIG_NET_SCH_FQ": "y",
     }
 
-    BBR3_CONFIG_UPDATES = {
-        "CONFIG_TCP_CONG_ADVANCED": "y",
-        "CONFIG_TCP_CONG_BBR3": "y",
-        "CONFIG_DEFAULT_BBR3": "y",
-        "CONFIG_DEFAULT_CUBIC": None,
-        "CONFIG_DEFAULT_TCP_CONG": '"bbr3"',
-        "CONFIG_NET_SCH_FQ": "y",
-    }
-
     def __init__(self, config: BuildConfig, workspace: str,
                  expected_common_revision: Optional[str] = None):
         self.config = config
         self.expected_common_revision = expected_common_revision
+        self._safety_common_revision = expected_common_revision
         self.workspace = Path(workspace)
         self.shell = ShellCommand(cwd=workspace)
         self.env = os.environ.copy()
@@ -130,6 +124,9 @@ class KernelBuilder:
         self.shell.cwd = str(path)
 
     def _preflight(self):
+        reject_retired_aliases(self.config.optional_patches)
+        patch_dir = Path(__file__).resolve().parents[3] / "patches" / self.config.kernel_version
+        read_patch_order(patch_dir, self.config.optional_patches)
         missing = [tool for tool in REQUIRED_TOOLS if shutil.which(tool) is None]
         if missing:
             raise RuntimeError(f"Missing required tools: {', '.join(missing)}")
@@ -376,8 +373,8 @@ class KernelBuilder:
         self._run_cmd("$REPO manifest -r -o manifest.lock.xml", check=True)
 
         self._require_path(self.work_dir / "common", "kernel common/ directory after repo sync")
+        synced_revision = self._git_head(self.work_dir / "common")
         if self.expected_common_revision:
-            synced_revision = self._git_head(self.work_dir / "common")
             if synced_revision != self.expected_common_revision:
                 raise RuntimeError(
                     f"Synced common revision {synced_revision} differs from the "
@@ -391,6 +388,9 @@ class KernelBuilder:
                 f"Synced kernel {kernel_ver} does not match requested {expected} "
                 f"(branch {formatted_branch})"
             )
+        # Capture before any helper can change HEAD or source bytes.
+        self._safety_common_revision = synced_revision
+        self._verify_patch_safety()
         logger.info("=== Kernel source sync complete ===")
 
     def add_kernelsu(self):
@@ -601,13 +601,12 @@ class KernelBuilder:
                 updates.setdefault(f"CONFIG_{symbol}", "n")
         if self.config.set_default_bbr:
             updates.update(self.BBR_CONFIG_UPDATES)
-        if "bbrv3" in self.config.optional_patches:
-            updates.update(self.BBR3_CONFIG_UPDATES)
         self._upsert_defconfig(updates)
 
         if self.config.use_zram:
             self._configure_zram()
         self._verify_ishtar_zram_plan(self._defconfig_path())
+        verify_no_retired_config(self._defconfig_path())
 
     def _configure_zram(self):
         fragment = (self.work_dir / "common/arch/arm64/configs/"
@@ -670,7 +669,6 @@ class KernelBuilder:
             "CONFIG_KSU_SUSFS": "SUSFS",
             "CONFIG_KSU_SUSFS_TRY_UMOUNT": "SUSFS try_umount",
             "CONFIG_KSU_SUSFS_SUS_SU": "SUSFS sus_su",
-            "CONFIG_TCP_CONG_BBR3": "BBRv3",
             "CONFIG_DEFAULT_TCP_CONG": "Default TCP cong",
             "CONFIG_ZRAM": "ZRAM",
             "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE": "Optimize for performance",
@@ -703,6 +701,8 @@ class KernelBuilder:
         logger.info("=== Starting kernel compile ===")
         self._chdir(self.work_dir)
         try:
+            self._verify_patch_safety()
+            verify_no_retired_config(self._defconfig_path())
             self._verify_build_contract()
             logger.info("Starting kernel compilation with build.sh...")
             returncode = self._run_build_with_log(
@@ -724,8 +724,8 @@ class KernelBuilder:
                 self._verify_zstd_config(final_config)
             else:
                 self._verify_lz4kd_config(final_config)
-            if "bbrv3" in self.config.optional_patches:
-                self._verify_bbr3_config(final_config)
+            verify_no_retired_config(final_config)
+            self._verify_patch_safety()
             shutil.copyfile(final_config, self.work_dir / "final.config")
             logger.info(f"=== Kernel compile succeeded: {image_path} ===")
             return True
@@ -829,16 +829,16 @@ class KernelBuilder:
             if setting not in text:
                 raise RuntimeError(f"Ishtar LZ4KD deployment missing in .config: {setting}")
 
-    @staticmethod
-    def _verify_bbr3_config(config_path: Path):
-        text = config_path.read_text(encoding="utf-8").splitlines()
-        for setting in ('CONFIG_TCP_CONG_BBR3=y', 'CONFIG_DEFAULT_BBR3=y',
-                        'CONFIG_DEFAULT_TCP_CONG="bbr3"'):
-            if setting not in text:
-                raise RuntimeError(f"Selected BBRv3 patch is not active in .config: {setting}")
+    def _verify_patch_safety(self):
+        reject_retired_aliases(self.config.optional_patches)
+        return verify_upstream_sources(
+            self.work_dir / "common", self._safety_common_revision,
+            self.work_dir / "source-safety.json")
 
     def create_anykernel_zips(self) -> list:
         logger.info("=== Creating AnyKernel3 zip ===")
+        self._verify_patch_safety()
+        verify_no_retired_config(self.work_dir / "final.config")
         self._chdir(self.work_dir)
         ak3_dir = self.anykernel_dir
 
@@ -915,6 +915,9 @@ class KernelBuilder:
             f"- AnyKernel3: `{self._git_head(self.anykernel_dir)}`",
             f"- ZRAM: {'built-in ZSTD experiment requested' if self.config.use_zram else 'built-in LZ4KD default'}",
             f"- Upstream BBRv1 default: {'requested' if self.config.set_default_bbr else 'unchanged'}",
+            "- Patch safety policy: eight upstream overrides retired; see PATCH_SAFETY_AUDIT.md",
+            f"- Source safety baseline: `{self._safety_common_revision}`",
+            f"- Source safety report SHA-256: `{self._sha256(self.work_dir / 'source-safety.json')}`",
             f"- Selected unverified patches: {', '.join(self.config.optional_patches) or 'none'}",
             "- Qualification: GKI build checks enabled; device compatibility still requires boot/module validation",
             f"- Image SHA-256: `{self._sha256(self._kernel_image_path())}`",
@@ -967,6 +970,7 @@ class KernelBuilder:
             self.apply_zram_patches()
             self.apply_task_mmu_fixes()
             self.apply_vendor_patches()
+            self._verify_patch_safety()
             self.configure_kernel()
             self.configure_kernel_name()
             self.show_kernel_config()

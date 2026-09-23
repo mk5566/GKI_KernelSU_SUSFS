@@ -1,71 +1,21 @@
-name: Kernel Build
+name: Build Xiaomi 13 Ultra Kernel
 
 permissions:
   contents: read
 
 on:
   workflow_dispatch:
-    inputs:
-      kernelsu_version:
-        description: 'SukiSU UAPI 4 + SUSFS (Dev: latest main; Stable: pinned known revision)'
-        required: true
-        type: choice
-        options:
-          - Stable(standard)
-          - Dev(development)
-        default: Dev(development)
-      kernelsu_commit:
-        description: 'Specify KernelSU commit hash (Optional)'
-        required: false
-        type: string
-        default: ''
-      susfs_commit:
-        description: 'Specify SUSFS commit hash (Optional)'
-        required: false
-        type: string
-        default: ''
-      custom_version:
-        description: 'Custom Version Name (Optional)'
-        required: false
-        type: string
-        default: ''
-      use_zram:
-        description: 'Use built-in ZSTD instead of the phone LZ4KD default (experiment)'
-        required: true
-        type: boolean
-        default: false
-      set_defbbr:
-        description: 'Select upstream BBRv1 default'
-        required: true
-        type: boolean
-        default: false
-      optional_patches:
-        description: 'Comma-separated patch aliases from README; blank applies none'
-        required: false
-        type: string
-        default: ''
-      make_release:
-        description: 'Create GitHub Release'
-        required: true
-        type: boolean
-        default: false
-      send_telegram:
-        description: 'Send Telegram Notification'
-        required: true
-        type: boolean
-        default: false
 
 env:
   PYTHON_VERSION: '3.10'
   GKI_WORKSPACE: /tmp/gki-build
   DEBIAN_FRONTEND: noninteractive
+  FIXED_KSU_VERSION: 'Stable(standard)'
 
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 180
-    outputs:
-      sublevel: ${{ steps.target.outputs.sublevel }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -77,7 +27,7 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Test source selection and manager compatibility
+      - name: Run repository safety tests
         run: python3 -m unittest discover -s .github/workflows/scripts/tests -v
 
       - name: Resolve latest Android 13 GKI 5.15 target
@@ -88,42 +38,30 @@ jobs:
           from pathlib import Path
           sys.path.insert(0, ".github/workflows/scripts")
           from target import resolve_latest_target_selection
+
           selection = resolve_latest_target_selection()
           target_file = Path(os.environ["RUNNER_TEMP"]) / "gki-target-selection.json"
           selection.write(target_file)
+
           with open(os.environ["GITHUB_ENV"], "a") as env:
               env.write(f"GKI_TARGET_FILE={target_file}\n")
               env.write(f"RESOLVED_SUBLEVEL={selection.sublevel}\n")
               env.write(f"RESOLVED_OS_PATCH={selection.month}\n")
-          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-              output.write(f"sublevel={selection.sublevel}\n")
           PY
 
-      - name: Validate target and patches
-        env:
-          INPUT_CUSTOM_VERSION: ${{ github.event.inputs.custom_version }}
-          INPUT_KERNELSU_COMMIT: ${{ github.event.inputs.kernelsu_commit }}
-          INPUT_KERNELSU_VERSION: ${{ github.event.inputs.kernelsu_version }}
-          INPUT_SET_DEFBBR: ${{ github.event.inputs.set_defbbr }}
-          INPUT_OPTIONAL_PATCHES: ${{ github.event.inputs.optional_patches }}
-          INPUT_SUSFS_COMMIT: ${{ github.event.inputs.susfs_commit }}
-          INPUT_USE_ZRAM: ${{ github.event.inputs.use_zram }}
+      - name: Validate fixed ishtar profile
         run: |
           set -euo pipefail
           cd ./.github/workflows/scripts
-          extra=()
-          [ "${INPUT_USE_ZRAM}" = "true" ] && extra+=(--zram) || extra+=(--no-zram)
-          [ "${INPUT_SET_DEFBBR}" = "true" ] && extra+=(--bbr) || extra+=(--no-bbr)
-          extra+=(--optional-patches="${INPUT_OPTIONAL_PATCHES}")
-          [ -z "${INPUT_KERNELSU_COMMIT}" ] || extra+=(--ksu-commit="${INPUT_KERNELSU_COMMIT}")
-          [ -z "${INPUT_SUSFS_COMMIT}" ] || extra+=(--susfs-commit="${INPUT_SUSFS_COMMIT}")
-          [ -z "${INPUT_CUSTOM_VERSION}" ] || extra+=(--custom-version="${INPUT_CUSTOM_VERSION}")
           python3 build.py \
             --android android13 \
             --kernel 5.15 \
             --target-file "${GKI_TARGET_FILE}" \
-            --ksu-version "${INPUT_KERNELSU_VERSION}" \
-            "${extra[@]}" \
+            --ksu-version "${FIXED_KSU_VERSION}" \
+            --no-zram \
+            --no-bbr \
+            --optional-patches="" \
+            --no-release \
             --dry-run
 
       - name: Install dependencies
@@ -149,47 +87,23 @@ jobs:
           ccache --set-config=compression=true
           ccache --set-config=compression_level=1
           ccache -z
-          echo "CCACHE_DIR=$HOME/.ccache" >> $GITHUB_ENV
+          echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
 
-      - name: Build kernel
+      - name: Build fixed ishtar kernel
         id: build
-        env:
-          INPUT_CUSTOM_VERSION: ${{ github.event.inputs.custom_version }}
-          INPUT_KERNELSU_COMMIT: ${{ github.event.inputs.kernelsu_commit }}
-          INPUT_KERNELSU_VERSION: ${{ github.event.inputs.kernelsu_version }}
-          INPUT_MAKE_RELEASE: ${{ github.event.inputs.make_release }}
-          INPUT_SET_DEFBBR: ${{ github.event.inputs.set_defbbr }}
-          INPUT_OPTIONAL_PATCHES: ${{ github.event.inputs.optional_patches }}
-          INPUT_SUSFS_COMMIT: ${{ github.event.inputs.susfs_commit }}
-          INPUT_USE_ZRAM: ${{ github.event.inputs.use_zram }}
         run: |
           set -euo pipefail
           cd ./.github/workflows/scripts
-
-          extra=()
-          if [ "${INPUT_USE_ZRAM}" = "true" ]; then
-            extra+=(--zram)
-          else
-            extra+=(--no-zram)
-          fi
-          if [ "${INPUT_SET_DEFBBR}" = "true" ]; then
-            extra+=(--bbr)
-          else
-            extra+=(--no-bbr)
-          fi
-          extra+=(--optional-patches="${INPUT_OPTIONAL_PATCHES}")
-          [ -z "${INPUT_KERNELSU_COMMIT}" ] || extra+=(--ksu-commit="${INPUT_KERNELSU_COMMIT}")
-          [ -z "${INPUT_SUSFS_COMMIT}" ] || extra+=(--susfs-commit="${INPUT_SUSFS_COMMIT}")
-          [ -z "${INPUT_CUSTOM_VERSION}" ] || extra+=(--custom-version="${INPUT_CUSTOM_VERSION}")
-          [ "${INPUT_MAKE_RELEASE}" = "true" ] || extra+=(--no-release)
-
           python3 build.py \
             --android android13 \
             --kernel 5.15 \
             --target-file "${GKI_TARGET_FILE}" \
-            --ksu-version "${INPUT_KERNELSU_VERSION}" \
-            --workspace "${GKI_WORKSPACE}" \
-            "${extra[@]}"
+            --ksu-version "${FIXED_KSU_VERSION}" \
+            --no-zram \
+            --no-bbr \
+            --optional-patches="" \
+            --no-release \
+            --workspace "${GKI_WORKSPACE}"
 
       - name: Show ccache stats
         if: always()
@@ -209,20 +123,20 @@ jobs:
           BUILD_DIR="${GKI_WORKSPACE}/android13-5.15-${RESOLVED_SUBLEVEL}"
           STEM="$(tr -d '\r\n' < "${GKI_WORKSPACE}/artifact_stem.txt")"
           cp "${BUILD_DIR}/${STEM}-AnyKernel3.zip" artifacts/
-          for name in Image final.config build.log manifest.lock.xml; do
+          for name in Image final.config build.log manifest.lock.xml source-safety.json; do
             cp "${BUILD_DIR}/${name}" artifacts/
           done
           cp "${GKI_WORKSPACE}/BUILD_INFO.md" artifacts/
           cp "${GKI_WORKSPACE}/artifact_stem.txt" artifacts/
           cp "${GKI_TARGET_FILE}" artifacts/target-selection.json
-          (cd artifacts && sha256sum Image *AnyKernel3.zip BUILD_INFO.md final.config build.log manifest.lock.xml artifact_stem.txt target-selection.json > SHA256SUMS.txt)
+          (cd artifacts && sha256sum Image *AnyKernel3.zip BUILD_INFO.md final.config build.log manifest.lock.xml source-safety.json artifact_stem.txt target-selection.json > SHA256SUMS.txt)
           ls -lh artifacts
           cat artifacts/SHA256SUMS.txt
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: kernel-android13-5.15-${{ env.RESOLVED_SUBLEVEL }}
+          name: ishtar-android13-5.15-${{ env.RESOLVED_SUBLEVEL }}
           path: artifacts/
           if-no-files-found: error
 
@@ -230,7 +144,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: kernel-failed-android13-5.15-${{ env.RESOLVED_SUBLEVEL }}-${{ github.run_id }}
+          name: ishtar-build-failed-${{ github.run_id }}
           path: |
             ${{ env.GKI_WORKSPACE }}/BUILD_INFO.md
             ${{ env.GKI_WORKSPACE }}/**/*.rej
@@ -238,56 +152,6 @@ jobs:
             ${{ env.GKI_WORKSPACE }}/**/build.log
             ${{ env.GKI_WORKSPACE }}/**/final.config
             ${{ env.GKI_WORKSPACE }}/**/manifest.lock.xml
+            ${{ env.GKI_WORKSPACE }}/**/source-safety.json
           if-no-files-found: warn
           retention-days: 7
-
-      - name: Send Telegram Notification
-        if: ${{ github.event.inputs.send_telegram == 'true' && success() }}
-        env:
-          INPUT_KERNELSU_VERSION: ${{ github.event.inputs.kernelsu_version }}
-          INPUT_SET_DEFBBR: ${{ github.event.inputs.set_defbbr }}
-          INPUT_USE_ZRAM: ${{ github.event.inputs.use_zram }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TELEGRAM_MESSAGE_THREAD_ID: ${{ secrets.TELEGRAM_MESSAGE_THREAD_ID }}
-        run: |
-          cd ./.github/workflows/scripts
-          python3 telegram_notify.py single \
-            "android13" \
-            "5.15" \
-            "${{ env.RESOLVED_SUBLEVEL }}" \
-            "${{ env.RESOLVED_OS_PATCH }}" \
-            "${INPUT_KERNELSU_VERSION}" \
-            "${INPUT_USE_ZRAM}" \
-            "${INPUT_SET_DEFBBR}" \
-            "${{ github.workspace }}/artifacts/SHA256SUMS.txt"
-
-  release:
-    if: ${{ github.event.inputs.make_release == 'true' && needs.build.result == 'success' }}
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Download verified build artifacts
-        uses: actions/download-artifact@v7
-        with:
-          name: kernel-android13-5.15-${{ needs.build.outputs.sublevel }}
-          path: artifacts
-
-      - name: Verify checksums and create release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          (cd artifacts && sha256sum -c SHA256SUMS.txt)
-          TAG="$(tr -d '\r\n' < artifacts/artifact_stem.txt)"
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" artifacts/* --clobber
-            gh release edit "$TAG" --notes-file artifacts/BUILD_INFO.md
-          else
-            gh release create "$TAG" artifacts/* \
-              --title "GKI Kernel $TAG" \
-              --notes-file artifacts/BUILD_INFO.md
-          fi

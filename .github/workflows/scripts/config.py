@@ -3,6 +3,7 @@ from typing import Optional
 from enum import Enum
 import re
 import hashlib
+from patch_policy import reject_retired_aliases
 
 
 class AndroidVersion(Enum):
@@ -98,8 +99,7 @@ class BuildConfig:
                     for alias in self.optional_patches)):
             raise ValueError("Invalid or duplicate optional patch alias")
         self.optional_patches = tuple(sorted(self.optional_patches))
-        if self.set_default_bbr and "bbrv3" in self.optional_patches:
-            raise ValueError("Select either upstream BBRv1 default or the BBRv3 patch")
+        reject_retired_aliases(self.optional_patches)
         self._validate_android_version()
         self._validate_kernel_version()
         self._validate_kernel_android_compat()
@@ -166,8 +166,7 @@ class BuildConfig:
     def variant_suffix(self) -> str:
         parts = [
             "zstd-requested" if self.use_zram else "lz4kd-builtin",
-            ("bbr3-default" if "bbrv3" in self.optional_patches else
-             "bbr1-default" if self.set_default_bbr else "rom-tcp"),
+            "bbr1-default" if self.set_default_bbr else "rom-tcp",
             "sukisu-dev" if self.kernelsu_version == KSUVersion.DEV.value else "sukisu-stable",
         ]
         if self.optional_patches:

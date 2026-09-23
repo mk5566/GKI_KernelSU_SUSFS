@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "disposition": "Removed; not selectable and not replaced with no-op patches. Originals remain in the uploaded archive.",
+  "patches": [
+    {
+      "alias": "bbrv3",
+      "file": "0001-net-tcp-backport-BBRv3-to-android13-5.15.patch",
+      "sha256": "4afd40420388180884a0587afbcaf642d223673ab5a5e6cb349940fbf2ca9d2a",
+      "reason": "Unchecked allocation callbacks and incompatible shared TCP metadata; use upstream TCP or explicitly select upstream BBRv1."
+    },
+    {
+      "alias": "memcmp",
+      "file": "optimise_memcmp.patch",
+      "sha256": "1fe4877e1107c764702b1e56919eb034329fdc95831debd060fad0a67e38e7e0",
+      "reason": "Generic memcmp must remain usable without acquiring a SIMD context; retain the upstream integer-register implementation."
+    },
+    {
+      "alias": "freeze-timeout",
+      "file": "reduce_freeze_timeout.patch",
+      "sha256": "ff794be82ce325fb2c9cef1e1c302d64a026fb9d13cb3677ff76d5d60f554be1",
+      "reason": "Drops sysfs writes and forces a one-second timeout; retain the upstream writable timeout and default."
+    },
+    {
+      "alias": "s2idle-wake",
+      "file": "avoid_extra_s2idle_wake_attempts.patch",
+      "sha256": "0216f48b2fed634d9b308ff599de655713290cabc6b94855779207b0f2d69c38",
+      "reason": "Wake/abort coalescing is not qualified against this device; retain upstream synchronization."
+    },
+    {
+      "alias": "alarm-wakeup",
+      "file": "minimise_wakeup_time.patch",
+      "sha256": "3058f76531add1cab3fe3387b6cb2c76db42062d3af038c9a31c2c5a8ed048ef",
+      "reason": "Shortens suspend-abort wake protection and can convert a negative deadline to an unsigned timeout; retain upstream handling."
+    },
+    {
+      "alias": "f2fs-congestion",
+      "file": "f2fs_reduce_congestion.patch",
+      "sha256": "c5f211765607284e6d01f329b48f1166e0d0ff49cfadd9a9ddf5c132dbd33620",
+      "reason": "A shorter retry timeout has no demonstrated storage-pressure benefit on this device; retain upstream backoff."
+    },
+    {
+      "alias": "f2fs-fsync",
+      "file": "f2fs_enlarge_min_fsync_blocks.patch",
+      "sha256": "2049fbaa00ba6d707ceae46bd6d6162f2481ead77bbd1f887ee2522387a36cfb",
+      "reason": "This is an in-place-update policy threshold, not a proven fsync batching optimization; retain upstream default and sysfs control."
+    },
+    {
+      "alias": "irq-log",
+      "file": "silence_irq_cpu_logspam.patch",
+      "sha256": "2817c6817acd101b5b30595cd81c7b027e20d3ebc3a4092035b31128f3ab7244",
+      "reason": "Actual affinity failures must retain the existing rate-limited warning."
+    }
+  ]
+}
