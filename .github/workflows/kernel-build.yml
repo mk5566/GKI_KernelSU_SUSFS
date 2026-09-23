@@ -73,6 +73,31 @@ jobs:
             --no-release \
             --dry-run
 
+      - name: Maximize build space and configure swap
+        run: |
+          set -euo pipefail
+          echo "=== Disabling systemd-oomd ==="
+          sudo systemctl stop systemd-oomd 2>/dev/null || true
+          sudo systemctl disable systemd-oomd 2>/dev/null || true
+          sudo systemctl mask systemd-oomd 2>/dev/null || true
+
+          echo "=== Freeing runner disk space ==="
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell /usr/local/share/chromium /usr/local/share/vcpkg 2>/dev/null || true
+
+          echo "=== Setting up 16GB swap file ==="
+          sudo swapoff -a 2>/dev/null || true
+          sudo rm -f /swapfile 2>/dev/null || true
+          sudo fallocate -l 16G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=16384
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          sudo sysctl -w vm.swappiness=100
+          sudo sysctl -w vm.vfs_cache_pressure=50
+
+          echo "=== Memory and disk status ==="
+          free -h
+          df -h
+
       - name: Install dependencies
         run: |
           sudo apt-get update
