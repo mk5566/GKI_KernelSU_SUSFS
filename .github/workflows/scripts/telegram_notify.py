@@ -90,8 +90,8 @@ def build_single_notify_message(
 
 <b>💾 SukiSU 版本:</b> {kernelsu_version}
 <b>🛡️ SUSFS:</b> 启用
-<b>🚀 BBRv3:</b> {"启用" if use_bbr else "禁用"}
-<b>🔧 ZRAM (LZ4KD):</b> {"启用" if use_zram else "禁用"}"""
+<b>🚀 BBRv1:</b> {"启用" if use_bbr else "禁用"}
+<b>🔧 Native ZSTD request:</b> {"启用" if use_zram else "禁用"}"""
 
     # 添加文件 hash 信息
     if hashes_file and os.path.exists(hashes_file):

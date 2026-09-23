@@ -1,0 +1,14 @@
+--- /dev/null
++++ b/arch/arm64/configs/ishtar_native_zstd.fragment
+@@ -0,0 +1,11 @@
++# Native Android 5.15 ZSTD selection; does not change zram deployment mode.
++# CONFIG_ZRAM and CONFIG_ZSMALLOC must retain the ROM's validated y/m values.
++# The final .config, packaged modules, and ROM init scripts must agree.
++CONFIG_CRYPTO_ZSTD=y
++CONFIG_ZRAM_DEF_COMP_ZSTD=y
++# CONFIG_ZRAM_DEF_COMP_LZORLE is not set
++# CONFIG_ZRAM_DEF_COMP_LZO is not set
++# CONFIG_ZRAM_DEF_COMP_LZ4 is not set
++# CONFIG_ZRAM_DEF_COMP_LZ4HC is not set
++# CONFIG_ZRAM_DEF_COMP_842 is not set
++# CONFIG_ZRAM_DEF_COMP_DEFLATE is not set

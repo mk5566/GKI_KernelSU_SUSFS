@@ -18,9 +18,10 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from config import (
     BuildConfig, AndroidVersion, KernelVersion, ANDROID_KERNEL_MAP, KSUVersion,
-    LOCKED_TARGET, SUPPORTED_TARGETS,
 )
 from kernel_builder import KernelBuilder, BuildResult
+from target import TargetSelection, resolve_latest_target
+from patch_utils import read_patch_order
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,17 +34,18 @@ logger = logging.getLogger(__name__)
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="GKI Kernel Build System (android13-5.15)")
 
-    parser.add_argument("--android", "-a", choices=[v.value for v in AndroidVersion], default=LOCKED_TARGET["android"])
-    parser.add_argument("--kernel", "-k", choices=[v.value for v in KernelVersion], default=LOCKED_TARGET["kernel"])
-    parser.add_argument("--sub-level", "-s", default=LOCKED_TARGET["sub_level"])
-    parser.add_argument("--os-patch", default=None)
-    parser.add_argument("--ksu-version", choices=[v.value for v in KSUVersion], default=KSUVersion.STABLE.value)
+    parser.add_argument("--android", "-a", choices=[v.value for v in AndroidVersion], default=AndroidVersion.ANDROID13.value)
+    parser.add_argument("--kernel", "-k", choices=[v.value for v in KernelVersion], default=KernelVersion.KERNEL_5_15.value)
+    parser.add_argument("--sub-level", "-s", default="auto")
+    parser.add_argument("--os-patch", default="auto")
+    parser.add_argument("--target-file", help="Target selection saved by the CI resolve step")
+    parser.add_argument("--ksu-version", choices=[v.value for v in KSUVersion], default=KSUVersion.DEV.value)
     parser.add_argument("--ksu-commit", default=None)
     parser.add_argument("--susfs-commit", default=None)
-    parser.add_argument("--zram", action="store_true", default=True, help="Enable ZRAM (LZ4KD)")
-    parser.add_argument("--no-zram", action="store_false", dest="zram", help="Disable ZRAM")
-    parser.add_argument("--bbr", action="store_true", default=True, help="Set BBR as default congestion control")
-    parser.add_argument("--no-bbr", action="store_false", dest="bbr", help="Do not force BBR as default")
+    parser.add_argument("--zram", action="store_true", default=False, help="Request native ZSTD for an existing validated zRAM deployment")
+    parser.add_argument("--no-zram", action="store_false", dest="zram", help="Leave upstream zRAM settings unchanged; ishtar deployment still must pass its build gate")
+    parser.add_argument("--bbr", action="store_true", default=False, help="Select upstream BBRv1 as default")
+    parser.add_argument("--no-bbr", action="store_false", dest="bbr", help="Preserve upstream TCP defaults")
     parser.add_argument("--no-release", action="store_true", help="Do not create GitHub Release")
     parser.add_argument("--custom-version", dest="custom_version", default=None)
     parser.add_argument("--list-configs", action="store_true")
@@ -55,12 +57,21 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def create_build_config(args: argparse.Namespace) -> BuildConfig:
+def create_build_config(args: argparse.Namespace, selection: TargetSelection | None = None) -> BuildConfig:
+    if selection is None:
+        latest_sublevel, latest_patch = resolve_latest_target()
+    else:
+        latest_sublevel, latest_patch = selection.sublevel, selection.month
+    if args.sub_level not in ("auto", latest_sublevel):
+        raise ValueError("--sub-level disagrees with the latest GKI branch")
+    if args.os_patch not in (None, "", "auto", latest_patch):
+        raise ValueError("--os-patch disagrees with the latest GKI branch")
+    sub_level, os_patch = latest_sublevel, latest_patch
     return BuildConfig(
-        android_version=args.android or LOCKED_TARGET["android"],
-        kernel_version=args.kernel or LOCKED_TARGET["kernel"],
-        sub_level=args.sub_level or LOCKED_TARGET["sub_level"],
-        os_patch_level=None if args.os_patch in (None, "", "auto") else args.os_patch,
+        android_version=args.android,
+        kernel_version=args.kernel,
+        sub_level=sub_level,
+        os_patch_level=os_patch,
         kernelsu_version=args.ksu_version,
         kernelsu_commit=args.ksu_commit,
         susfs_commit=args.susfs_commit,
@@ -73,13 +84,9 @@ def create_build_config(args: argparse.Namespace) -> BuildConfig:
 
 def list_configs():
     print("\n" + "=" * 60)
-    print("Default GKI target")
+    print("Default GKI target: latest published android13-5.15 monthly branch")
     print("=" * 60)
-    print(
-        f"  {LOCKED_TARGET['android']}-{LOCKED_TARGET['kernel']}."
-        f"{LOCKED_TARGET['sub_level']}  (OS patch {LOCKED_TARGET['os_patch_level']})"
-    )
-    print(f"\nSupported sublevel / OS-patch pairs: {SUPPORTED_TARGETS}")
+    print("  android13-5.15; live sublevel and OS patch are resolved when a build starts")
     print("\nSupported combinations:")
     for android, kernels in ANDROID_KERNEL_MAP.items():
         print(f"  {android.value}: {', '.join(k.value for k in kernels)}")
@@ -92,36 +99,25 @@ def list_configs():
 
 def _validate_vendor_patches(config: BuildConfig) -> list:
     repo_root = Path(__file__).resolve().parent.parent.parent.parent
-    patch_dir = repo_root / "patches" / f"{config.kernel_version}.{config.sub_level}"
+    patch_dir = repo_root / "patches" / config.kernel_version
     missing = []
     for name in ("0001-sukisu-main-uapi4-mount-support.patch",
                  "0002-common-susfs-reboot-dispatch.patch"):
         integration_patch = repo_root / "patches/susfs" / name
         if not integration_patch.is_file():
             missing.append(str(integration_patch))
-    if config.sub_level == "211":
-        context_patch = repo_root / "patches/susfs/5.15.211-context.patch"
-        if not context_patch.is_file():
-            missing.append(str(context_patch))
-    if not patch_dir.exists():
-        return [f"patch directory missing: {patch_dir}"]
-    order_file = patch_dir / "APPLY_ORDER.txt"
-    names = []
-    if order_file.exists():
-        for raw in order_file.read_text(encoding="utf-8-sig").splitlines():
-            line = raw.strip()
-            if not line or line.startswith("#"):
-                continue
-            names.append(line[1:].strip() if line.startswith("!") else line)
-    else:
-        names = [p.name for p in patch_dir.glob("*.patch")]
-    for name in names:
-        if not (patch_dir / name).exists():
-            missing.append(str(patch_dir / name))
+    context_patch = repo_root / "patches/susfs/5.15-context.patch"
+    if not context_patch.is_file():
+        missing.append(str(context_patch))
+    try:
+        read_patch_order(patch_dir)
+    except (OSError, ValueError) as error:
+        missing.append(str(error))
     return missing
 
 
-def build_single(config: BuildConfig, workspace: str, dry_run: bool = False) -> BuildResult:
+def build_single(config: BuildConfig, workspace: str, dry_run: bool = False,
+                 expected_common_revision: str | None = None) -> BuildResult:
     if dry_run:
         logger.info(f"[DRY RUN] Validating config: {config.config_name}")
         missing = _validate_vendor_patches(config)
@@ -130,10 +126,10 @@ def build_single(config: BuildConfig, workspace: str, dry_run: bool = False) -> 
             for path in missing:
                 logger.error(f"  - {path}")
             return BuildResult(success=False, config=config, message="Missing vendor patches")
-        logger.info("[DRY RUN] Vendor patches present")
-        return BuildResult(success=True, config=config, message="Configuration validation passed")
+        logger.info("[DRY RUN] Manifest/files valid; kernel applicability NOT tested")
+        return BuildResult(success=True, config=config, message="Manifest validation passed; no kernel checkout tested")
 
-    builder = KernelBuilder(config, workspace)
+    builder = KernelBuilder(config, workspace, expected_common_revision=expected_common_revision)
     return builder.build()
 
 
@@ -189,8 +185,10 @@ def main():
     os.makedirs(workspace, exist_ok=True)
 
     try:
-        config = create_build_config(args)
-        result = build_single(config, workspace, args.dry_run)
+        selection = TargetSelection.from_file(args.target_file) if args.target_file else None
+        config = create_build_config(args, selection)
+        result = build_single(config, workspace, args.dry_run,
+                              selection.common_revision if selection else None)
         results = [result]
     except Exception as e:
         logger.error(f"Configuration error: {e}")

@@ -13,6 +13,9 @@ def section(path, addition="mount_change();"):
 
 
 class MountIntegrationTests(unittest.TestCase):
+    def config(self, **kwargs):
+        return BuildConfig(sub_level="211", os_patch_level="2026-09", **kwargs)
+
     def test_selects_filesystem_changes_without_legacy_root_hooks(self):
         mount_sections = "".join(section(p) for p in sorted(MOUNT_PATCH_FILES))
         original = (section("fs/exec.c", "ksu_handle_execveat();") + mount_sections +
@@ -30,9 +33,10 @@ class MountIntegrationTests(unittest.TestCase):
             select_mount_patch(original)
 
     def test_stable_and_dev_use_main_sources(self):
-        self.assertEqual(BuildConfig().ksu_setup_ref, SUKISU_MAIN_REVISION)
-        self.assertEqual(BuildConfig(kernelsu_version="dev").ksu_setup_ref, "main")
-        self.assertEqual(BuildConfig(kernelsu_commit="deadbeef").ksu_setup_ref, "deadbeef")
+        self.assertEqual(self.config().ksu_setup_ref, "main")
+        self.assertEqual(self.config(kernelsu_version="stable").ksu_setup_ref, SUKISU_MAIN_REVISION)
+        self.assertEqual(self.config(kernelsu_commit="deadbeef").ksu_setup_ref, "deadbeef")
+        self.assertIsNone(self.config().susfs_commit)
 
 
 if __name__ == "__main__":

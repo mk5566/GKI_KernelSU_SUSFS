@@ -17,16 +17,6 @@ class KSUVersion(Enum):
     DEV = "Dev(development)"
 
 
-# Supported kernel / OS-patch pairs; the newest target is the default.
-SUPPORTED_TARGETS = {"180": "2025-05", "211": "2026-09"}
-KERNEL_REVISIONS = {"211": "dc9467e8f9bfdec0d012f9345ac5f12f63dc7eba"}
-LOCKED_TARGET = {
-    "android": AndroidVersion.ANDROID13.value,
-    "kernel": KernelVersion.KERNEL_5_15.value,
-    "sub_level": "211",
-    "os_patch_level": "2026-09",
-}
-
 ANDROID_KERNEL_MAP = {
     AndroidVersion.ANDROID13: [KernelVersion.KERNEL_5_15],
 }
@@ -36,10 +26,9 @@ KSU_REPO_CONFIG = {
     "branch": "main",
 }
 
-# Current upstream main, with the local mount-only SUSFS integration patch.
+# Recorded SukiSU revision for the optional reproducible Stable build.
 SUKISU_MAIN_REVISION = "cf87e3f4ddd3f6e5464d85acf56aaa6950e70841"
 SUKISU_UAPI_VERSION = 4
-SUSFS_REVISION = "e565931d19256fd821ada01b35263506e7c7a364"
 SUSFS_REPO_CONFIG = {"repo_url": "https://github.com/ShirkNeko/susfs4ksu.git"}
 
 SUKISU_PATCH_REPO_CONFIG = {"repo_url": "https://github.com/ShirkNeko/SukiSU_patch.git"}
@@ -84,30 +73,28 @@ def sanitize_custom_version(value: Optional[str]) -> Optional[str]:
 
 @dataclass
 class BuildConfig:
-    android_version: str = LOCKED_TARGET["android"]
-    kernel_version: str = LOCKED_TARGET["kernel"]
-    sub_level: str = LOCKED_TARGET["sub_level"]
+    android_version: str = AndroidVersion.ANDROID13.value
+    kernel_version: str = KernelVersion.KERNEL_5_15.value
+    sub_level: str = ""
     os_patch_level: Optional[str] = None
-    kernelsu_version: str = KSUVersion.STABLE.value
+    kernelsu_version: str = KSUVersion.DEV.value
     kernelsu_commit: Optional[str] = None
     susfs_commit: Optional[str] = None
-    use_zram: bool = True
-    set_default_bbr: bool = True
+    use_zram: bool = False
+    set_default_bbr: bool = False
     make_release: bool = False
     custom_version: Optional[str] = None
     build_id: Optional[str] = None
 
     def __post_init__(self):
-        if self.os_patch_level is None:
-            self.os_patch_level = SUPPORTED_TARGETS.get(self.sub_level)
         self._normalize_ksu_version()
         self.kernelsu_commit = validate_git_ref(self.kernelsu_commit or "", "kernelsu_commit") or None
-        self.susfs_commit = validate_git_ref(self.susfs_commit or SUSFS_REVISION, "susfs_commit")
+        self.susfs_commit = validate_git_ref(self.susfs_commit or "", "susfs_commit") or None
         self.custom_version = sanitize_custom_version(self.custom_version)
         self._validate_android_version()
         self._validate_kernel_version()
         self._validate_kernel_android_compat()
-        self._validate_locked_target()
+        self._validate_target()
         self._set_build_id()
 
     def _normalize_ksu_version(self):
@@ -132,17 +119,11 @@ class BuildConfig:
         if kv not in ANDROID_KERNEL_MAP.get(av, []):
             raise ValueError(f"Android {self.android_version} does not support Kernel {self.kernel_version}")
 
-    def _validate_locked_target(self):
-        expected_patch = SUPPORTED_TARGETS.get(self.sub_level)
-        if expected_patch is None or self.os_patch_level != expected_patch:
-            raise ValueError(
-                f"Unsupported target {self.sub_level} / {self.os_patch_level}; "
-                f"supported sublevel / OS-patch pairs: {SUPPORTED_TARGETS}"
-            )
-
-    @property
-    def kernel_revision(self) -> Optional[str]:
-        return KERNEL_REVISIONS.get(self.sub_level)
+    def _validate_target(self):
+        if not re.fullmatch(r"[1-9]\d*", self.sub_level):
+            raise ValueError(f"Invalid kernel sublevel: {self.sub_level!r}")
+        if not self.os_patch_level or not re.fullmatch(r"20\d\d-(?:0[1-9]|1[0-2])", self.os_patch_level):
+            raise ValueError(f"Invalid OS patch level: {self.os_patch_level!r}")
 
     def _set_build_id(self):
         if self.build_id is None:
@@ -175,8 +156,8 @@ class BuildConfig:
     @property
     def variant_suffix(self) -> str:
         parts = [
-            "lz4kd" if self.use_zram else "nozram",
-            "bbr3" if self.set_default_bbr else "nobbr",
+            "zstd-requested" if self.use_zram else "upstream-zram",
+            "bbr1-default" if self.set_default_bbr else "rom-tcp",
             "sukisu-dev" if self.kernelsu_version == KSUVersion.DEV.value else "sukisu-stable",
         ]
         if self.custom_version:

@@ -1,0 +1,4 @@
+# Conservative latest-GKI baseline. Existing performance patches remain
+# available for review but are not applied automatically.
+# This required entry adds a config fragment file; --zram opts into using it.
+!0001-add-ishtar-native-zstd-fragment.patch

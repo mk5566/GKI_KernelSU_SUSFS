@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 slim-payload/
+device_profiles/
+.tmp-common-verify/
+.tmp-sources/

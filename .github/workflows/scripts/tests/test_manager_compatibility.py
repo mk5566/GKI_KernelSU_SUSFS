@@ -14,7 +14,7 @@ class ManagerCompatibilityTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.builder = KernelBuilder(BuildConfig(), self.temp.name)
+        self.builder = KernelBuilder(BuildConfig(sub_level="211", os_patch_level="2026-09"), self.temp.name)
 
     def test_builtin_and_main_header_layouts(self):
         for relative, declaration, expected in (
