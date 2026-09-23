@@ -136,6 +136,8 @@ class RetiredPatchPolicyTests(unittest.TestCase):
              patch.object(builder, "_run_cmd") as shell_command:
             with self.assertRaisesRegex(RuntimeError, "source changed"):
                 builder.create_anykernel_zips()
+            with self.assertRaisesRegex(RuntimeError, "source changed"):
+                builder.create_boot_image()
             shell_command.assert_not_called()
 
     def test_no_bbr3_configuration_path_remains_in_builder(self):

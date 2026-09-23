@@ -4,6 +4,8 @@ import subprocess
 import logging
 import re
 import hashlib
+import struct
+import sys
 from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass, field
@@ -883,6 +885,141 @@ class KernelBuilder:
             raise RuntimeError(f"AnyKernel3 zip was not created: {zip_path}")
         return [str(zip_path)]
 
+    @staticmethod
+    def _encode_os_version(os_version_str: Optional[str], os_patch_level_str: Optional[str]) -> int:
+        val = 0
+        if os_version_str:
+            clean_ver = re.sub(r"^android", "", os_version_str, flags=re.I)
+            m = re.match(r"^(\d+)(?:\.(\d+))?(?:\.(\d+))?", clean_ver)
+            if m:
+                a = int(m.group(1)) & 0x7F
+                b = int(m.group(2) or 0) & 0x7F
+                c = int(m.group(3) or 0) & 0x7F
+                val |= (a << 25) | (b << 18) | (c << 11)
+        if os_patch_level_str:
+            m = re.match(r"^(\d{4})-(\d{2})", os_patch_level_str)
+            if m:
+                y = (int(m.group(1)) - 2000) & 0x7F
+                month = int(m.group(2)) & 0xF
+                val |= (y << 4) | month
+        return val
+
+    @classmethod
+    def _pack_boot_image_v4(cls, kernel_path: Path, output_path: Path,
+                            os_version_str: Optional[str] = None,
+                            os_patch_level_str: Optional[str] = None,
+                            cmdline: str = "") -> Path:
+        """Create an official Android Boot Image Header Version 4 (GKI)."""
+        kernel_bytes = kernel_path.read_bytes()
+        kernel_size = len(kernel_bytes)
+        ramdisk_size = 0
+        os_version = cls._encode_os_version(os_version_str, os_patch_level_str)
+        header_size = 1584
+        reserved = (0, 0, 0, 0)
+        header_version = 4
+        cmdline_bytes = cmdline.encode("utf-8")[:1536]
+        signature_size = 0
+
+        header = struct.pack(
+            "<8sIIII4II1536sI",
+            b"ANDROID!",
+            kernel_size,
+            ramdisk_size,
+            os_version,
+            header_size,
+            *reserved,
+            header_version,
+            cmdline_bytes,
+            signature_size,
+        )
+
+        page_size = 4096
+        header_pad_len = page_size - len(header)
+        header_pad = b"\x00" * header_pad_len
+
+        kernel_pad_len = (page_size - (kernel_size % page_size)) % page_size
+        kernel_pad = b"\x00" * kernel_pad_len
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open("wb") as f:
+            f.write(header)
+            f.write(header_pad)
+            f.write(kernel_bytes)
+            f.write(kernel_pad)
+
+        return output_path
+
+    def create_boot_image(self) -> list:
+        logger.info("=== Creating GKI boot.img (Header v4) ===")
+        self._verify_patch_safety()
+        verify_no_retired_config(self.work_dir / "final.config")
+
+        image_path = self.work_dir / "Image"
+        if not image_path.is_file():
+            image_src = self._kernel_image_path()
+            self._require_path(image_src, "compiled kernel Image")
+            shutil.copyfile(image_src, image_path)
+
+        boot_img_name = f"{self.config.artifact_stem}-boot.img"
+        boot_img_path = self.work_dir / boot_img_name
+        standard_boot_path = self.work_dir / "boot.img"
+
+        mkbootimg_script = self.work_dir / "tools" / "mkbootimg" / "mkbootimg.py"
+        built_with_tool = False
+        if mkbootimg_script.is_file():
+            try:
+                cmd = [
+                    sys.executable,
+                    str(mkbootimg_script),
+                    "--header_version", "4",
+                    "--kernel", str(image_path),
+                    "--output", str(boot_img_path),
+                ]
+                if self.config.android_version:
+                    cmd.extend(["--os_version", self.config.android_version.replace("android", "")])
+                if self.config.os_patch_level:
+                    cmd.extend(["--os_patch_level", self.config.os_patch_level])
+                env = self.env.copy()
+                env["PYTHONPATH"] = str(mkbootimg_script.parent)
+                subprocess.run(cmd, cwd=self.work_dir, env=env, check=True, capture_output=True, text=True)
+                built_with_tool = True
+                logger.info(f"Built boot.img using mkbootimg: {boot_img_path}")
+            except Exception as e:
+                logger.warning(f"mkbootimg invocation failed ({e}), falling back to built-in pack")
+
+        if not built_with_tool:
+            self._pack_boot_image_v4(
+                kernel_path=image_path,
+                output_path=boot_img_path,
+                os_version_str=self.config.android_version,
+                os_patch_level_str=self.config.os_patch_level,
+            )
+            logger.info(f"Built boot.img using built-in v4 pack: {boot_img_path}")
+
+        avbtool = self.work_dir / "prebuilts/kernel-build-tools/linux-x86/bin/avbtool"
+        if not avbtool.is_file():
+            which_avb = shutil.which("avbtool")
+            avbtool = Path(which_avb) if which_avb else None
+        if avbtool and avbtool.is_file():
+            try:
+                cmd = [
+                    str(avbtool), "add_hash_footer",
+                    "--image", str(boot_img_path),
+                    "--partition_name", "boot",
+                    "--partition_size", "67108864",
+                ]
+                subprocess.run(cmd, cwd=self.work_dir, check=True, capture_output=True, text=True)
+                logger.info(f"Added AVB hash footer to {boot_img_path}")
+            except Exception as e:
+                logger.warning(f"avbtool add_hash_footer skipped: {e}")
+
+        shutil.copyfile(boot_img_path, standard_boot_path)
+
+        if not boot_img_path.is_file() or boot_img_path.stat().st_size == 0:
+            raise RuntimeError(f"Boot image was not created: {boot_img_path}")
+
+        return [str(boot_img_path), str(standard_boot_path)]
+
     def _read_ksu_uapi_version(self) -> Optional[int]:
         # builtin uses DECLARE() in kernel/include; main uses a C constant in uapi/.
         for relative in ("kernel/include/uapi/supercall.h", "uapi/supercall.h"):
@@ -947,6 +1084,7 @@ class KernelBuilder:
             f"- Selected unverified patches: {', '.join(self.config.optional_patches) or 'none'}",
             "- Qualification: GKI build checks enabled; device compatibility still requires boot/module validation",
             f"- Image SHA-256: `{self._sha256(self._kernel_image_path())}`",
+            f"- Boot image SHA-256: `{self._sha256(self.work_dir / 'boot.img')}`",
             f"- Final config SHA-256: `{self._sha256(self.work_dir / 'final.config')}`",
             f"- Build log SHA-256: `{self._sha256(self.work_dir / 'build.log')}`",
             "- SUSFS profile: mount-only (core + SUS_MOUNT)",
@@ -1006,11 +1144,8 @@ class KernelBuilder:
                 return BuildResult(success=False, config=self.config, message="Kernel compile failed", build_time=build_time)
             artifacts = []
             artifacts.extend(self.create_anykernel_zips())
+            artifacts.extend(self.create_boot_image())
             artifacts.append(str(self._kernel_image_path()))
-            logger.warning(
-                "No boot.img is produced: ishtar boot header, ramdisk and OEM "
-                "verification metadata have not been qualified"
-            )
             build_time = time.time() - start_time
             info_path = self.write_build_info(artifacts=artifacts, build_time=build_time, success=True)
             artifacts.append(str(info_path))
