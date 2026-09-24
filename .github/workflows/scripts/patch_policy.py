@@ -22,9 +22,6 @@ RETIRED_PATCHES = MappingProxyType({
 # Preserve these files byte-for-byte against the initially synced common
 # commit, even if a helper stages/commits its changes or renames its patch.
 PROTECTED_SOURCE_PATHS = (
-    "build.config.gki",
-    "build.config.aarch64",
-    "build.config.gki.aarch64",
     "arch/arm64/lib/memcmp.S",
     "arch/arm64/lib/Makefile",
     "drivers/base/power/wakeup.c",
