@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass, field
 from config import (BuildConfig, KSU_REPO_CONFIG, SUSFS_REPO_CONFIG, SUKISU_PATCH_REPO_CONFIG,
-                   ANYKERNEL_CONFIG, TOOLCHAIN_CONFIG, SUKISU_UAPI_VERSION)
+                   ANYKERNEL_CONFIG, TOOLCHAIN_CONFIG, SUKISU_UAPI_VERSION,
+                   SUKISU_PATCH_REVISION)
 from susfs_integration import select_mount_patch
 
 logger = logging.getLogger(__name__)
@@ -118,7 +119,6 @@ class KernelBuilder:
             self.env["CCACHE_EXEC"] = ccache
         self.env["CCACHE_COMPILERCHECK"] = "%compiler% -dumpmachine; %compiler% -dumpversion"
         self.env["CCACHE_NOHASHDIR"] = "true"
-        self.env["CCACHE_HARDLINK"] = "true"
         self.env.setdefault("CCACHE_DIR", os.path.expanduser("~/.ccache"))
         self.env.setdefault("GIT_TERMINAL_PROMPT", "0")
         self.shell.env = self.env
@@ -317,6 +317,7 @@ class KernelBuilder:
         self._clone_or_update("SukiSU Patch", self.sukisu_patch_dir, SUKISU_PATCH_REPO_CONFIG["repo_url"])
         self._clone_or_update("AnyKernel3", self.anykernel_dir, ANYKERNEL_CONFIG["repo_url"], ANYKERNEL_CONFIG["branch"])
         self._apply_susfs_commit()
+        self._checkout_commit(self.sukisu_patch_dir, SUKISU_PATCH_REVISION, "SukiSU Patch")
         logger.info("=== Helper repositories ready ===")
 
     def clone_toolchain(self):
@@ -430,6 +431,7 @@ class KernelBuilder:
         self.env["REMOTE_BRANCH"] = remote
         logger.info("Syncing kernel sources...")
         self._run_cmd("$REPO sync -c -j$(nproc --all) --no-tags --fail-fast --no-clone-bundle", check=True)
+        self._run_cmd("$REPO manifest -r -o manifest.lock.xml", check=True)
 
         self._require_path(self.work_dir / "common", "kernel common/ directory after repo sync")
         kernel_ver = self._read_kernel_version()

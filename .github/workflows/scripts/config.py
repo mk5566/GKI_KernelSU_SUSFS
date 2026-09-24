@@ -18,7 +18,7 @@ class KSUVersion(Enum):
 
 
 # Supported kernel / OS-patch pairs; the newest target is the default.
-SUPPORTED_TARGETS = {"180": "2025-05", "211": "2026-09"}
+SUPPORTED_TARGETS = {"211": "2026-09"}
 KERNEL_REVISIONS = {"211": "dc9467e8f9bfdec0d012f9345ac5f12f63dc7eba"}
 LOCKED_TARGET = {
     "android": AndroidVersion.ANDROID13.value,
@@ -40,6 +40,7 @@ KSU_REPO_CONFIG = {
 SUKISU_MAIN_REVISION = "cf87e3f4ddd3f6e5464d85acf56aaa6950e70841"
 SUKISU_UAPI_VERSION = 4
 SUSFS_REVISION = "e565931d19256fd821ada01b35263506e7c7a364"
+SUKISU_PATCH_REVISION = "547ae94bcaec53d030398f857950c64662043a5d"
 SUSFS_REPO_CONFIG = {"repo_url": "https://github.com/ShirkNeko/susfs4ksu.git"}
 
 SUKISU_PATCH_REPO_CONFIG = {"repo_url": "https://github.com/ShirkNeko/SukiSU_patch.git"}
