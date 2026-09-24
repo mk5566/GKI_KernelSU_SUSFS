@@ -1,5 +1,13 @@
 # Build audit — 2026-09-23
 
+## 2026-09-24 boot image packaging failure
+
+Build `132177e` (run 35962562123) passed CI, but the owner reports that flashing its `boot.img` through fastboot did not boot. Read-only ADB after recovery shows the phone is back on the working `gdc9467e8f9bf` kernel. No failed-boot pstore or `/proc/last_kmsg` survived, so the exact stop point is unknown. The raw `Image` and AnyKernel ZIP from this run were not reported as tested.
+
+`blockdev` reports 201,326,592-byte (192 MiB) `boot_a` and `boot_b` partitions. The working Header v4 boot partition has a zero-byte ramdisk, zero OS-version header field, and an AVB footer in the final 64 bytes of that 192 MiB partition. The failed build's Header v4 `boot.img` also has no ramdisk, but is only 64 MiB, with its footer at that incorrect boundary and a nonzero OS-version header field. Its generated AVB public key differs from the working image's. `/proc/bootconfig` reports an unlocked bootloader; Android properties report green/locked, so the properties are not reliable evidence of AVB enforcement on this rooted boot.
+
+The builder now writes the measured 192 MiB layout, leaves the OS-version header field at the working value of zero, and fails packaging if `avbtool`, the signing key, or the expected final size is missing. This corrects a concrete package mismatch; it does not prove that the kernel payload or a new boot image will boot. Private header/footer captures and artifact metadata are under ignored `device_profiles/20260924-bootloop-audit/`.
+
 ## 2026-09-24 boot regression follow-up
 
 The owner reports a bootloop or stuck logo after installing the `0c6007b` build via both its AnyKernel ZIP and `boot.img`. The downloaded archive contains a raw `Image`; it is the same kernel payload in the ZIP and boot image. The phone is not currently available to ADB, so no pstore or boot log confirms the exact failure.

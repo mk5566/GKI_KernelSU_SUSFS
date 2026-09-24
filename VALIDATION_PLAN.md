@@ -33,7 +33,7 @@ is not permission to acknowledge fsync before required persistence completes.
 ## Before the owner flashes
 
 1. Record the exact common/manifest/helper SHAs, patch hashes, final `.config`, build log, `Image` hash, ABI/KMI result, and all module-list results. Verify the build's kernel release and zRAM deployment against the baseline.
-2. Verify the current active slot, real stock boot header/ramdisk/partition layout, proposed installer behavior, and an independently usable recovery path. Save matching original images and hashes. The generic 64 MiB test-key boot artifact is not a validated ishtar boot image.
+2. Verify the current active slot, real stock boot header/ramdisk/partition layout, proposed installer behavior, and an independently usable recovery path. Save matching original images and hashes. The corrected 192 MiB test-key boot artifact is still not a validated ishtar boot image.
 3. Freeze the test conditions: ROM build, power/thermal mode, charger state, app set, network, and current zRAM/VM policy. Keep bindhost/SUSFS mode unchanged during performance A/B tests.
 
 ## First boot: stop conditions

@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from config import BuildConfig
+import kernel_builder
 from kernel_builder import KernelBuilder
 
 
@@ -166,11 +167,26 @@ class ManagerCompatibilityTests(unittest.TestCase):
         self.assertEqual(raw[4096:4096+len(kernel_data)], kernel_data)
 
     def test_create_boot_image_produces_artifacts(self):
+        self.assertEqual(kernel_builder.BOOT_PARTITION_SIZE, 192 * 1024 * 1024)
         (self.builder.work_dir / "final.config").write_text("CONFIG_FOO=y\n")
         dummy_image = self.builder.work_dir / "Image"
         dummy_image.write_bytes(b"DUMMY_IMAGE_DATA" * 50)
+        avbtool = self.builder.work_dir / "avbtool"
+        key = self.builder.work_dir / "key.pem"
+        avbtool.touch()
+        key.touch()
+        self.builder.env.update(AVBTOOL=str(avbtool), BOOT_SIGN_KEY_PATH=str(key))
 
-        with patch.object(self.builder, "_verify_patch_safety"):
+        def sign(cmd, **_kwargs):
+            self.assertEqual(cmd[cmd.index("--partition_size") + 1], "16384")
+            self.assertIn("SHA256_RSA2048", cmd)
+            with Path(cmd[cmd.index("--image") + 1]).open("r+b") as image:
+                image.truncate(16384)
+            return subprocess.CompletedProcess(cmd, 0)
+
+        with patch.object(self.builder, "_verify_patch_safety"), \
+             patch.object(kernel_builder, "BOOT_PARTITION_SIZE", 16384), \
+             patch.object(kernel_builder.subprocess, "run", side_effect=sign):
             results = self.builder.create_boot_image()
 
         self.assertEqual(len(results), 2)
@@ -179,6 +195,7 @@ class ManagerCompatibilityTests(unittest.TestCase):
         self.assertTrue(Path(std_boot).is_file())
         self.assertEqual(Path(stem_boot).read_bytes(), Path(std_boot).read_bytes())
         self.assertTrue(Path(std_boot).read_bytes().startswith(b"ANDROID!"))
+        self.assertEqual(int.from_bytes(Path(std_boot).read_bytes()[16:20], "little"), 0)
 
 
 if __name__ == "__main__":

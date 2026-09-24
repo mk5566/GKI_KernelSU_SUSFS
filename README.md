@@ -38,7 +38,7 @@ The ishtar built-in LZ4KD source patch addresses the earlier pre-build zRAM gate
 
 ## Image and flash boundary
 
-The uploaded archive contains raw `Image`, an AnyKernel ZIP, and a 64 MiB header-v4 `boot.img` with a generated AVB key. The owner reported a bootloop with the 2026-09-24 build after trying the ZIP and `boot.img`; neither is qualified for reuse. **Do not flash an artifact solely because the build succeeds.** Follow [BUILD_AUDIT.md](BUILD_AUDIT.md) and [VALIDATION_PLAN.md](VALIDATION_PLAN.md); the owner performs any flash only after image packaging, recovery, and rollback are verified.
+The archive contains raw `Image`, an AnyKernel ZIP, and a header-v4 `boot.img` with a generated AVB key. The owner reported a failed boot after flashing build `132177e`'s `boot.img`. That image had a 64 MiB footer, while the phone's boot partition and its working footer are at 192 MiB. The builder now uses the measured size and refuses unsigned output. The raw kernel from that run has not been tested on the phone, and the replacement boot image still needs device validation. **Do not flash an artifact solely because the build succeeds.** Follow [BUILD_AUDIT.md](BUILD_AUDIT.md) and [VALIDATION_PLAN.md](VALIDATION_PLAN.md); the owner performs any flash only after image packaging, recovery, and rollback are verified.
 
 ---
 

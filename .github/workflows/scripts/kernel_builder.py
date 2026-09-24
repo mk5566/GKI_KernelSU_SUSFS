@@ -19,6 +19,7 @@ from source_safety import verify_upstream_sources
 logger = logging.getLogger(__name__)
 
 REQUIRED_TOOLS = ("git", "curl", "python3", "zip")
+BOOT_PARTITION_SIZE = 192 * 1024 * 1024  # Measured boot_a and boot_b on ishtar.
 
 
 @dataclass
@@ -1028,10 +1029,6 @@ class KernelBuilder:
                     "--kernel", str(image_path),
                     "--output", str(boot_img_path),
                 ]
-                if self.config.android_version:
-                    cmd.extend(["--os_version", self.config.android_version.replace("android", "")])
-                if self.config.os_patch_level:
-                    cmd.extend(["--os_patch_level", self.config.os_patch_level])
                 env = self.env.copy()
                 env["PYTHONPATH"] = str(mkbootimg_script.parent)
                 subprocess.run(cmd, cwd=self.work_dir, env=env, check=True, capture_output=True, text=True)
@@ -1044,8 +1041,6 @@ class KernelBuilder:
             self._pack_boot_image_v4(
                 kernel_path=image_path,
                 output_path=boot_img_path,
-                os_version_str=self.config.android_version,
-                os_patch_level_str=self.config.os_patch_level,
             )
             logger.info(f"Built boot.img using built-in v4 pack: {boot_img_path}")
 
@@ -1065,25 +1060,20 @@ class KernelBuilder:
 
         key_path = Path(self.env.get("BOOT_SIGN_KEY_PATH", self.workspace / "boot_avb_testkey.pem"))
         if not key_path.exists():
-            try:
-                self._run_cmd(f"openssl genrsa -out '{key_path}' 2048", check=False)
-            except Exception:
-                pass
-
-        if avbtool and avbtool.is_file():
-            try:
-                cmd = [
-                    str(avbtool), "add_hash_footer",
-                    "--partition_name", "boot",
-                    "--partition_size", str(64 * 1024 * 1024),
-                    "--image", str(boot_img_path),
-                ]
-                if key_path.is_file():
-                    cmd.extend(["--algorithm", "SHA256_RSA2048", "--key", str(key_path)])
-                subprocess.run(cmd, cwd=self.work_dir, check=True, capture_output=True, text=True)
-                logger.info(f"Added AVB hash footer to {boot_img_path} (signed with {key_path if key_path.is_file() else 'none'})")
-            except Exception as e:
-                logger.warning(f"avbtool add_hash_footer skipped: {e}")
+            self._run_cmd(f"openssl genrsa -out '{key_path}' 2048", check=True)
+        if not avbtool or not avbtool.is_file() or not key_path.is_file():
+            raise RuntimeError("boot.img requires avbtool and an RSA-2048 signing key")
+        cmd = [
+            str(avbtool), "add_hash_footer",
+            "--partition_name", "boot",
+            "--partition_size", str(BOOT_PARTITION_SIZE),
+            "--image", str(boot_img_path),
+            "--algorithm", "SHA256_RSA2048", "--key", str(key_path),
+        ]
+        subprocess.run(cmd, cwd=self.work_dir, check=True, capture_output=True, text=True)
+        if boot_img_path.stat().st_size != BOOT_PARTITION_SIZE:
+            raise RuntimeError("Signed boot.img does not match the measured ishtar boot partition")
+        logger.info(f"Added AVB hash footer to {boot_img_path} ({BOOT_PARTITION_SIZE} bytes)")
 
         shutil.copyfile(boot_img_path, standard_boot_path)
 
