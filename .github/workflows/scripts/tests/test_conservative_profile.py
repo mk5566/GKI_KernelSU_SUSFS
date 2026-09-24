@@ -17,7 +17,6 @@ class ConservativeProfileTests(unittest.TestCase):
     def test_defaults_select_bbr_and_phone_compressor(self):
         self.assertFalse(self.builder.config.use_zram)
         self.assertTrue(self.builder.config.set_default_bbr)
-        self.assertNotIn("CONFIG_TCP_CONG_BBR3", self.builder.BBR_CONFIG_UPDATES)
         self.assertIn("lz4kd-builtin", self.builder.config.artifact_stem)
         self.assertIn("bbr1-default", self.builder.config.artifact_stem)
         self.assertEqual(self.builder.config.optional_patches, ())
@@ -40,10 +39,14 @@ class ConservativeProfileTests(unittest.TestCase):
     def test_rom_tcp_remains_an_explicit_option(self):
         selected = BuildConfig(sub_level="211", os_patch_level="2026-09", set_default_bbr=False)
         self.assertIn("rom-tcp", selected.artifact_stem)
-        self.assertEqual(self.builder.BBR_CONFIG_UPDATES["CONFIG_TCP_CONG_BBR"], "y")
-        self.assertEqual(self.builder.BBR_CONFIG_UPDATES["CONFIG_TCP_CONG_BIC"], "n")
-        self.assertEqual(self.builder.BBR_CONFIG_UPDATES["CONFIG_TCP_CONG_WESTWOOD"], "n")
-        self.assertEqual(self.builder.BBR_CONFIG_UPDATES["CONFIG_TCP_CONG_HTCP"], "n")
+        cfg = self.builder._defconfig_path()
+        cfg.parent.mkdir(parents=True)
+        cfg.write_text("CONFIG_INET_DIAG_DESTROY=y\n")
+        self.builder._configure_bbr()
+        text = cfg.read_text()
+        self.assertIn("CONFIG_TCP_CONG_BBR=y\n", text)
+        self.assertNotIn("CONFIG_TCP_CONG_BBR3", text)
+        self.assertNotIn("CONFIG_TCP_CONG_BIC=y", text)
 
     def test_bbr_and_cubic_only_congestion_control_validates(self):
         path = self.builder.work_dir / ".config"
@@ -151,6 +154,14 @@ class ConservativeProfileTests(unittest.TestCase):
         path.write_text(path.read_text().replace("CONFIG_ZRAM=y", "CONFIG_ZRAM=m"))
         with self.assertRaisesRegex(RuntimeError, "CONFIG_ZRAM=y"):
             self.builder._verify_lz4kd_config(path)
+
+    def test_working_phone_tmpfs_support_cannot_be_dropped(self):
+        path = self.builder.work_dir / ".config"
+        path.write_text("CONFIG_TMPFS_POSIX_ACL=y\nCONFIG_ZRAM_WRITEBACK=y\n"
+                        "CONFIG_IP_NF_TARGET_TTL=y\nCONFIG_IP6_NF_TARGET_HL=y\n"
+                        "CONFIG_IP6_NF_MATCH_HL=y\n")
+        with self.assertRaisesRegex(RuntimeError, "CONFIG_TMPFS_XATTR=y"):
+            self.builder._verify_device_config(path)
 
     def test_kernel_name_step_preserves_upstream_scripts(self):
         scripts = self.builder.work_dir / "common/scripts"

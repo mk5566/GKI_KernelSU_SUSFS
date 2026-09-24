@@ -1,5 +1,13 @@
 # Build audit — 2026-09-23
 
+## 2026-09-24 boot regression follow-up
+
+The owner reports a bootloop or stuck logo after installing the `0c6007b` build via both its AnyKernel ZIP and `boot.img`. The downloaded archive contains a raw `Image`; it is the same kernel payload in the ZIP and boot image. The phone is not currently available to ADB, so no pstore or boot log confirms the exact failure.
+
+The archive's `final.config` disables `CONFIG_TMPFS_POSIX_ACL` and `CONFIG_TMPFS_XATTR`; both are enabled in the recorded working phone config. It also drops zRAM writeback and three netfilter settings present on that phone. The builder now restores these settings in Kconfig order and checks the resolved config. Loss of tmpfs xattrs is a plausible early Android boot cause, not a proven diagnosis without a boot log.
+
+The failing build also removed `check_defconfig`, module-order checking, module-list inputs, and three build configs from the initial-common-SHA guard. The repair restores those upstream source guards and uses the upstream `GKI_BUILD_CONFIG_FRAGMENT` hook for the required full-symbol-export, non-enforced-KMI Image-only profile. Canonical defconfig and module-order checks are retained. Vendor ABI compatibility and phone boot remain unverified. No replacement kernel has been built or flashed during this follow-up.
+
 ## Current patch-safety audit addendum
 
 The safety-by-retirement changes are documented in

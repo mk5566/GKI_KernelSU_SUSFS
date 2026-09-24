@@ -1,6 +1,6 @@
 # GKI SukiSU-Ultra + SUSFS Build System (Slim 5.15)
 
-Automated Generic Kernel Image (GKI) build system for Xiaomi 13 Ultra (`ishtar`) tracking the newest published **android13-5.15** monthly branch, with integrated SukiSU-Ultra and a limited SUSFS profile. The GitHub workflow is intentionally single-profile: stable pinned SukiSU, built-in ishtar LZ4KD zRAM, upstream TCP behavior, no optional tuning patches, no release job, and no notification branch. Eight unsafe or unqualified overrides have been removed and are rejected if reintroduced.
+Automated Generic Kernel Image (GKI) build system for Xiaomi 13 Ultra (`ishtar`) tracking the newest published **android13-5.15** monthly branch, with integrated SukiSU-Ultra and a limited SUSFS profile. The manual workflow offers Stable or Dev SukiSU, with built-in ishtar LZ4KD zRAM, upstream BBRv1 as the default TCP controller, no optional tuning patches, no release job, and no notification branch. Eight unsafe or unqualified overrides have been removed and are rejected if reintroduced.
 
 > [!NOTE]
 > The current engineering target is Xiaomi 13 Ultra (`ishtar`). The connected device baseline is in [DEVICE_BASELINE.md](DEVICE_BASELINE.md). A successful repository dry run does not qualify an image for flashing.
@@ -13,7 +13,7 @@ Automated Generic Kernel Image (GKI) build system for Xiaomi 13 Ultra (`ishtar`)
 |---|---|---|
 | [SukiSU-Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra) | Advanced kernel-based root solution | Included |
 | SUSFS | Limited mount profile; correctness and module compatibility still need a full build and device checks | Included |
-| TCP | Preserve the branch default; the CI workflow does not override the congestion controller. | Fixed profile |
+| TCP | Upstream BBRv1 and CUBIC; BBRv1 is the CI default. | Fixed profile |
 | zRAM | Built-in zRAM/zsmalloc with ishtar LZ4KD. | Fixed profile; full device qualification still required |
 | Patch safety | Eight overrides retired; pinned-source regression checks before integration, compilation and packaging. | Build-time policy; not device qualification |
 | Optional tuning patches | Present only for local engineering review; the CI workflow applies none. | Disabled in CI |
@@ -22,7 +22,7 @@ Automated Generic Kernel Image (GKI) build system for Xiaomi 13 Ultra (`ishtar`)
 
 ## Manual GitHub Actions build
 
-This project builds only through a manually dispatched GitHub Actions workflow. Pushing a commit does not start a build, and the workflow exposes **no build choices**.
+This project builds only through a manually dispatched GitHub Actions workflow. Pushing a commit does not start a build. The workflow offers a Stable or Dev SukiSU choice.
 
 1. Open the repository **Actions** tab.
 2. Select **Build Xiaomi 13 Ultra Kernel**.
@@ -30,7 +30,7 @@ This project builds only through a manually dispatched GitHub Actions workflow. 
 4. The workflow resolves the newest published Android 13 / 5.15 GKI target once, validates the repository safety policy, and builds the fixed ishtar profile.
 5. Download the uploaded artifacts and review `Image`, the AnyKernel candidate, `BUILD_INFO.md`, `final.config`, `manifest.lock.xml`, `source-safety.json`, `target-selection.json`, the build log, and `SHA256SUMS.txt`.
 
-The fixed CI profile uses `Stable(standard)` SukiSU, built-in LZ4KD, upstream TCP defaults, an empty optional-patch selection, and no GitHub release or Telegram notification path. The command-line backend retains engineering switches for local diagnostics, but GitHub Actions does not expose them.
+The default CI profile uses `Stable(standard)` SukiSU, built-in LZ4KD, upstream BBRv1, an empty optional-patch selection, and no GitHub release or Telegram notification path. The command-line backend retains engineering switches for local diagnostics, but GitHub Actions does not expose them.
 
 The ishtar built-in LZ4KD source patch addresses the earlier pre-build zRAM gate. A successful CI build still does not prove bootability, vendor-module compatibility, suspend behavior, storage durability, thermals, battery life, or performance on the phone.
 
@@ -38,7 +38,7 @@ The ishtar built-in LZ4KD source patch addresses the earlier pre-build zRAM gate
 
 ## Image and flash boundary
 
-The builder does not produce a generic `boot.img`: its previous header-v4/test-key recipe was not checked against this phone's stock boot image. The AnyKernel package also needs device-specific review. **Do not flash an artifact solely because the build succeeds.** Follow [BUILD_AUDIT.md](BUILD_AUDIT.md) and [VALIDATION_PLAN.md](VALIDATION_PLAN.md); the owner performs any flash only after image packaging, recovery, and rollback are verified.
+The uploaded archive contains raw `Image`, an AnyKernel ZIP, and a 64 MiB header-v4 `boot.img` with a generated AVB key. The owner reported a bootloop with the 2026-09-24 build after trying the ZIP and `boot.img`; neither is qualified for reuse. **Do not flash an artifact solely because the build succeeds.** Follow [BUILD_AUDIT.md](BUILD_AUDIT.md) and [VALIDATION_PLAN.md](VALIDATION_PLAN.md); the owner performs any flash only after image packaging, recovery, and rollback are verified.
 
 ---
 
@@ -50,7 +50,7 @@ can leave the eight deleted patch files behind; the new guard deliberately
 rejects those leftovers. Do not put the delivery diff into the kernel patch
 manifest or apply it to `kernel/common`.
 
-`APPLY_ORDER.txt` is authoritative. Required `!` entries apply exactly or the build fails. Optional entries remain available only to the local engineering backend; the GitHub workflow always passes an empty optional selection. CI retains built-in zRAM/zsmalloc and LZ4KD and does not request ZSTD or a TCP congestion-controller override. The LZ4KD codec files come from the freshly cloned SukiSU_patch revision; its `kernel/module.c` changes are excluded.
+`APPLY_ORDER.txt` is authoritative. Required `!` entries apply exactly or the build fails. Optional entries remain available only to the local engineering backend; the GitHub workflow always passes an empty optional selection. CI retains built-in zRAM/zsmalloc and LZ4KD, does not request ZSTD, and selects upstream BBRv1. The LZ4KD codec files come from the freshly cloned SukiSU_patch revision; its `kernel/module.c` changes are excluded.
 
 | Alias for `optional_patches` | Retained experiment |
 |---|---|
@@ -67,7 +67,7 @@ SHA-256 hashes and reasons are in
 
 This correction retains the selected upstream TCP, scalar AArch64 `memcmp`,
 freezer, s2idle, alarmtimer, F2FS policy and rate-limited IRQ failure warning.
-It **does not supply a repaired BBRv3 backport**. The GitHub workflow does not enable upstream BBRv1 as a fallback either. Existing ROM scripts that request `bbr3` must be reviewed before trying an image without it; the build does not rewrite the phone's settings.
+It **does not supply a repaired BBRv3 backport**. The GitHub workflow selects upstream BBRv1 explicitly. Existing ROM scripts that request `bbr3` must be reviewed before trying an image without it; the build does not rewrite the phone's settings.
 
 Protected source bytes are checked against the common commit captured before
 helper setup, not a helper-modified `HEAD`. The checks reject changed protected

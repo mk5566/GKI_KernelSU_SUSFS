@@ -6,11 +6,12 @@
 policy below. The eight requested overrides are removed and rejected, including
 when they are accidentally restored or selected by stale input. Only `cpu-scan`
 and `clear-page` remain optional, off by default. The two required built-in
-zRAM/LZ4KD patches and existing strict GKI/module checks are unchanged.
+zRAM/LZ4KD patches remain required. The current builder retains canonical
+defconfig and module-order checks while exporting all symbols for vendor modules.
 
 The BBRv3 defect is resolved here by retiring the entire backport, **not** by
 claiming a corrected allocation fallback or compatible new TCP ABI. Default
-TCP stays upstream; BBRv1 is still an explicit opt-in. Generic `memcmp` stays
+TCP now selects upstream BBRv1 explicitly. Generic `memcmp` stays
 on the upstream optimized scalar path. Suspend, alarm, F2FS and IRQ policy
 stay upstream. Source-byte checks bind 32 protected files to the initial
 common SHA and reject BBR3 configuration before packaging. These checks have

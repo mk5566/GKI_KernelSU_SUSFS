@@ -57,15 +57,6 @@ class KernelBuilder:
         "CONFIG_KSU_SUSFS_SUS_MOUNT": "y",
     }
 
-    BBR_CONFIG_UPDATES = {
-        "CONFIG_TCP_CONG_ADVANCED": "y",
-        "CONFIG_TCP_CONG_BIC": "n",
-        "CONFIG_TCP_CONG_WESTWOOD": "n",
-        "CONFIG_TCP_CONG_HTCP": "n",
-        "CONFIG_TCP_CONG_BBR": "y",
-        "CONFIG_DEFAULT_BBR": "y",
-    }
-
     def __init__(self, config: BuildConfig, workspace: str,
                  expected_common_revision: Optional[str] = None):
         self.config = config
@@ -613,14 +604,38 @@ class KernelBuilder:
             if key.startswith("CONFIG_KSU_SUSFS") and value == "y" and key[7:] not in declared:
                 raise RuntimeError(f"Selected SukiSU source does not support {key}")
         self._configure_ksu_susfs()
-        self._upsert_defconfig({"CONFIG_MODULE_SIG_FORCE": "n"})
         if self.config.set_default_bbr:
             self._configure_bbr()
 
         if self.config.use_zram:
             self._configure_zram()
+        self._configure_device_features()
         self._verify_ishtar_zram_plan(self._defconfig_path())
         verify_no_retired_config(self._defconfig_path())
+
+    def _configure_device_features(self):
+        config_file = self._defconfig_path()
+        content = config_file.read_text(encoding="utf-8")
+        zram_anchor = ("CONFIG_ZRAM_DEF_COMP_ZSTD=y" if self.config.use_zram
+                       else "CONFIG_ZRAM_DEF_COMP_LZ4KD=y")
+        # Match the booted phone. POSIX_ACL selects TMPFS_XATTR.
+        for anchor, setting in (
+            ("CONFIG_TMPFS=y", "CONFIG_TMPFS_POSIX_ACL=y"),
+            ("CONFIG_IP_NF_MANGLE=y", "CONFIG_IP_NF_TARGET_TTL=y"),
+            ("CONFIG_IP6_NF_IPTABLES=y", "CONFIG_IP6_NF_MATCH_HL=y"),
+            ("CONFIG_IP6_NF_MATCH_RPFILTER=y", "CONFIG_IP6_NF_TARGET_HL=y"),
+            (zram_anchor, "CONFIG_ZRAM_WRITEBACK=y"),
+        ):
+            symbol = setting.split("=", 1)[0]
+            if setting in content.splitlines():
+                continue
+            if re.search(rf"^(?:# )?{symbol}(?:=| is not set)", content, re.M):
+                raise RuntimeError(f"Review changed upstream {symbol} before building")
+            marker = anchor + "\n"
+            if content.count(marker) != 1:
+                raise RuntimeError(f"Cannot place {setting} after {anchor}")
+            content = content.replace(marker, marker + setting + "\n", 1)
+        config_file.write_text(content, encoding="utf-8")
 
     def _configure_ksu_susfs(self):
         config_file = self._defconfig_path()
@@ -647,9 +662,6 @@ class KernelBuilder:
         marker = "CONFIG_INET_DIAG_DESTROY=y\n"
         bbr_lines = (
             "CONFIG_TCP_CONG_ADVANCED=y\n"
-            "# CONFIG_TCP_CONG_BIC is not set\n"
-            "# CONFIG_TCP_CONG_WESTWOOD is not set\n"
-            "# CONFIG_TCP_CONG_HTCP is not set\n"
             "CONFIG_TCP_CONG_BBR=y\n"
             "CONFIG_DEFAULT_BBR=y\n"
         )
@@ -658,7 +670,7 @@ class KernelBuilder:
                 content = content.replace(marker, marker + bbr_lines, 1)
                 config_file.write_text(content, encoding="utf-8")
             else:
-                self._upsert_defconfig(self.BBR_CONFIG_UPDATES)
+                raise RuntimeError("Cannot place BBRv1 in the selected GKI defconfig")
 
     def _configure_zram(self):
         fragment = (self.work_dir / "common/arch/arm64/configs/"
@@ -756,61 +768,25 @@ class KernelBuilder:
             self._verify_patch_safety()
             verify_no_retired_config(self._defconfig_path())
 
-            # 1. Neutralize build.config.gki to prevent check_defconfig abort
-            build_config_gki = self.work_dir / "common/build.config.gki"
-            if build_config_gki.exists():
-                content = build_config_gki.read_text(encoding="utf-8")
-                content = content.replace('POST_DEFCONFIG_CMDS="check_defconfig"', 'POST_DEFCONFIG_CMDS=""')
-                content = content.replace("check_defconfig", "")
-                build_config_gki.write_text(content, encoding="utf-8")
-
-            # 2. Neutralize build.config.aarch64
-            build_config_aarch64 = self.work_dir / "common/build.config.aarch64"
-            if build_config_aarch64.exists():
-                content = build_config_aarch64.read_text(encoding="utf-8")
-                content = content.replace("GKI_MODULES_LIST=android/gki_aarch64_modules", "GKI_MODULES_LIST=")
-                build_config_aarch64.write_text(content, encoding="utf-8")
-
-            # 3. Neutralize build.config.gki.aarch64: export all symbols for device vendor modules
-            build_config = self.work_dir / "common/build.config.gki.aarch64"
-            if build_config.exists():
-                content = build_config.read_text(encoding="utf-8")
-                content = content.replace("BUILD_SYSTEM_DLKM=1", "BUILD_SYSTEM_DLKM=0")
-                content = content.replace("BUILD_GKI_ARTIFACTS=1", "BUILD_GKI_ARTIFACTS=0")
-                content = content.replace("BUILD_GKI_CERTIFICATION_TOOLS=1", "BUILD_GKI_CERTIFICATION_TOOLS=0")
-                lines = [l for l in content.split('\n') if not any(k in l for k in [
-                    'MODULES_ORDER=', 'MODULES_LIST=', 'KMI_SYMBOL_LIST_STRICT_MODE'
-                ])]
-                extra_flags = [
-                    "TRIM_NONLISTED_KMI=0",
-                    "KMI_SYMBOL_LIST_STRICT_MODE=0",
-                    "KMI_SYMBOL_LIST_ADD_ONLY=0",
-                    "KMI_ENFORCED=0",
-                    "BUILD_SYSTEM_DLKM=0",
-                    "BUILD_GKI_ARTIFACTS=0",
-                    "BUILD_GKI_CERTIFICATION_TOOLS=0",
-                    "MODULES_LIST=",
-                    "MODULES_ORDER=",
-                    "GKI_MODULES_LIST=",
-                    "ABI_DEFINITION=",
-                    "KMI_SYMBOL_LIST=",
-                    "ADDITIONAL_KMI_SYMBOL_LISTS=",
-                    "POST_DEFCONFIG_CMDS=",
-                ]
-                content = '\n'.join(lines) + '\n' + '\n'.join(extra_flags) + '\n'
-                build_config.write_text(content, encoding="utf-8")
+            # The upstream config sources this fragment after its defaults.
+            # Keep check_defconfig, module lists, and protected sources intact.
+            fragment = self.work_dir / "ishtar.build.config"
+            fragment.write_text(
+                "TRIM_NONLISTED_KMI=0\n"
+                "KMI_SYMBOL_LIST_STRICT_MODE=0\n"
+                "KMI_ENFORCED=0\n"
+                "BUILD_SYSTEM_DLKM=0\n"
+                "BUILD_GKI_ARTIFACTS=0\n"
+                "BUILD_GKI_CERTIFICATION_TOOLS=0\n",
+                encoding="utf-8",
+            )
+            self.env["GKI_BUILD_CONFIG_FRAGMENT"] = str(fragment)
 
             logger.info("Starting kernel compilation with build.sh (TRIM_NONLISTED_KMI=0)...")
             build_cmd = (
                 "USE_CCACHE=1 "
                 "LTO=thin "
-                "BUILD_SYSTEM_DLKM=0 "
-                "BUILD_GKI_ARTIFACTS=0 "
-                "BUILD_GKI_CERTIFICATION_TOOLS=0 "
-                "TRIM_NONLISTED_KMI=0 "
-                "KMI_ENFORCED=0 "
                 "INSTALL_MOD_STRIP=1 "
-                "POST_DEFCONFIG_CMDS=\"\" "
                 "BUILD_CONFIG=common/build.config.gki.aarch64 "
                 "build/build.sh"
             )
@@ -833,6 +809,7 @@ class KernelBuilder:
                 self._verify_lz4kd_config(final_config)
             if self.config.set_default_bbr:
                 self._verify_bbr_config(final_config)
+            self._verify_device_config(final_config)
             verify_no_retired_config(final_config)
             shutil.copyfile(final_config, self.work_dir / "final.config")
             logger.info(f"=== Kernel compile succeeded: {image_path} ===")
@@ -916,6 +893,17 @@ class KernelBuilder:
                           'CONFIG_TCP_CONG_HTCP=y', 'CONFIG_TCP_CONG_HTCP=m'):
             if forbidden in text:
                 raise RuntimeError(f"Unused congestion algorithm present in .config: {forbidden}")
+
+    @staticmethod
+    def _verify_device_config(config_path: Path):
+        resolved = set(config_path.read_text(encoding="utf-8").splitlines())
+        required = {"CONFIG_TMPFS_POSIX_ACL=y", "CONFIG_TMPFS_XATTR=y",
+                    "CONFIG_ZRAM_WRITEBACK=y", "CONFIG_IP_NF_TARGET_TTL=y",
+                    "CONFIG_IP6_NF_TARGET_HL=y", "CONFIG_IP6_NF_MATCH_HL=y",
+                    "# CONFIG_MODULE_SIG_FORCE is not set"}
+        missing = required - resolved
+        if missing:
+            raise RuntimeError(f"Working ishtar config lost: {', '.join(sorted(missing))}")
 
     def _verify_patch_safety(self):
         reject_retired_aliases(self.config.optional_patches)
@@ -1163,7 +1151,7 @@ class KernelBuilder:
             f"- Source safety baseline: `{self._safety_common_revision}`",
             f"- Source safety report SHA-256: `{self._sha256(self.work_dir / 'source-safety.json')}`",
             f"- Selected unverified patches: {', '.join(self.config.optional_patches) or 'none'}",
-            "- Qualification: GKI build checks enabled; device compatibility still requires boot/module validation",
+            "- Qualification: canonical defconfig and module-order checks retained; vendor ABI and device boot remain unverified",
             f"- Image SHA-256: `{self._sha256(self._kernel_image_path())}`",
             f"- Boot image SHA-256: `{self._sha256(self.work_dir / 'boot.img')}`",
             f"- Final config SHA-256: `{self._sha256(self.work_dir / 'final.config')}`",
