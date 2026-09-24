@@ -662,6 +662,9 @@ class KernelBuilder:
         marker = "CONFIG_INET_DIAG_DESTROY=y\n"
         bbr_lines = (
             "CONFIG_TCP_CONG_ADVANCED=y\n"
+            "# CONFIG_TCP_CONG_BIC is not set\n"
+            "# CONFIG_TCP_CONG_WESTWOOD is not set\n"
+            "# CONFIG_TCP_CONG_HTCP is not set\n"
             "CONFIG_TCP_CONG_BBR=y\n"
             "CONFIG_DEFAULT_BBR=y\n"
         )

@@ -6,7 +6,9 @@ The owner reports a bootloop or stuck logo after installing the `0c6007b` build 
 
 The archive's `final.config` disables `CONFIG_TMPFS_POSIX_ACL` and `CONFIG_TMPFS_XATTR`; both are enabled in the recorded working phone config. It also drops zRAM writeback and three netfilter settings present on that phone. The builder now restores these settings in Kconfig order and checks the resolved config. Loss of tmpfs xattrs is a plausible early Android boot cause, not a proven diagnosis without a boot log.
 
-The failing build also removed `check_defconfig`, module-order checking, module-list inputs, and three build configs from the initial-common-SHA guard. The repair restores those upstream source guards and uses the upstream `GKI_BUILD_CONFIG_FRAGMENT` hook for the required full-symbol-export, non-enforced-KMI Image-only profile. Canonical defconfig and module-order checks are retained. Vendor ABI compatibility and phone boot remain unverified. No replacement kernel has been built or flashed during this follow-up.
+The failing build also removed `check_defconfig`, module-order checking, module-list inputs, and three build configs from the initial-common-SHA guard. The repair restores those upstream source guards and uses the upstream `GKI_BUILD_CONFIG_FRAGMENT` hook for the required full-symbol-export, non-enforced-KMI Image-only profile. Canonical defconfig and module-order checks are retained. Vendor ABI compatibility and phone boot remain unverified.
+
+The first replacement run (`adbafa8`, GitHub Actions run 35953829529) compiled the kernel but stopped at the upstream module-order gate: enabling `TCP_CONG_ADVANCED` for BBRv1 also makes BIC, Westwood and H-TCP modules by Kconfig default. The expected GKI list is empty. The builder now explicitly disables those three unused algorithms while keeping BBRv1 and the module-order gate. No flashable replacement artifact came from that failed run.
 
 ## Current patch-safety audit addendum
 

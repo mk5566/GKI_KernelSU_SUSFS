@@ -46,7 +46,8 @@ class ConservativeProfileTests(unittest.TestCase):
         text = cfg.read_text()
         self.assertIn("CONFIG_TCP_CONG_BBR=y\n", text)
         self.assertNotIn("CONFIG_TCP_CONG_BBR3", text)
-        self.assertNotIn("CONFIG_TCP_CONG_BIC=y", text)
+        for symbol in ("BIC", "WESTWOOD", "HTCP"):
+            self.assertIn(f"# CONFIG_TCP_CONG_{symbol} is not set\n", text)
 
     def test_bbr_and_cubic_only_congestion_control_validates(self):
         path = self.builder.work_dir / ".config"
