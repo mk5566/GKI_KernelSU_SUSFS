@@ -587,7 +587,16 @@ class KernelBuilder:
         if not lz4kd_patch.exists():
             raise RuntimeError(f"Required ZRAM patch not found: {lz4kd_patch}")
 
-        self._apply_patch_file(lz4kd_patch, required=True, allow_fuzz=True)
+        # The pinned helper patch's first kernel/module.c hunk accepts modules
+        # with mismatched symbol CRCs. Keep every other hunk for this A/B build.
+        reviewed_patch = (
+            Path(__file__).resolve().parents[3]
+            / "patches"
+            / f"{self.config.kernel_version}.{self.config.sub_level}"
+            / "lz4kd-version-check.patch"
+        )
+        self._require_path(reviewed_patch, "LZ4KD patch with version checks")
+        self._apply_patch_file(reviewed_patch, required=True, allow_fuzz=False)
 
         # Verify that the patch was applied and the kernel Kconfig survived.
         required_markers = {

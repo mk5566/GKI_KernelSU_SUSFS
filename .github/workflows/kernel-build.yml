@@ -1,4 +1,4 @@
-name: Ishtar GKI control build
+name: Ishtar GKI version-check build
 
 on:
   workflow_dispatch:
@@ -64,7 +64,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: ishtar-gki-f3-control
+          name: ishtar-gki-version-check
           path: artifacts/*
           if-no-files-found: error
 
@@ -72,7 +72,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: ishtar-gki-f3-failure-${{ github.run_id }}
+          name: ishtar-gki-version-check-failure-${{ github.run_id }}
           path: |
             ${{ env.GKI_WORKSPACE }}/BUILD_INFO.md
             ${{ env.GKI_WORKSPACE }}/**/*.rej
