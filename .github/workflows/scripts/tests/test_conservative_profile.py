@@ -164,6 +164,15 @@ class ConservativeProfileTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "CONFIG_TMPFS_XATTR=y"):
             self.builder._verify_device_config(path)
 
+    def test_vendor_module_crc_check_remains_enabled(self):
+        path = self.builder.work_dir / ".config"
+        path.write_text("CONFIG_TMPFS_POSIX_ACL=y\nCONFIG_TMPFS_XATTR=y\n"
+                        "CONFIG_ZRAM_WRITEBACK=y\nCONFIG_IP_NF_TARGET_TTL=y\n"
+                        "CONFIG_IP6_NF_TARGET_HL=y\nCONFIG_IP6_NF_MATCH_HL=y\n"
+                        "# CONFIG_MODULE_SIG_FORCE is not set\n")
+        with self.assertRaisesRegex(RuntimeError, "CONFIG_MODVERSIONS=y"):
+            self.builder._verify_device_config(path)
+
     def test_kernel_name_step_preserves_upstream_scripts(self):
         scripts = self.builder.work_dir / "common/scripts"
         scripts.mkdir(parents=True)

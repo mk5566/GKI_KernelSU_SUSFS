@@ -9,7 +9,7 @@ Run the Python regression suite and review
 the control candidate. All eight retired aliases must fail validation. Do not
 restore their source files or weaken the guard to bypass a helper conflict.
 
-After a manually dispatched build, verify `source-safety.json` says `passed`,
+After a manually dispatched build, first compare vendor module CRCs with the uploaded `Module.symvers` using the read-only audit script. Stop before a phone boot test if a required vendor symbol has a different CRC; review source/config compatibility without disabling module checks. Then verify `source-safety.json` says `passed`,
 its `baseline_revision` matches the selected common SHA, and every protected
 file has equal expected/actual hashes. Check the report hash against
 `BUILD_INFO.md` and `SHA256SUMS.txt`. Then review the *separate* canonical
@@ -30,10 +30,10 @@ actual runtime configuration before attributing an fsync or network performance
 change to another patch. This threshold selects in-place-update behavior; it
 is not permission to acknowledge fsync before required persistence completes.
 
-## Before the owner flashes
+## Before the owner tests a candidate
 
 1. Record the exact common/manifest/helper SHAs, patch hashes, final `.config`, build log, `Image` hash, ABI/KMI result, and all module-list results. Verify the build's kernel release and zRAM deployment against the baseline.
-2. Verify the current active slot, real stock boot header/ramdisk/partition layout, proposed installer behavior, and an independently usable recovery path. Save matching original images and hashes. The corrected 192 MiB test-key boot artifact is still not a validated ishtar boot image.
+2. Verify the active slot, current boot state, and an independently usable recovery route. The 64 MiB test-key image is for temporary `fastboot boot` only. Its size matches the #60/#61 comparison method but does not qualify direct flashing or the AnyKernel installer.
 3. Freeze the test conditions: ROM build, power/thermal mode, charger state, app set, network, and current zRAM/VM policy. Keep bindhost/SUSFS mode unchanged during performance A/B tests.
 
 ## First boot: stop conditions

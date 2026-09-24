@@ -28,17 +28,17 @@ This project builds only through a manually dispatched GitHub Actions workflow. 
 2. Select **Build Xiaomi 13 Ultra Kernel**.
 3. Click **Run workflow**.
 4. The workflow resolves the newest published Android 13 / 5.15 GKI target once, validates the repository safety policy, and builds the fixed ishtar profile.
-5. Download the uploaded artifacts and review `Image`, the AnyKernel candidate, `BUILD_INFO.md`, `final.config`, `manifest.lock.xml`, `source-safety.json`, `target-selection.json`, the build log, and `SHA256SUMS.txt`.
+5. Download the uploaded artifacts and review `Image`, the AnyKernel candidate, `BUILD_INFO.md`, `final.config`, `Module.symvers`, `manifest.lock.xml`, `source-safety.json`, `target-selection.json`, the build log, and `SHA256SUMS.txt`.
 
 The default CI profile uses `Stable(standard)` SukiSU, built-in LZ4KD, upstream BBRv1, an empty optional-patch selection, and no GitHub release or Telegram notification path. The command-line backend retains engineering switches for local diagnostics, but GitHub Actions does not expose them.
 
-The ishtar built-in LZ4KD source patch addresses the earlier pre-build zRAM gate. A successful CI build still does not prove bootability, vendor-module compatibility, suspend behavior, storage durability, thermals, battery life, or performance on the phone.
+The ishtar built-in LZ4KD source patch addresses the earlier pre-build zRAM gate. The build now uploads `Module.symvers` for a read-only vendor CRC comparison: `python .github/workflows/scripts/module_crc_audit.py Module.symvers --adb --adb-path C:/Apps/Platform-tools/adb.exe`. This audits modules visible under `/vendor/lib/modules` without saving their binaries. A successful CI build or CRC comparison still does not prove bootability, complete module compatibility, suspend behavior, storage durability, thermals, battery life, or performance on the phone.
 
 ---
 
 ## Image and flash boundary
 
-The archive contains raw `Image`, an AnyKernel ZIP, and a header-v4 `boot.img` with a generated AVB key. The owner reported a failed boot after flashing build `132177e`'s `boot.img`. That image had a 64 MiB footer, while the phone's boot partition and its working footer are at 192 MiB. The builder now uses the measured size and refuses unsigned output. The raw kernel from that run has not been tested on the phone, and the replacement boot image still needs device validation. **Do not flash an artifact solely because the build succeeds.** Follow [BUILD_AUDIT.md](BUILD_AUDIT.md) and [VALIDATION_PLAN.md](VALIDATION_PLAN.md); the owner performs any flash only after image packaging, recovery, and rollback are verified.
+The archive contains raw `Image`, an AnyKernel ZIP, and a 64 MiB Header v4 `boot.img` with a generated AVB test key. This image is for an owner-run **temporary `fastboot boot` comparison**, matching the format used by builds #60 and #61. #60 boots by that method; #61 does not. The device boot partition is physically 192 MiB, but a 192 MiB image is no longer a requirement for this temporary-boot experiment. Direct flashing remains unqualified. A successful CI build does not prove vendor-module CRC compatibility or device boot. Follow [BUILD_AUDIT.md](BUILD_AUDIT.md) and [VALIDATION_PLAN.md](VALIDATION_PLAN.md) before any phone test.
 
 ---
 

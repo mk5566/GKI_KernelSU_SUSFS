@@ -167,7 +167,7 @@ class ManagerCompatibilityTests(unittest.TestCase):
         self.assertEqual(raw[4096:4096+len(kernel_data)], kernel_data)
 
     def test_create_boot_image_produces_artifacts(self):
-        self.assertEqual(kernel_builder.BOOT_PARTITION_SIZE, 192 * 1024 * 1024)
+        self.assertEqual(kernel_builder.BOOT_IMAGE_SIZE, 64 * 1024 * 1024)
         (self.builder.work_dir / "final.config").write_text("CONFIG_FOO=y\n")
         dummy_image = self.builder.work_dir / "Image"
         dummy_image.write_bytes(b"DUMMY_IMAGE_DATA" * 50)
@@ -185,7 +185,7 @@ class ManagerCompatibilityTests(unittest.TestCase):
             return subprocess.CompletedProcess(cmd, 0)
 
         with patch.object(self.builder, "_verify_patch_safety"), \
-             patch.object(kernel_builder, "BOOT_PARTITION_SIZE", 16384), \
+             patch.object(kernel_builder, "BOOT_IMAGE_SIZE", 16384), \
              patch.object(kernel_builder.subprocess, "run", side_effect=sign):
             results = self.builder.create_boot_image()
 

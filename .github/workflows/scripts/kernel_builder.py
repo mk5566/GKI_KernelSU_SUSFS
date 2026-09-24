@@ -19,7 +19,7 @@ from source_safety import verify_upstream_sources
 logger = logging.getLogger(__name__)
 
 REQUIRED_TOOLS = ("git", "curl", "python3", "zip")
-BOOT_PARTITION_SIZE = 192 * 1024 * 1024  # Measured boot_a and boot_b on ishtar.
+BOOT_IMAGE_SIZE = 64 * 1024 * 1024  # Temporary fastboot boot comparison image.
 
 
 @dataclass
@@ -816,6 +816,9 @@ class KernelBuilder:
             self._verify_device_config(final_config)
             verify_no_retired_config(final_config)
             shutil.copyfile(final_config, self.work_dir / "final.config")
+            symvers = final_config.with_name("Module.symvers")
+            self._require_path(symvers, "compiled Module.symvers")
+            shutil.copyfile(symvers, self.work_dir / "Module.symvers")
             logger.info(f"=== Kernel compile succeeded: {image_path} ===")
             return True
         except Exception as e:
@@ -901,7 +904,7 @@ class KernelBuilder:
     @staticmethod
     def _verify_device_config(config_path: Path):
         resolved = set(config_path.read_text(encoding="utf-8").splitlines())
-        required = {"CONFIG_TMPFS_POSIX_ACL=y", "CONFIG_TMPFS_XATTR=y",
+        required = {"CONFIG_MODVERSIONS=y", "CONFIG_TMPFS_POSIX_ACL=y", "CONFIG_TMPFS_XATTR=y",
                     "CONFIG_ZRAM_WRITEBACK=y", "CONFIG_IP_NF_TARGET_TTL=y",
                     "CONFIG_IP6_NF_TARGET_HL=y", "CONFIG_IP6_NF_MATCH_HL=y",
                     "# CONFIG_MODULE_SIG_FORCE is not set"}
@@ -1066,14 +1069,14 @@ class KernelBuilder:
         cmd = [
             str(avbtool), "add_hash_footer",
             "--partition_name", "boot",
-            "--partition_size", str(BOOT_PARTITION_SIZE),
+            "--partition_size", str(BOOT_IMAGE_SIZE),
             "--image", str(boot_img_path),
             "--algorithm", "SHA256_RSA2048", "--key", str(key_path),
         ]
         subprocess.run(cmd, cwd=self.work_dir, check=True, capture_output=True, text=True)
-        if boot_img_path.stat().st_size != BOOT_PARTITION_SIZE:
-            raise RuntimeError("Signed boot.img does not match the measured ishtar boot partition")
-        logger.info(f"Added AVB hash footer to {boot_img_path} ({BOOT_PARTITION_SIZE} bytes)")
+        if boot_img_path.stat().st_size != BOOT_IMAGE_SIZE:
+            raise RuntimeError("Signed boot.img does not match the configured temporary boot image size")
+        logger.info(f"Added AVB hash footer to {boot_img_path} ({BOOT_IMAGE_SIZE} bytes)")
 
         shutil.copyfile(boot_img_path, standard_boot_path)
 
@@ -1146,6 +1149,7 @@ class KernelBuilder:
             f"- Selected unverified patches: {', '.join(self.config.optional_patches) or 'none'}",
             "- Qualification: canonical defconfig and module-order checks retained; vendor ABI and device boot remain unverified",
             f"- Image SHA-256: `{self._sha256(self._kernel_image_path())}`",
+            f"- Module.symvers SHA-256: `{self._sha256(self.work_dir / 'Module.symvers')}`",
             f"- Boot image SHA-256: `{self._sha256(self.work_dir / 'boot.img')}`",
             f"- Final config SHA-256: `{self._sha256(self.work_dir / 'final.config')}`",
             f"- Build log SHA-256: `{self._sha256(self.work_dir / 'build.log')}`",

@@ -160,13 +160,13 @@ jobs:
           STEM="$(tr -d '\r\n' < "${GKI_WORKSPACE}/artifact_stem.txt")"
           cp "${BUILD_DIR}/${STEM}-AnyKernel3.zip" artifacts/
           cp "${BUILD_DIR}/boot.img" artifacts/
-          for name in Image final.config build.log manifest.lock.xml source-safety.json; do
+          for name in Image final.config Module.symvers build.log manifest.lock.xml source-safety.json; do
             cp "${BUILD_DIR}/${name}" artifacts/
           done
           cp "${GKI_WORKSPACE}/BUILD_INFO.md" artifacts/
           cp "${GKI_WORKSPACE}/artifact_stem.txt" artifacts/
           cp "${GKI_TARGET_FILE}" artifacts/target-selection.json
-          (cd artifacts && sha256sum Image *AnyKernel3.zip boot.img BUILD_INFO.md final.config build.log manifest.lock.xml source-safety.json artifact_stem.txt target-selection.json > SHA256SUMS.txt)
+          (cd artifacts && sha256sum Image *AnyKernel3.zip boot.img BUILD_INFO.md final.config Module.symvers build.log manifest.lock.xml source-safety.json artifact_stem.txt target-selection.json > SHA256SUMS.txt)
           ls -lh artifacts
           cat artifacts/SHA256SUMS.txt
 

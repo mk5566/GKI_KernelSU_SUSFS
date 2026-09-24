@@ -35,6 +35,8 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertNotIn("Send Telegram", content)
         self.assertNotIn("gh release", content)
         self.assertNotIn("\n  release:\n", content)
+        self.assertIn("Image final.config Module.symvers build.log", content)
+        self.assertIn("final.config Module.symvers build.log", content)
         self.assertLess(content.index("sha256sum Image *AnyKernel3.zip"),
                         content.index("- name: Upload artifacts"))
 
