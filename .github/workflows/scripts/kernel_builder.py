@@ -24,7 +24,9 @@ REQUIRED_TOOLS = ("git", "curl", "python3", "make", "bash", "zip", "openssl")
 REPO_SYNC_PROJECTS = (
     "common", "build/kernel", "kernel/configs",
     "prebuilts/clang/host/linux-x86", "prebuilts/build-tools",
-    "prebuilts/kernel-build-tools", "prebuilts/ndk-r23", "tools/mkbootimg",
+    "prebuilts/kernel-build-tools",
+    "prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8",
+    "prebuilts/ndk-r23", "tools/mkbootimg",
 )
 
 
@@ -350,6 +352,9 @@ class KernelBuilder:
         lld = clang_bin / "ld.lld"
         self._require_path(clang, "manifest-selected AOSP Clang")
         self._require_path(lld, "manifest-selected AOSP LLD")
+        host_sysroot = self.work_dir / "build/kernel/build-tools/sysroot"
+        if not host_sysroot.is_dir():
+            raise RuntimeError(f"AOSP host sysroot not found: {host_sysroot}")
         self.env["PATH"] = str(clang_bin) + os.pathsep + self.env.get("PATH", "")
         self.shell.env = self.env
         compiler = subprocess.run([str(clang), "--version"], capture_output=True,
@@ -801,7 +806,7 @@ class KernelBuilder:
                 "INSTALL_MOD_STRIP=1 "
                 "POST_DEFCONFIG_CMDS=\"\" "
                 "BUILD_CONFIG=common/build.config.gki.aarch64 "
-                "build/build.sh HOSTCC=/usr/bin/gcc HOSTCXX=/usr/bin/g++"
+                "build/build.sh"
             )
             result = self._run_cmd(build_cmd, check=False)
 

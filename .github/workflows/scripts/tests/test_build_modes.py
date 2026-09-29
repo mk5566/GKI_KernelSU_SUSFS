@@ -137,6 +137,9 @@ class ModeTests(unittest.TestCase):
             clang_bin.mkdir(parents=True)
             (clang_bin / "clang").touch()
             (clang_bin / "ld.lld").touch()
+            with self.assertRaisesRegex(RuntimeError, "AOSP host sysroot"):
+                builder.configure_kernel_toolchain()
+            (builder.work_dir / "build/kernel/build-tools/sysroot").mkdir(parents=True)
             with patch("kernel_builder.subprocess.run", return_value=
                        subprocess.CompletedProcess([], 0, stdout="Android Clang\n")) as run:
                 builder.configure_kernel_toolchain()
