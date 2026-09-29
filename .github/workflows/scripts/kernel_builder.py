@@ -793,7 +793,6 @@ class KernelBuilder:
             logger.info("Starting kernel compilation with build.sh...")
             build_cmd = (
                 "LTO=thin "
-                "HERMETIC_TOOLCHAIN=1 "
                 "BUILD_SYSTEM_DLKM=0 "
                 "BUILD_GKI_ARTIFACTS=0 "
                 "BUILD_GKI_CERTIFICATION_TOOLS=0 "
@@ -802,7 +801,7 @@ class KernelBuilder:
                 "INSTALL_MOD_STRIP=1 "
                 "POST_DEFCONFIG_CMDS=\"\" "
                 "BUILD_CONFIG=common/build.config.gki.aarch64 "
-                "build/build.sh"
+                "build/build.sh HOSTCC=gcc HOSTCXX=g++"
             )
             result = self._run_cmd(build_cmd, check=False)
 
