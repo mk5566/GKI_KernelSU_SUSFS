@@ -674,9 +674,11 @@ class KernelBuilder:
         out = self.work_dir / "out/android13-5.15/common"
         out.mkdir(parents=True, exist_ok=True)
         subprocess.run(["make", "-C", str(common), f"O={out}", "ARCH=arm64",
-                        "LLVM=1", "gki_defconfig"], check=True, env=self.env)
+                        "LLVM=1", "HOSTCC=gcc", "HOSTCXX=g++", "gki_defconfig"],
+                       check=True, env=self.env)
         subprocess.run(["make", "-C", str(common), f"O={out}", "ARCH=arm64",
-                        "LLVM=1", "olddefconfig"], check=True, env=self.env)
+                        "LLVM=1", "HOSTCC=gcc", "HOSTCXX=g++", "olddefconfig"],
+                       check=True, env=self.env)
         self._verify_source_mode()
         self._verify_generated_config(out / ".config")
 
