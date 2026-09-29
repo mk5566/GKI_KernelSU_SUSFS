@@ -801,7 +801,7 @@ class KernelBuilder:
                 "INSTALL_MOD_STRIP=1 "
                 "POST_DEFCONFIG_CMDS=\"\" "
                 "BUILD_CONFIG=common/build.config.gki.aarch64 "
-                "build/build.sh HOSTCC=gcc HOSTCXX=g++"
+                "build/build.sh HOSTCC=/usr/bin/gcc HOSTCXX=/usr/bin/g++"
             )
             result = self._run_cmd(build_cmd, check=False)
 
