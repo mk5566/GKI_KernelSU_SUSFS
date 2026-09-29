@@ -1,212 +1,71 @@
+"""One Android 13 / Linux 5.15 build family with three supported choices."""
 from dataclasses import dataclass
-from typing import Optional
 from enum import Enum
-import re
+from pathlib import Path
 
 
-class AndroidVersion(Enum):
-    ANDROID13 = "android13"
+class KSUChannel(str, Enum):
+    STABLE = "stable"
+    DEV = "dev"
 
 
-class KernelVersion(Enum):
-    KERNEL_5_15 = "5.15"
+class BBRVersion(str, Enum):
+    V1 = "v1"
+    V3 = "v3"
 
 
-class KSUVersion(Enum):
-    STABLE = "Stable(standard)"
-    DEV = "Dev(development)"
-
-
-# Supported kernel / OS-patch pairs; the newest target is the default.
-SUPPORTED_TARGETS = {"180": "2025-05", "211": "2026-09"}
-KERNEL_REVISIONS = {"211": "dc9467e8f9bfdec0d012f9345ac5f12f63dc7eba"}
-LOCKED_TARGET = {
-    "android": AndroidVersion.ANDROID13.value,
-    "kernel": KernelVersion.KERNEL_5_15.value,
-    "sub_level": "211",
-    "os_patch_level": "2026-09",
-}
-
-ANDROID_KERNEL_MAP = {
-    AndroidVersion.ANDROID13: [KernelVersion.KERNEL_5_15],
-}
-
-KSU_REPO_CONFIG = {
-    "repo_url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra.git",
-    "branch": "main",
-}
-
-# Current upstream main, with the local mount-only SUSFS integration patch.
-SUKISU_MAIN_REVISION = "cf87e3f4ddd3f6e5464d85acf56aaa6950e70841"
-SUKISU_UAPI_VERSION = 4
+ANDROID_FAMILY = "android13-5.15"
+KSU_REPO_CONFIG = {"repo_url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra.git"}
+# Upstream stable and development may expose different UAPI revisions.
+# Record the resolved value and require a declared, compatible layout.
+SUPPORTED_SUKISU_UAPI = frozenset({2, 4})
+# The mount-only port is reviewed against this exact SUSFS source revision.
 SUSFS_REVISION = "e565931d19256fd821ada01b35263506e7c7a364"
 SUSFS_REPO_CONFIG = {"repo_url": "https://github.com/ShirkNeko/susfs4ksu.git"}
-
 SUKISU_PATCH_REPO_CONFIG = {"repo_url": "https://github.com/ShirkNeko/SukiSU_patch.git"}
-
+SUKISU_PATCH_REVISION = "547ae94bcaec53d030398f857950c64662043a5d"
 ANYKERNEL_CONFIG = {
-    "repo_url": "https://github.com/WildPlusKernel/AnyKernel3.git",
-    "branch": "gki-2.0",
+    "repo_url": "https://github.com/WildPlusKernel/AnyKernel3.git", "branch": "gki-2.0"
 }
-
-TOOLCHAIN_CONFIG = {
-    "aosp_mirror": "https://android.googlesource.com",
-    "build_tools_branch": "main-kernel-build-2024",
-    "mkbootimg_branch": "main-kernel-build-2024",
-}
-
-# Explicit commit/tag/builtin only. Short SHAs are allowed but fetch may need
-# the full 40-char SHA (enforced at checkout time).
-_REF_RE = re.compile(
-    r"^(?:[0-9a-f]{7,40}|HEAD~\d+|builtin|main|v[0-9][\w.\-]*)$",
-    re.IGNORECASE,
-)
-
-
-def validate_git_ref(value: str, name: str) -> str:
-    ref = (value or "").strip()
-    if not ref:
-        return ""
-    if not _REF_RE.match(ref):
-        raise ValueError(
-            f"Invalid {name} {value!r}. Use a 7-40 char hex SHA, HEAD~N, "
-            f"builtin, main, or a v-prefixed tag."
-        )
-    return ref
-
-
-def sanitize_custom_version(value: Optional[str]) -> Optional[str]:
-    if not value:
-        return None
-    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-.")[:48]
-    return cleaned or None
+# Source-of-truth reference for the maintained 5.15 backport, updated deliberately.
+GOOGLE_BBR_V3_COMMIT = "90210de4b779d40496dee0b89081780eeddf2a60"
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 @dataclass
 class BuildConfig:
-    android_version: str = LOCKED_TARGET["android"]
-    kernel_version: str = LOCKED_TARGET["kernel"]
-    sub_level: str = LOCKED_TARGET["sub_level"]
-    os_patch_level: Optional[str] = None
-    kernelsu_version: str = KSUVersion.STABLE.value
-    kernelsu_commit: Optional[str] = None
-    susfs_commit: Optional[str] = None
-    use_zram: bool = True
-    set_default_bbr: bool = True
-    make_release: bool = False
-    custom_version: Optional[str] = None
-    build_id: Optional[str] = None
+    sukisu_channel: str = KSUChannel.STABLE.value
+    bbr_version: str = BBRVersion.V3.value
+    apply_tweaks: bool = True
+    gki_tag: str = ""
+    gki_commit: str = ""
+    kernel_version: str = ""
+    manifest_branch: str = ""
+    sukisu_tag: str = ""
+    sukisu_commit: str = ""
 
     def __post_init__(self):
-        if self.os_patch_level is None:
-            self.os_patch_level = SUPPORTED_TARGETS.get(self.sub_level)
-        self._normalize_ksu_version()
-        self.kernelsu_commit = validate_git_ref(self.kernelsu_commit or "", "kernelsu_commit") or None
-        self.susfs_commit = validate_git_ref(self.susfs_commit or SUSFS_REVISION, "susfs_commit")
-        self.custom_version = sanitize_custom_version(self.custom_version)
-        self._validate_android_version()
-        self._validate_kernel_version()
-        self._validate_kernel_android_compat()
-        self._validate_locked_target()
-        self._set_build_id()
-
-    def _normalize_ksu_version(self):
-        if self.kernelsu_version in ["Stable(标准)", "Stable(standard)", "Stable", "stable"]:
-            self.kernelsu_version = KSUVersion.STABLE.value
-        elif self.kernelsu_version in ["Dev(开发)", "Dev(development)", "Dev", "dev"]:
-            self.kernelsu_version = KSUVersion.DEV.value
-
-    def _validate_android_version(self):
-        valid = [v.value for v in AndroidVersion]
-        if self.android_version not in valid:
-            raise ValueError(f"Invalid Android version: {self.android_version}. Supported: {', '.join(valid)}")
-
-    def _validate_kernel_version(self):
-        valid = [v.value for v in KernelVersion]
-        if self.kernel_version not in valid:
-            raise ValueError(f"Invalid Kernel version: {self.kernel_version}. Supported: {', '.join(valid)}")
-
-    def _validate_kernel_android_compat(self):
-        av = AndroidVersion(self.android_version)
-        kv = KernelVersion(self.kernel_version)
-        if kv not in ANDROID_KERNEL_MAP.get(av, []):
-            raise ValueError(f"Android {self.android_version} does not support Kernel {self.kernel_version}")
-
-    def _validate_locked_target(self):
-        expected_patch = SUPPORTED_TARGETS.get(self.sub_level)
-        if expected_patch is None or self.os_patch_level != expected_patch:
-            raise ValueError(
-                f"Unsupported target {self.sub_level} / {self.os_patch_level}; "
-                f"supported sublevel / OS-patch pairs: {SUPPORTED_TARGETS}"
-            )
+        self.sukisu_channel = KSUChannel(self.sukisu_channel).value
+        self.bbr_version = BBRVersion(self.bbr_version).value
+        if not isinstance(self.apply_tweaks, bool):
+            raise ValueError("apply_tweaks must be boolean")
 
     @property
-    def kernel_revision(self) -> Optional[str]:
-        return KERNEL_REVISIONS.get(self.sub_level)
-
-    def _set_build_id(self):
-        if self.build_id is None:
-            self.build_id = (
-                f"{self.android_version}-{self.kernel_version}-"
-                f"{self.sub_level}-{self.os_patch_level}"
-            )
+    def config_name(self):
+        return ANDROID_FAMILY
 
     @property
-    def config_name(self) -> str:
-        return f"{self.android_version}-{self.kernel_version}-{self.sub_level}"
+    def kernel_branch(self):
+        return f"gki-{ANDROID_FAMILY}"
 
     @property
-    def formatted_branch(self) -> str:
-        return f"{self.android_version}-{self.kernel_version}-{self.os_patch_level}"
+    def artifact_stem(self):
+        version = self.kernel_version or "5.15-unresolved"
+        tweaks = "tweaks" if self.apply_tweaks else "no-tweaks"
+        return f"{ANDROID_FAMILY}.{version.rsplit('.', 1)[-1]}-sukisu-{self.sukisu_channel}-bbr{self.bbr_version}-{tweaks}"
 
-    @property
-    def kernel_branch(self) -> str:
-        return f"gki-{self.android_version}-{self.kernel_version}"
+    def get_susfs_patch_filename(self):
+        return "50_add_susfs_in_gki-android13-5.15.patch"
 
-    @property
-    def ksu_setup_ref(self) -> Optional[str]:
-        if self.kernelsu_commit:
-            return self.kernelsu_commit
-        if self.kernelsu_version == KSUVersion.DEV.value:
-            return "main"
-        # Stable: reproducible main revision; SUSFS is added by this builder.
-        return SUKISU_MAIN_REVISION
-
-    @property
-    def variant_suffix(self) -> str:
-        parts = [
-            "lz4kd" if self.use_zram else "nozram",
-            "bbr3" if self.set_default_bbr else "nobbr",
-            "sukisu-dev" if self.kernelsu_version == KSUVersion.DEV.value else "sukisu-stable",
-        ]
-        if self.custom_version:
-            parts.append(self.custom_version)
-        return "-".join(parts)
-
-    @property
-    def artifact_stem(self) -> str:
-        return (
-            f"{self.android_version}-{self.kernel_version}."
-            f"{self.sub_level}-{self.os_patch_level}-{self.variant_suffix}"
-        )
-
-    def get_susfs_patch_filename(self) -> str:
-        return f"50_add_susfs_in_gki-{self.android_version}-{self.kernel_version}.patch"
-
-    def to_dict(self) -> dict:
-        return {
-            "android_version": self.android_version,
-            "kernel_version": self.kernel_version,
-            "sub_level": self.sub_level,
-            "os_patch_level": self.os_patch_level,
-            "kernelsu_version": self.kernelsu_version,
-            "kernelsu_commit": self.kernelsu_commit,
-            "susfs_commit": self.susfs_commit,
-            "ksu_setup_ref": self.ksu_setup_ref,
-            "use_zram": self.use_zram,
-            "set_default_bbr": self.set_default_bbr,
-            "make_release": self.make_release,
-            "custom_version": self.custom_version,
-            "build_id": self.build_id,
-            "artifact_stem": self.artifact_stem,
-        }
+    def to_dict(self):
+        return dict(self.__dict__, artifact_stem=self.artifact_stem)

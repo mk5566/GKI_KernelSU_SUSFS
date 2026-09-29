@@ -34,11 +34,13 @@ class ManagerCompatibilityTests(unittest.TestCase):
         self.assertIsNone(self.builder._read_ksu_uapi_version())
 
     def test_setup_success_cannot_hide_wrong_checkout(self):
-        requested = self.builder.config.ksu_setup_ref
-        with patch.object(self.builder, "_run_cmd"), \
-             patch.object(self.builder, "_chdir"), \
+        requested = "b" * 40
+        self.builder.config.sukisu_commit = requested
+        with patch.object(self.builder, "_chdir"), \
              patch.object(self.builder, "_require_path"), \
              patch("kernel_builder.subprocess.run", side_effect=[
+                 subprocess.CompletedProcess([], 0),
+                 subprocess.CompletedProcess([], 0),
                  subprocess.CompletedProcess([], 0, stdout=requested + "\n"),
                  subprocess.CompletedProcess([], 0, stdout="a" * 40 + "\n"),
              ]):

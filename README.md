@@ -1,168 +1,88 @@
-# GKI SukiSU-Ultra + SUSFS Build System (Slim 5.15)
+# Android 13 Linux 5.15 GKI-derived kernel builder
 
-Automated Generic Kernel Image (GKI) build system defaulting to **android13-5.15.211** (with **5.15.180** retained) with integrated **SukiSU-Ultra**, **SUSFS**, **BBRv3**, **ZRAM (LZ4KD)**, and performance optimizations.
+This project builds a custom arm64 kernel from the newest official
+`android13-5.15.<sublevel>_r<revision>` point-release tag in AOSP
+`kernel/common`. Each run selects the highest numeric sublevel and revision,
+pins the peeled Git commit, and verifies that the checkout's Makefile reports
+`5.15.x`. A new point tag requires no builder source edit. If a selected patch
+stops applying, the build fails at that tag and identifies the patch.
 
-> [!NOTE]
-> Designed for modern GKI 2.0 devices running Android 13+ with Linux Kernel 5.15.x (e.g. Snapdragon 8 Gen 2 platforms).
+The build includes SukiSU-Ultra, a mount-only SUSFS integration, and ZRAM with
+LZ4KD. It intentionally disables frozen GKI KMI/ABI enforcement and **does not
+claim frozen GKI KMI compatibility**. Device boot, vendor module loading, and
+manager compatibility require validation on the target device.
 
----
+## Build choices
 
-## Features
+GitHub Actions → **Kernel Build** → **Run workflow** exposes exactly:
 
-| Feature | Description | Status |
+| Input | Choices | Default |
 |---|---|---|
-| [SukiSU-Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra) | Advanced kernel-based root solution | Included |
-| [SUSFS](https://gitlab.com/simonpunk/susfs4ksu) | Kernel-level root and filesystem stealth hiding | Included |
-| **BBRv3 + TCP PLB** | Google BBRv3 congestion control with KABI compliance, set as the default TCP algorithm | Enabled by default |
-| **LZ4KD ZRAM** | High-performance LZ4KD memory compression algorithm | Enabled by default |
-| **Performance Patches** | Scheduler, F2FS/ext4, memcpy/memcmp, idle/wakeup, and memory-pressure tweaks for Snapdragon 8 Gen 2 GKI | Included in `patches/5.15.211` and `patches/5.15.180` |
+| `sukisu_channel` | `stable`, `dev` | `stable` |
+| `bbr_version` | `v1`, `v3` | `v3` |
+| `apply_tweaks` | `true`, `false` | `true` |
 
----
+`stable` resolves GitHub's latest formal SukiSU release tag to its exact
+commit. `dev` resolves the official default branch HEAD to its exact commit.
+The builder checks that SukiSU's setup script actually checked out that commit
+and records the kernel UAPI. Manager UAPI must match the built kernel; the
+release version label alone does not establish compatibility. SUSFS is pinned
+in builder source and has no workflow override.
 
-## Quick Start
+`v1` uses the stock Android 5.15 BBR implementation. It applies no BBRv3 or
+PLB backport patches and sets the default congestion algorithm to `bbr`.
+`v3` applies every patch in `patches/bbrv3/APPLY_ORDER.txt` and registers the
+backport as `bbr3`, so it can coexist in source with stock BBR without naming
+collision. The backport is based on [Google's official `google/bbr` v3 branch](https://github.com/google/bbr/tree/v3).
+The reference commit is recorded in `BUILD_INFO.md`. The series separates TCP
+rate and ACK infrastructure, PLB, the algorithm, and Kconfig wiring. It removes
+the previous fake `__GENKSYMS__` TCP structure layout and placeholder fields.
 
-### 1. GitHub Actions (Cloud Build)
+`apply_tweaks=true` applies all nine patches in
+`patches/tweaks/APPLY_ORDER.txt`; any missing or conflicting patch is fatal.
+`false` applies none. These performance tweaks include ARM64, scheduler,
+F2FS, IRQ, freezer, and wakeup changes. Patch application proves source
+compatibility only; test performance, suspend, and storage behavior on the
+target device before relying on them.
 
-1. Navigate to the **Actions** tab in your repository.
-2. Select **Kernel Build**.
-3. Click **Run workflow**.
-4. Configure options:
-   * **Android Version**: `android13`
-   * **Kernel Version**: `5.15`
-   * **Sub Level**: `211` (or `180`)
-   * **OS Patch Level**: `auto` (`211` → `2026-09`, `180` → `2025-05`)
-   * **SukiSU Version**: `Stable(standard)` or `Dev(development)`
-   * **ZRAM (LZ4KD)**: `true`
-   * **BBR**: `true`
-5. Download output artifacts (`*-AnyKernel3.zip` and optional `*-boot.img`) upon completion. Filenames include the variant (`lz4kd`/`nozram`, `bbr3`/`nobbr`, `sukisu-stable`/`sukisu-dev`).
+## Source and config preflight
 
-### 2. Local CLI Build
+The builder resolves sources, syncs the manifest with `kernel/common` pinned to
+the selected tag commit, integrates SukiSU and SUSFS, copies LZ4KD source,
+applies the selected patches with `git apply --check` followed by `git apply`,
+performs source transformations, generates `.config`, and asserts the requested
+settings **before** compilation. The `--preflight-only` CLI path stops after
+these same steps. There is no file-presence-only dry run or patch fuzz.
 
-```bash
-# Navigate to scripts directory
-cd .github/workflows/scripts
+The SUSFS port retains an allowlist of mount-related filesystem changes and
+does not import legacy root hooks. Only `CONFIG_KSU_SUSFS` and
+`CONFIG_KSU_SUSFS_SUS_MOUNT` are selected. The exact SUSFS and SukiSU commits,
+applied patch names, final kernel hash, and compiler version appear in
+`BUILD_INFO.md` when available.
 
-# Build android13-5.15.211
-python build.py --android android13 --kernel 5.15 --sub-level 211 --os-patch 2026-09
+The standard ZRAM profile compiles LZ4KD and advertises only `lz4kd` to ZRAM.
+The local patch deliberately excludes the helper project's unrelated
+`kernel/module.c` changes. Other crypto compression code may remain in the
+generic kernel because filesystem features can use it; ZRAM does not offer it.
 
-# Dry-run validation (target + vendor patches)
-python build.py --dry-run
-```
+The config keeps TCP Reno and the selected BBR, FQ pacing, the core Android
+networking stack, the `none` and `mq-deadline` I/O schedulers, and the
+`schedutil` and `performance` CPU frequency governors. It disables optional
+TCP congestion algorithms, BFQ, Kyber, and unused powersave, conservative,
+ondemand, and userspace governors. Core fair, RT, and deadline scheduling and
+Android scheduler infrastructure are untouched. Final generated `.config`
+assertions catch dependencies that overturn these settings.
 
----
+## GitHub Actions execution
 
-## Flashing Instructions
+Run **Kernel Build** from the repository's Actions tab and select the three
+choices above. The Ubuntu 24.04 job installs host build dependencies, syncs
+only the AOSP manifest projects needed for this kernel, and uses the manifest's
+Clang release for both generated-config validation and compilation. Its source
+preflight and build use the same integration path. Python tests and Git diff
+checks can run locally, but this Windows PC is not the kernel build host.
 
-### AnyKernel3 (Recommended)
-Flash the generated `android13-5.15.211-2026-09-lz4kd-bbr3-sukisu-stable-AnyKernel3.zip` via custom recovery or a kernel manager such as [HorizonKernelFlasher](https://github.com/libxzr/HorizonKernelFlasher/releases).
-
-### Fastboot `boot.img`
-The `*-boot.img` artifact is a **ramdisk-less** GKI header v4 image with a test-key AVB footer. It is not a full boot image for devices that need a ramdisk. Prefer AnyKernel3 unless you know you only need to replace the kernel.
-
-```bash
-fastboot flash boot android13-5.15.211-2026-09-lz4kd-bbr3-sukisu-stable-boot.img
-```
-
----
-
-## Applied Performance Patches (`patches/5.15.211` and `patches/5.15.180`)
-
-Required:
-
-1. `0001-net-tcp-backport-BBRv3-to-android13-5.15.patch` — BBRv3 + TCP PLB backport with Android KABI guards. The build fails if this does not apply.
-
-Optional (applied cleanly or skipped with a warning):
-
-1. `avoid_extra_s2idle_wake_attempts.patch` — Avoid redundant s2idle wakeups.
-2. `minimise_wakeup_time.patch` — Dynamic alarmtimer wakeup timeout reduction.
-3. `reduce_freeze_timeout.patch` — Generous 1-second process freeze timeout.
-4. `clear_page_16bytes_align.patch` — 16-byte cache alignment for ARM64 page zeroing.
-5. `f2fs_reduce_congestion.patch` — F2FS congestion wait timeout reduced from 20ms to 6ms.
-6. `silence_irq_cpu_logspam.patch` — Cut noisy IRQ CPU affinity warnings.
-7. `f2fs_enlarge_min_fsync_blocks.patch` — Enlarge `min_fsync_blocks` to 20.
-8. `adjust_cpu_scan_order.patch` — Scheduler idle capacity scanning optimization.
-9. `optimise_memcmp.patch` — ARM-optimized NEON SIMD memcmp routine.
-
----
-
-## Repository Structure
-
-```
-.
-├── .github/
-│   └── workflows/
-│       ├── kernel-build.yml       # android13-5.15 workflow (211 / 180)
-│       └── scripts/               # Python build engine & config
-├── patches/
-│   ├── 5.15.211/                  # Rebased patches for the default target
-│   ├── susfs/                    # SUSFS patch context adaptation
-│   └── 5.15.180/                  # Vendor performance & BBRv3 patches
-│       └── APPLY_ORDER.txt        # Sequence of patch application
-└── README.md
-```
-
-## Source pins and minimal SUSFS profile
-
-The 5.15.211 target uses AOSP's `common-android13-5.15-2026-09` manifest
-with kernel/common pinned to `dc9467e8f9bfdec0d012f9345ac5f12f63dc7eba`.
-5.15.211 is the kernel version; the KMI family remains **android13-5.15**.
-This does not certify vendor-module ABI compatibility or bootability.
-
-Stable selects SukiSU main revision
-`cf87e3f4ddd3f6e5464d85acf56aaa6950e70841` (latest checked 2026-09-21),
-paired with SUSFS 2.3.0 at `e565931d19256fd821ada01b35263506e7c7a364`.
-Dev tracks `main`. Both compile SukiSU into the kernel (`CONFIG_KSU=y`)
-and apply this repository's mount-only SUSFS integration. The branch name
-`builtin` is not required to compile SukiSU into a kernel.
-
-### Manager compatibility (checked 2026-09-21)
-
-This build requires **UAPI 4**, matching Manager `40922-4`. It retains
-upstream's scoped su-session driver descriptors and version-matching behavior;
-the UAPI constant is not modified. Old kernels built from `builtin` expose
-UAPI 2 and still need a UAPI-2 manager until the new kernel is flashed.
-
-The build verifies the requested checkout, rejects other UAPI versions,
-applies all integration patches with zero fuzz, and records the actual source
-and UAPI in `BUILD_INFO.md`. Dev may fail when upstream changes require a port
-refresh; use Stable for a reproducible source revision. After flashing, reboot
-and check manager root access, profiles, modules, and `ksud susfs status` /
-`ksud susfs version`. Matching UAPI alone does not verify bootability.
-
-### Integration design
-
-The local SukiSU patch adds SUSFS initialization, the post-fs-data storage
-monitor, SELinux-domain helpers, app-profile mount visibility, and a root-only
-SUSFS command dispatcher. Root escalation clears inherited SUSFS task flags.
-The Linux patch selection includes only the filesystem changes needed for
-mount hiding. It excludes the legacy exec, setuid, input, read, and SELinux
-hooks, preserving current SukiSU's root, safe-mode, and daemon startup hooks.
-SUSFS commands execute in sleepable reboot syscall context; KernelSU's normal
-driver-fd requests retain the upstream path. Unsupported SUSFS commands return
-an error rather than reporting a feature that is disabled.
-
-Only `CONFIG_KSU_SUSFS` and `CONFIG_KSU_SUSFS_SUS_MOUNT` are enabled.
-Path, kstat, map, uname, cmdline/bootconfig, open-redirect, symbol hiding,
-and SUSFS logging are disabled. Legacy TRY_UMOUNT and SUS_SU are off;
-SUSFS 2.3 has removed them. KernelSU's normal module-unmount mechanism is retained.
-
-Read-only device audit (2026-09-20):
-
-- Root ADB worked after the Shell profile was corrected; running kernel was 5.15.180.
-- `ksud susfs status` returned false and version returned unsupported.
-- Persistent SUSFS config contained only an empty `sus_paths` entry.
-- Zygisk Next had unmount mode enabled; KernelSU kernel_umount was enabled.
-- Bindhosts was forced to mode 1 (legacy SUSFS bind + try_umount), but its
-  `/data/adb/ksu/bin/ksu_susfs` helper was absent. This is a broken configured
-  dependency, not evidence that legacy SUSFS unmount works.
-
-Mount-only SUSFS is a conservative new baseline, not a claim that SUSFS is
-currently active or that every installed app will accept the new kernel.
-No phone module settings or app data were changed. Bindhosts' legacy override
-needs migration to a supported unmount mode separately. No per-app inventory,
-credentials, or integrity attestation data is committed.
-
-Validation: both CLI targets and mismatched-pair rejection; sequential patch
-application against pinned 5.15.211 sources with zero fuzz (including the SUSFS
-context adaptation and required BBRv3 patch). A full Linux kernel build and
-post-flash app checks are still required.
+Successful workflow runs upload the AnyKernel3 zip and `BUILD_INFO.md`, with a
+boot image when packaging succeeds. The boot image is ramdisk-less and signed
+with a test key; use it only where the device's boot layout permits it. The
+builder does not flash a device or certify vendor module compatibility.
