@@ -793,6 +793,7 @@ class KernelBuilder:
             logger.info("Starting kernel compilation with build.sh...")
             build_cmd = (
                 "LTO=thin "
+                "HERMETIC_TOOLCHAIN=1 "
                 "BUILD_SYSTEM_DLKM=0 "
                 "BUILD_GKI_ARTIFACTS=0 "
                 "BUILD_GKI_CERTIFICATION_TOOLS=0 "
