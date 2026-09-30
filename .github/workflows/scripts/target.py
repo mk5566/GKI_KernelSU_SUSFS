@@ -1,11 +1,16 @@
-"""Resolve the SukiSU channel. The GKI revision is pinned in config.py."""
+"""Resolve the newest official android13-5.15 stable and the SukiSU channel."""
 import json
 import re
 import subprocess
 import urllib.request
+from dataclasses import dataclass
 
 
+GKI_URL = "https://android.googlesource.com/kernel/common"
+MANIFEST_URL = "https://android.googlesource.com/kernel/manifest"
 KSU_URL = "https://github.com/SukiSU-Ultra/SukiSU-Ultra.git"
+GKI_RE = re.compile(r"^android13-5\.15\.(\d+)_r(\d+)$")
+MANIFEST_RE = re.compile(r"^common-android13-5\.15-\d{4}-\d{2}$")
 
 
 def _git(*args):
@@ -19,6 +24,53 @@ def parse_refs(output):
         sha, ref = line.split("\t", 1)
         refs[ref.removeprefix("refs/tags/")] = sha
     return refs
+
+
+@dataclass(frozen=True)
+class GKITarget:
+    tag: str
+    commit: str
+    kernel_version: str
+    manifest_branch: str
+
+
+def choose_gki_tag(refs):
+    candidates = []
+    for name in refs:
+        match = GKI_RE.fullmatch(name)
+        if match:
+            candidates.append((int(match[1]), int(match[2]), name))
+    if not candidates:
+        raise RuntimeError("No official android13-5.15.x_rNN point-release tag")
+    return max(candidates)[2]
+
+
+def peeled_commit(refs, tag):
+    # Annotated tags need the peeled commit; never record the tag object.
+    commit = refs.get(tag + "^{}", refs.get(tag))
+    if not commit or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise RuntimeError(f"Invalid commit for {tag}: {commit}")
+    return commit
+
+
+def choose_manifest_branch(output):
+    branches = [ref.removeprefix("refs/heads/")
+                for _, ref in (line.split("\t", 1) for line in output.splitlines())]
+    candidates = [name for name in branches if MANIFEST_RE.fullmatch(name)]
+    if not candidates:
+        raise RuntimeError("No official android13-5.15 monthly manifest branch")
+    return max(candidates)
+
+
+def resolve_gki():
+    refs = parse_refs(_git("ls-remote", "--tags", GKI_URL,
+                           "android13-5.15.*_r*"))
+    tag = choose_gki_tag(refs)
+    commit = peeled_commit(refs, tag)
+    sublevel = GKI_RE.fullmatch(tag)[1]
+    branch = choose_manifest_branch(_git("ls-remote", "--heads", MANIFEST_URL,
+                                         "common-android13-5.15-*"))
+    return GKITarget(tag, commit, f"5.15.{sublevel}", branch)
 
 
 def resolve_sukisu(channel):

@@ -10,19 +10,38 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from build import parse_args
-from config import ANDROID_FAMILY, BuildConfig, GKI_COMMIT, KERNEL_VERSION, REPO_ROOT
+from config import ANDROID_FAMILY, BuildConfig, REPO_ROOT
 from kernel_builder import KernelBuilder
 from patch_plan import make_patch_plan
-from target import resolve_sukisu
+from target import choose_gki_tag, choose_manifest_branch, peeled_commit, resolve_sukisu
 
 
 class ResolverTests(unittest.TestCase):
-    def test_gki_pin_is_the_booting_5_15_211_commit(self):
+    def test_latest_android13_5_15_point_release_wins(self):
         self.assertEqual(ANDROID_FAMILY, "android13-5.15")
-        self.assertEqual(KERNEL_VERSION, "5.15.211")
-        self.assertEqual(GKI_COMMIT, "dc9467e8f9bfdec0d012f9345ac5f12f63dc7eba")
-        self.assertEqual(BuildConfig().gki_commit, GKI_COMMIT)
-        self.assertEqual(BuildConfig("dev").artifact_stem, "android13-5.15.211-sukisu-dev")
+        refs = {
+            "android13-5.15.211_r00": "a" * 40,
+            "android13-5.15.211_r00^{}": "b" * 40,
+            "android13-5.15.216_r00": "c" * 40,
+            "android13-5.15.216_r00^{}": "d" * 40,
+            "android13-5.15.216_r01": "e" * 40,
+            "android14-5.15.300_r00": "f" * 40,
+        }
+        self.assertEqual(choose_gki_tag(refs), "android13-5.15.216_r01")
+        self.assertEqual(peeled_commit(refs, "android13-5.15.216_r00"), "d" * 40)
+        branches = "\n".join([
+            "1" * 40 + "\trefs/heads/common-android13-5.15-2026-06",
+            "2" * 40 + "\trefs/heads/common-android13-5.15-2026-09",
+            "3" * 40 + "\trefs/heads/common-android13-5.15-lts",
+            "4" * 40 + "\trefs/heads/common-android14-6.1-2026-09",
+        ])
+        self.assertEqual(choose_manifest_branch(branches), "common-android13-5.15-2026-09")
+        config = BuildConfig("dev", kernel_version="5.15.216",
+                              gki_tag="android13-5.15.216_r00",
+                              gki_commit="d" * 40,
+                              manifest_branch="common-android13-5.15-2026-09")
+        self.assertEqual(config.artifact_stem, "android13-5.15.216-sukisu-dev")
+        self.assertEqual(config.gki_commit, "d" * 40)
 
     def test_sukisu_stable_and_dev_are_immutable(self):
         payload = b'{"tag_name":"v4.2.0","draft":false,"prerelease":false}'
@@ -41,7 +60,12 @@ class ModeTests(unittest.TestCase):
         self.assertTrue(plan.lz4 and plan.zram and plan.bbr and plan.tweaks)
         self.assertEqual(len(plan.all), len(plan.lz4) + len(plan.zram) + len(plan.bbr) + len(plan.tweaks))
         names = [path.name for path in plan.all]
-        self.assertIn("0001-lz4-1.9.4.patch", names)
+        self.assertIn("0001-lz4-1.10.0.patch", names)
+        lz4 = (REPO_ROOT / "patches/lz4/0001-lz4-1.10.0.patch").read_text(encoding="utf-8")
+        self.assertIn("LZ4_VERSION_MINOR 10", lz4)
+        self.assertIn("-DLZ4_MEMORY_USAGE=10", lz4)
+        self.assertIn("LZ4_arm64_decompress_safe", lz4)
+        self.assertNotIn("|| true", lz4)
         self.assertIn("lz4kd-integration.patch", names)
         self.assertIn("0001-bbrv3-android-kabi.patch", names)
         self.assertNotIn("silence_irq_cpu_logspam.patch", names)
@@ -72,6 +96,8 @@ class ModeTests(unittest.TestCase):
         self.assertEqual(names, ["sukisu_channel"])
         self.assertIn("artifacts/boot.img", text)
         self.assertIn("artifacts/AnyKernel3.zip", text)
+        self.assertIn("artifact_stem.txt", text)
+        self.assertNotIn("5.15.211", text)
         self.assertNotIn("BUILD_INFO.md\n", text.split("Publish boot.img", 1)[-1].split("if: failure()", 1)[0])
 
     def test_defconfig_is_bbrv3_lz4kd_and_no_kpm(self):
@@ -102,6 +128,17 @@ class ModeTests(unittest.TestCase):
             self.assertIn("CONFIG_CPU_FREQ_GOV_CONSERVATIVE=n", result)
             self.assertIn("CONFIG_CPU_FREQ_GOV_PERFORMANCE=y", result)
             self.assertIn("CONFIG_KPM=n", result)
+            self.assertIn("CONFIG_HZ_250=y", result)
+            self.assertIn("CONFIG_LTO_CLANG_THIN=y", result)
+            self.assertIn("CONFIG_LTO_CLANG_FULL=n", result)
+            self.assertIn("CONFIG_DEFAULT_FQ=y", result)
+            self.assertIn("CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y", result)
+            self.assertIn("CONFIG_KASAN=n", result)
+            self.assertIn("CONFIG_UBSAN=n", result)
+            self.assertIn("CONFIG_KFENCE=n", result)
+            self.assertIn("CONFIG_SCHEDSTATS=n", result)
+            self.assertIn("CONFIG_SLUB_DEBUG=n", result)
+            self.assertIn("CONFIG_INIT_ON_ALLOC_DEFAULT_ON=n", result)
 
     def test_selected_patch_missing_and_conflict_are_fatal(self):
         with tempfile.TemporaryDirectory() as d:

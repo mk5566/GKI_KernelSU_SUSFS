@@ -3,7 +3,7 @@ Subject: [PATCH] zram: offer lz4kd and lz4 only
 
 Source: https://github.com/ShirkNeko/SukiSU_patch
 Reference: 547ae94bcaec53d030398f857950c64662043a5d
-Base: android13-5.15.211 (dc9467e8f9bf)
+Base: android13-5.15 (checked on 5.15.216 / 5bfe2b8c1439)
 ZRAM advertises lz4 and lz4kd. lz4kd is the default. This patch does not
 touch kernel/module.c and does not add LZ4K.
 
