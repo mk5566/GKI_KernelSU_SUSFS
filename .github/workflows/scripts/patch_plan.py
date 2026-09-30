@@ -1,17 +1,22 @@
-"""Deterministic all-or-nothing feature patch plan."""
+"""The one patch set this kernel always builds."""
 from dataclasses import dataclass
 from pathlib import Path
-from config import REPO_ROOT, BuildConfig
+from config import REPO_ROOT
+
+
+GROUPS = ("lz4", "zram", "bbr", "tweaks")
 
 
 @dataclass(frozen=True)
 class PatchPlan:
-    bbr: tuple[Path, ...]
-    tweaks: tuple[Path, ...]
+    lz4: tuple
+    zram: tuple
+    bbr: tuple
+    tweaks: tuple
 
     @property
     def all(self):
-        return self.bbr + self.tweaks
+        return self.lz4 + self.zram + self.bbr + self.tweaks
 
 
 def _read_group(group):
@@ -23,10 +28,12 @@ def _read_group(group):
         raise RuntimeError(f"Empty or duplicate selected patch list: {order}")
     if any("/" in name or "\\" in name or not name.endswith(".patch") for name in names):
         raise RuntimeError(f"Invalid patch name in {order}")
+    missing = [name for name in names if not (directory / name).is_file()]
+    if missing:
+        raise RuntimeError(f"Patch list names missing files: {missing}")
     return tuple(directory / name for name in names)
 
 
-def make_patch_plan(config: BuildConfig):
-    bbr = _read_group("bbrv3") if config.bbr_version == "v3" else ()
-    tweaks = _read_group("tweaks") if config.apply_tweaks else ()
-    return PatchPlan(bbr, tweaks)
+def make_patch_plan():
+    groups = {name: _read_group(name) for name in GROUPS}
+    return PatchPlan(**groups)

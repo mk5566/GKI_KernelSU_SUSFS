@@ -1,88 +1,97 @@
-# Android 13 Linux 5.15 GKI-derived kernel builder
+# Xiaomi 13 Ultra kernel: android13-5.15.211, SukiSU, SUSFS
 
-This project builds a custom arm64 kernel from the newest official
-`android13-5.15.<sublevel>_r<revision>` point-release tag in AOSP
-`kernel/common`. Each run selects the highest numeric sublevel and revision,
-pins the peeled Git commit, and verifies that the checkout's Makefile reports
-`5.15.x`. A new point tag requires no builder source edit. If a selected patch
-stops applying, the build fails at that tag and identifies the patch.
+One GitHub Actions build. It produces a GKI-derived arm64 kernel for the
+Xiaomi 13 Ultra (ishtar) on HyperOS 3 and uploads two files: `boot.img` and
+`AnyKernel3.zip`.
 
-The build includes SukiSU-Ultra, a mount-only SUSFS integration, and ZRAM with
-LZ4KD. It intentionally disables frozen GKI KMI/ABI enforcement and **does not
-claim frozen GKI KMI compatibility**. Device boot, vendor module loading, and
-manager compatibility require validation on the target device.
+The source pin is the commit that already booted this phone:
 
-## Build choices
+`5.15.211-android13-8-gdc9467e8f9bf`
 
-GitHub Actions → **Kernel Build** → **Run workflow** exposes exactly:
+`dc9467e8f9bfdec0d012f9345ac5f12f63dc7eba`
 
-| Input | Choices | Default |
-|---|---|---|
-| `sukisu_channel` | `stable`, `dev` | `stable` |
-| `bbr_version` | `v1`, `v3` | `v3` |
-| `apply_tweaks` | `true`, `false` | `true` |
+A newer android13-5.15 point release, including `android13-5.15.216_r00`,
+changes that release string. Vendor modules are built against the string
+above. They refuse to load, and the phone stays on the Xiaomi logo. This
+tree builds that one revision and no other kernel version.
 
-`stable` resolves GitHub's latest formal SukiSU release tag to its exact
-commit. `dev` resolves the official default branch HEAD to its exact commit.
-The builder checks that SukiSU's setup script actually checked out that commit
-and records the kernel UAPI. Manager UAPI must match the built kernel; the
-release version label alone does not establish compatibility. SUSFS is pinned
-in builder source and has no workflow override.
+## What the kernel contains
 
-`v1` uses the stock Android 5.15 BBR implementation. It applies no BBRv3 or
-PLB backport patches and sets the default congestion algorithm to `bbr`.
-`v3` applies every patch in `patches/bbrv3/APPLY_ORDER.txt` and registers the
-backport as `bbr3`, so it can coexist in source with stock BBR without naming
-collision. The backport is based on [Google's official `google/bbr` v3 branch](https://github.com/google/bbr/tree/v3).
-The reference commit is recorded in `BUILD_INFO.md`. The series separates TCP
-rate and ACK infrastructure, PLB, the algorithm, and Kconfig wiring. It removes
-the previous fake `__GENKSYMS__` TCP structure layout and placeholder fields.
+- SukiSU-Ultra is built in. The workflow choice is `stable` (latest formal
+  release tag, peeled to a commit) or `dev` (default branch HEAD, peeled to
+  a commit). The builder checks that the checkout matches that commit.
+  Supported kernel UAPI revisions are 2 and 4.
+- SUSFS is mount-only: `CONFIG_KSU_SUSFS` and `CONFIG_KSU_SUSFS_SUS_MOUNT`.
+  The SUSFS revision is pinned in the builder.
+- KPM is forced off.
+- ZRAM is built in. The only backends are `lz4kd` (default) and `lz4`.
+- LZ4 in the kernel is updated to 1.9.4, with a 1KB hash table for 4KB zram
+  pages. Public 1.10.0 backports for this tree delete the in-tree sources and
+  apply with fuzz. They are not used.
+- TCP congestion is BBRv3 by default, with stock BBRv1 still built in.
+  Reno stays in the core stack. Cubic, Westwood, and the other optional
+  algorithms are turned off. FQ pacing stays on.
+- The BBRv3 patch is `patches/bbr/0001-bbrv3-android-kabi.patch`. It keeps
+  `icsk_ca_priv` at 104 bytes and hides the extra fields from genksyms.
+  Replacing it with a backport that grows that array, or that drops the
+  `__GENKSYMS__` guards, breaks vendor-module CRCs and reproduces the logo hang.
 
-`apply_tweaks=true` applies all nine patches in
-`patches/tweaks/APPLY_ORDER.txt`; any missing or conflicting patch is fatal.
-`false` applies none. These performance tweaks include ARM64, scheduler,
-F2FS, IRQ, freezer, and wakeup changes. Patch application proves source
-compatibility only; test performance, suspend, and storage behavior on the
-target device before relying on them.
+## Patches that stay
 
-## Source and config preflight
+Every patch is applied with `git apply --check` and then `git apply`. A
+reject fails the build. Nothing is applied with fuzz.
 
-The builder resolves sources, syncs the manifest with `kernel/common` pinned to
-the selected tag commit, integrates SukiSU and SUSFS, copies LZ4KD source,
-applies the selected patches with `git apply --check` followed by `git apply`,
-performs source transformations, generates `.config`, and asserts the requested
-settings **before** compilation. The `--preflight-only` CLI path stops after
-these same steps. There is no file-presence-only dry run or patch fuzz.
+The tweak set is the one that was on the booting 5.15.211 build, minus one:
 
-The SUSFS port retains an allowlist of mount-related filesystem changes and
-does not import legacy root hooks. Only `CONFIG_KSU_SUSFS` and
-`CONFIG_KSU_SUSFS_SUS_MOUNT` are selected. The exact SUSFS and SukiSU commits,
-applied patch names, final kernel hash, and compiler version appear in
-`BUILD_INFO.md` when available.
+| Patch | Why it stays |
+|---|---|
+| `avoid_extra_s2idle_wake_attempts` | This phone uses s2idle. |
+| `minimise_wakeup_time` | Shortens alarmtimer wake slack. |
+| `reduce_freeze_timeout` | Shortens the suspend freeze wait. |
+| `clear_page_16bytes_align` | Faster aligned page clears on arm64. |
+| `f2fs_reduce_congestion` | `/data` is f2fs. |
+| `f2fs_enlarge_min_fsync_blocks` | Fewer tiny fsync flushes. |
+| `adjust_cpu_scan_order` | Scheduler scan starts at the next CPU. |
+| `optimise_memcmp` | arm64 memcmp fast path. |
 
-The standard ZRAM profile compiles LZ4KD and advertises only `lz4kd` to ZRAM.
-The local patch deliberately excludes the helper project's unrelated
-`kernel/module.c` changes. Other crypto compression code may remain in the
-generic kernel because filesystem features can use it; ZRAM does not offer it.
+`silence_irq_cpu_logspam` only changed a ratelimited warning into a debug
+line. It is not in the tree.
 
-The config keeps TCP Reno and the selected BBR, FQ pacing, the core Android
-networking stack, the `none` and `mq-deadline` I/O schedulers, and the
-`schedutil` and `performance` CPU frequency governors. It disables optional
-TCP congestion algorithms, BFQ, Kyber, and unused powersave, conservative,
-ondemand, and userspace governors. Core fair, RT, and deadline scheduling and
-Android scheduler infrastructure are untouched. Final generated `.config`
-assertions catch dependencies that overturn these settings.
+## Performance and efficiency
 
-## GitHub Actions execution
+The build keeps the settings the booting kernel used, and drops options this
+phone does not need:
 
-Run **Kernel Build** from the repository's Actions tab and select the three
-choices above. The Ubuntu 24.04 job installs host build dependencies, syncs
-only the AOSP manifest projects needed for this kernel, and uses the manifest's
-Clang release for both generated-config validation and compilation. Its source
-preflight and build use the same integration path. Python tests and Git diff
-checks can run locally, but this Windows PC is not the kernel build host.
+- Clang thin LTO, `CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE`, no debug info.
+- `HZ` 250 and `PREEMPT` stay at the GKI values. Changing them changes
+  timing that vendor drivers assume.
+- CPU governors: `schedutil` and `performance`. Powersave, conservative,
+  ondemand, and userspace are off.
+- I/O: `none` and `mq-deadline`. BFQ and kyber are off. The device also has
+  its own vendor I/O module.
+- ZRAM uses lz4kd. The LZ4 fallback uses the smaller hash table above.
 
-Successful workflow runs upload the AnyKernel3 zip and `BUILD_INFO.md`, with a
-boot image when packaging succeeds. The boot image is ramdisk-less and signed
-with a test key; use it only where the device's boot layout permits it. The
-builder does not flash a device or certify vendor module compatibility.
+KMI symbol enforcement is turned off so this defconfig can compile. That is
+not a claim that vendor modules will load. The build checks that
+`icsk_ca_priv` is still the 104-byte array after the patches.
+
+## GitHub Actions
+
+Run **Kernel Build** from the Actions tab. The only input is
+`sukisu_channel` (`stable` or `dev`).
+
+The Ubuntu 24.04 job syncs the AOSP projects this one kernel needs, runs the
+unit tests, compiles with the Clang version named in that manifest, and
+uploads `boot.img` and `AnyKernel3.zip`. The booting kernel was built with
+Clang `r450784e`. `BUILD_INFO.md` is written in
+the workspace for the log. It is not a success artifact. A failed run
+uploads that note, `.config`, and any `.rej` files.
+
+`boot.img` is the same layout that booted before: mkbootimg header version
+4, kernel only (the generic ramdisk stays in `init_boot`), then an AVB hash
+footer for a 64MiB boot partition signed with a generated test key.
+
+This repository is maintained for that GitHub job. The Windows checkout is
+not a kernel build host. Do not add a second kernel version, a second
+workflow input, or another compression or congestion algorithm without a
+boot test on this phone.

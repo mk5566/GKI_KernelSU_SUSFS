@@ -9,23 +9,12 @@ on:
         type: choice
         options: [stable, dev]
         default: stable
-      bbr_version:
-        description: TCP BBR implementation
-        required: true
-        type: choice
-        options: [v1, v3]
-        default: v3
-      apply_tweaks:
-        description: Apply the complete tweak patch set
-        required: true
-        type: boolean
-        default: true
 
 permissions:
   contents: read
 
 concurrency:
-  group: kernel-build-${{ github.ref }}-${{ inputs.sukisu_channel }}-${{ inputs.bbr_version }}-${{ inputs.apply_tweaks }}
+  group: kernel-build-${{ github.ref }}-${{ inputs.sukisu_channel }}
   cancel-in-progress: false
 
 jobs:
@@ -35,8 +24,6 @@ jobs:
     env:
       GKI_WORKSPACE: /tmp/gki-build
       INPUT_SUKISU_CHANNEL: ${{ inputs.sukisu_channel }}
-      INPUT_BBR_VERSION: ${{ inputs.bbr_version }}
-      INPUT_APPLY_TWEAKS: ${{ inputs.apply_tweaks }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -51,32 +38,28 @@ jobs:
           df -h . /tmp
       - name: Run builder tests
         run: python3 -m unittest discover -s .github/workflows/scripts/tests -v
-      - name: Integrate and validate exact source stack, then compile
+      - name: Integrate the pinned source stack and compile
         shell: bash
         run: |
           set -euo pipefail
-          args=(--sukisu-channel "$INPUT_SUKISU_CHANNEL" --bbr-version "$INPUT_BBR_VERSION" --workspace "$GKI_WORKSPACE")
-          if [[ "$INPUT_APPLY_TWEAKS" == "true" ]]; then
-            args+=(--apply-tweaks)
-          else
-            args+=(--no-tweaks)
-          fi
-          python3 .github/workflows/scripts/build.py "${args[@]}"
-      - name: Prepare artifact name and files
-        id: artifact
+          python3 .github/workflows/scripts/build.py \
+            --sukisu-channel "$INPUT_SUKISU_CHANNEL" \
+            --workspace "$GKI_WORKSPACE"
+      - name: Publish boot.img and AnyKernel3.zip
         shell: bash
         run: |
           set -euo pipefail
-          stem="$(tr -d '\n' < "$GKI_WORKSPACE/artifact_stem.txt")"
-          echo "name=$stem" >> "$GITHUB_OUTPUT"
           mkdir -p artifacts
-          find "$GKI_WORKSPACE" -type f \( -name '*-AnyKernel3.zip' -o -name '*-boot.img' \) -exec cp {} artifacts/ \;
-          cp "$GKI_WORKSPACE/BUILD_INFO.md" artifacts/
-          compgen -G 'artifacts/*-AnyKernel3.zip' >/dev/null
+          cp "$GKI_WORKSPACE/boot.img" artifacts/boot.img
+          cp "$GKI_WORKSPACE/AnyKernel3.zip" artifacts/AnyKernel3.zip
+          find artifacts -type f -printf '%p\n' | sort
+          test "$(find artifacts -type f | wc -l)" -eq 2
       - uses: actions/upload-artifact@v7
         with:
-          name: ${{ steps.artifact.outputs.name }}
-          path: artifacts/*
+          name: android13-5.15.211-sukisu-${{ inputs.sukisu_channel }}
+          path: |
+            artifacts/boot.img
+            artifacts/AnyKernel3.zip
           if-no-files-found: error
       - name: Upload failure diagnostics
         if: failure()

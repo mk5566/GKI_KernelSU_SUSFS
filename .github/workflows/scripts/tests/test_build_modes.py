@@ -10,33 +10,19 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from build import parse_args
-from config import BuildConfig, REPO_ROOT
+from config import ANDROID_FAMILY, BuildConfig, GKI_COMMIT, KERNEL_VERSION, REPO_ROOT
 from kernel_builder import KernelBuilder
 from patch_plan import make_patch_plan
-from target import choose_gki_tag, resolve_gki, resolve_sukisu
+from target import resolve_sukisu
 
 
 class ResolverTests(unittest.TestCase):
-    def test_exact_point_tag_selection(self):
-        refs = {x: "a" * 40 for x in (
-            "android13-5.15.216_r00", "android13-5.15.217_r01",
-            "android13-5.15.217_r10", "android13-5.15.217_r02",
-            "android13-5.15.999_r00-PSTEST", "android13-5.15.999_asb-2026-09",
-            "android14-5.15.999_r00", "android13-6.1.999_r00")}
-        self.assertEqual(choose_gki_tag(refs), "android13-5.15.217_r10")
-
-    def test_resolved_annotated_tag_is_peeled_and_versioned(self):
-        output = ("a" * 40 + "\trefs/tags/android13-5.15.216_r00\n" +
-                  "b" * 40 + "\trefs/tags/android13-5.15.216_r00^{}\n")
-        branch = "c" * 40 + "\trefs/heads/common-android13-5.15-2026-09\n"
-        with patch("target._git", side_effect=[output, branch]):
-            target = resolve_gki()
-        self.assertEqual((target.tag, target.commit, target.kernel_version),
-                         ("android13-5.15.216_r00", "b" * 40, "5.15.216"))
-
-    def test_no_non_515_fallback(self):
-        with self.assertRaisesRegex(RuntimeError, "No official"):
-            choose_gki_tag({"android14-6.1.1_r00": "a" * 40})
+    def test_gki_pin_is_the_booting_5_15_211_commit(self):
+        self.assertEqual(ANDROID_FAMILY, "android13-5.15")
+        self.assertEqual(KERNEL_VERSION, "5.15.211")
+        self.assertEqual(GKI_COMMIT, "dc9467e8f9bfdec0d012f9345ac5f12f63dc7eba")
+        self.assertEqual(BuildConfig().gki_commit, GKI_COMMIT)
+        self.assertEqual(BuildConfig("dev").artifact_stem, "android13-5.15.211-sukisu-dev")
 
     def test_sukisu_stable_and_dev_are_immutable(self):
         payload = b'{"tag_name":"v4.2.0","draft":false,"prerelease":false}'
@@ -50,57 +36,72 @@ class ResolverTests(unittest.TestCase):
 
 
 class ModeTests(unittest.TestCase):
-    def test_all_eight_patch_plans(self):
-        for channel in ("stable", "dev"):
-            for bbr in ("v1", "v3"):
-                for tweaks in (False, True):
-                    with self.subTest(channel=channel, bbr=bbr, tweaks=tweaks):
-                        plan = make_patch_plan(BuildConfig(channel, bbr, tweaks))
-                        self.assertEqual(bool(plan.bbr), bbr == "v3")
-                        self.assertEqual(bool(plan.tweaks), tweaks)
-                        self.assertEqual(len(plan.all), len(plan.bbr) + len(plan.tweaks))
+    def test_one_patch_plan_always_includes_lz4_zram_bbr_and_tweaks(self):
+        plan = make_patch_plan()
+        self.assertTrue(plan.lz4 and plan.zram and plan.bbr and plan.tweaks)
+        self.assertEqual(len(plan.all), len(plan.lz4) + len(plan.zram) + len(plan.bbr) + len(plan.tweaks))
+        names = [path.name for path in plan.all]
+        self.assertIn("0001-lz4-1.9.4.patch", names)
+        self.assertIn("lz4kd-integration.patch", names)
+        self.assertIn("0001-bbrv3-android-kabi.patch", names)
+        self.assertNotIn("silence_irq_cpu_logspam.patch", names)
+        self.assertFalse((REPO_ROOT / "patches/bbrv3").exists())
+        self.assertFalse((REPO_ROOT / "patches/tweaks/silence_irq_cpu_logspam.patch").exists())
 
-    def test_only_three_cli_choices(self):
-        args = parse_args(["--sukisu-channel", "dev", "--bbr-version", "v1", "--no-tweaks"])
-        self.assertEqual((args.sukisu_channel, args.bbr_version, args.apply_tweaks),
-                         ("dev", "v1", False))
-        for obsolete in ("--sub-level", "--no-zram", "--ksu-commit", "--custom-version"):
+    def test_kabi_bbr_patch_keeps_the_104_byte_private_area(self):
+        text = (REPO_ROOT / "patches/bbr/0001-bbrv3-android-kabi.patch").read_text(encoding="utf-8")
+        self.assertIn("__GENKSYMS__", text)
+        self.assertIn("__kabi_placeholder_", text)
+        self.assertNotIn("icsk_ca_priv[160", text)
+        self.assertIn("104-byte", text)
+
+    def test_only_sukisu_channel_is_a_build_choice(self):
+        args = parse_args(["--sukisu-channel", "dev"])
+        self.assertEqual(args.sukisu_channel, "dev")
+        for obsolete in ("--bbr-version", "--no-tweaks", "--sub-level", "--no-zram",
+                         "--ksu-commit", "--custom-version"):
             with self.subTest(obsolete=obsolete), self.assertRaises(SystemExit), \
                  contextlib.redirect_stderr(io.StringIO()):
                 parse_args([obsolete, "x"])
 
-    def test_workflow_dispatch_has_exactly_three_inputs(self):
+    def test_workflow_dispatch_has_one_input(self):
         text = (REPO_ROOT / ".github/workflows/kernel-build.yml").read_text(encoding="utf-8")
         block = text.split("    inputs:\n", 1)[1].split("\npermissions:", 1)[0]
         names = [line.strip().removesuffix(":") for line in block.splitlines()
                  if line.startswith("      ") and not line.startswith("        ")]
-        self.assertEqual(names, ["sukisu_channel", "bbr_version", "apply_tweaks"])
+        self.assertEqual(names, ["sukisu_channel"])
+        self.assertIn("artifacts/boot.img", text)
+        self.assertIn("artifacts/AnyKernel3.zip", text)
+        self.assertNotIn("BUILD_INFO.md\n", text.split("Publish boot.img", 1)[-1].split("if: failure()", 1)[0])
 
-    def test_defconfig_modes_and_reduced_choices(self):
-        for mode in ("v1", "v3"):
-            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as d:
-                builder = KernelBuilder(BuildConfig(bbr_version=mode), d)
-                path = builder._defconfig_path()
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text("CONFIG_TCP_CONG_CUBIC=y\nCONFIG_IOSCHED_BFQ=y\n"
-                                "CONFIG_CPU_FREQ_GOV_CONSERVATIVE=y\n", encoding="utf-8")
-                kconfig = builder.work_dir / "KernelSU/kernel/Kconfig"
-                kconfig.parent.mkdir(parents=True, exist_ok=True)
-                kconfig.write_text("config KSU_SUSFS\nconfig KSU_SUSFS_SUS_MOUNT\n",
-                                   encoding="utf-8")
-                previous = Path.cwd()
-                try:
-                    builder.configure_kernel()
-                finally:
-                    os.chdir(previous)
-                result = path.read_text(encoding="utf-8")
-                self.assertIn('CONFIG_DEFAULT_TCP_CONG="bbr' +
-                              ('3' if mode == 'v3' else '') + '"', result)
-                self.assertIn(f"CONFIG_TCP_CONG_BBR3={'y' if mode == 'v3' else 'n'}", result)
-                self.assertIn("CONFIG_ZRAM_DEF_COMP_LZ4KD=y", result)
-                self.assertIn("CONFIG_IOSCHED_BFQ=n", result)
-                self.assertIn("CONFIG_TCP_CONG_CUBIC=n", result)
-                self.assertIn("CONFIG_CPU_FREQ_GOV_CONSERVATIVE=n", result)
+    def test_defconfig_is_bbrv3_lz4kd_and_no_kpm(self):
+        with tempfile.TemporaryDirectory() as d:
+            builder = KernelBuilder(BuildConfig(), d)
+            path = builder._defconfig_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("CONFIG_TCP_CONG_CUBIC=y\nCONFIG_IOSCHED_BFQ=y\n"
+                            "CONFIG_CPU_FREQ_GOV_CONSERVATIVE=y\nCONFIG_KPM=y\n",
+                            encoding="utf-8")
+            kconfig = builder.work_dir / "KernelSU/kernel/Kconfig"
+            kconfig.parent.mkdir(parents=True, exist_ok=True)
+            kconfig.write_text("config KSU_SUSFS\nconfig KSU_SUSFS_SUS_MOUNT\n",
+                               encoding="utf-8")
+            previous = Path.cwd()
+            try:
+                builder.configure_kernel()
+            finally:
+                os.chdir(previous)
+            result = path.read_text(encoding="utf-8")
+            self.assertIn('CONFIG_DEFAULT_TCP_CONG="bbr3"', result)
+            self.assertIn("CONFIG_TCP_CONG_BBR=y", result)
+            self.assertIn("CONFIG_TCP_CONG_BBR3=y", result)
+            self.assertIn("CONFIG_TCP_CONG_CUBIC=n", result)
+            self.assertIn("CONFIG_ZRAM_DEF_COMP_LZ4KD=y", result)
+            self.assertIn("CONFIG_ZRAM_DEF_COMP_LZ4=n", result)
+            self.assertIn("CONFIG_IOSCHED_BFQ=n", result)
+            self.assertIn("CONFIG_CPU_FREQ_GOV_CONSERVATIVE=n", result)
+            self.assertIn("CONFIG_CPU_FREQ_GOV_PERFORMANCE=y", result)
+            self.assertIn("CONFIG_KPM=n", result)
 
     def test_selected_patch_missing_and_conflict_are_fatal(self):
         with tempfile.TemporaryDirectory() as d:
@@ -118,11 +119,11 @@ class ModeTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "change.patch"):
                 builder._apply_patch_file(patch_file)
 
-    def test_final_config_rejects_wrong_bbr(self):
+    def test_final_config_rejects_a_layout_that_is_not_this_kernel(self):
         with tempfile.TemporaryDirectory() as d:
-            builder = KernelBuilder(BuildConfig(bbr_version="v1"), d)
+            builder = KernelBuilder(BuildConfig(), d)
             file = Path(d) / ".config"
-            file.write_text("CONFIG_TCP_CONG_BBR3=y\n", encoding="utf-8")
+            file.write_text("CONFIG_TCP_CONG_BBR3=n\n", encoding="utf-8")
             with self.assertRaisesRegex(RuntimeError, "Final .config mismatch"):
                 builder._verify_generated_config(file)
 
