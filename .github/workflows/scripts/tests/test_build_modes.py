@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from build import parse_args
-from config import ANDROID_FAMILY, BuildConfig, REPO_ROOT
+from config import ANDROID_FAMILY, BuildConfig, REPO_ROOT, SUKISU_STABLE_REVISION
 from kernel_builder import KernelBuilder
 from patch_plan import make_patch_plan
 from target import choose_gki_tag, choose_manifest_branch, peeled_commit, resolve_sukisu, resolve_susfs, resolve_sukisu_patch, certified_releases
@@ -63,11 +63,7 @@ class ResolverTests(unittest.TestCase):
             read_symvers('<html>artifact unavailable</html>')
 
     def test_sukisu_stable_and_dev_are_immutable(self):
-        payload = b'{"tag_name":"v4.2.0","draft":false,"prerelease":false}'
-        with patch("target.urllib.request.urlopen", return_value=io.BytesIO(payload)), \
-             patch("target._git", return_value="a" * 40 + "\trefs/tags/v4.2.0\n" +
-                   "b" * 40 + "\trefs/tags/v4.2.0^{}\n"):
-            self.assertEqual(resolve_sukisu("stable"), ("v4.2.0", "b" * 40))
+        self.assertEqual(resolve_sukisu("stable"), ("v4.2.0-reviewed-uapi4", SUKISU_STABLE_REVISION))
         with patch("target._git", return_value="ref: refs/heads/main\tHEAD\n" +
                    "c" * 40 + "\tHEAD\n"):
             self.assertEqual(resolve_sukisu("dev"), ("", "c" * 40))

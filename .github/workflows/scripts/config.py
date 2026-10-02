@@ -14,12 +14,14 @@ KSU_REPO_CONFIG = {"repo_url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra.git
 # Upstream stable and development may expose different UAPI revisions.
 SUPPORTED_SUKISU_UAPI = frozenset({2, 4})
 # The mount-only port is reviewed against this exact SUSFS source revision.
-SUSFS_REVISION = "687d2d18d94cb2e3e72d1074778d58384d58e379"
+SUKISU_STABLE_REVISION = "cf87e3f4ddd3f6e5464d85acf56aaa6950e70841"
+SUSFS_REVISION = "e565931d19256fd821ada01b35263506e7c7a364"
 SUSFS_REPO_CONFIG = {"repo_url": "https://github.com/ShirkNeko/susfs4ksu.git"}
 SUKISU_PATCH_REPO_CONFIG = {"repo_url": "https://github.com/ShirkNeko/SukiSU_patch.git"}
 SUKISU_PATCH_REVISION = "547ae94bcaec53d030398f857950c64662043a5d"
 ANYKERNEL_CONFIG = {
-    "repo_url": "https://github.com/WildPlusKernel/AnyKernel3.git", "branch": "gki-2.0"
+    "repo_url": "https://github.com/WildPlusKernel/AnyKernel3.git", "branch": "gki-2.0",
+    "revision": "e1e9dce98430c5c6f231f7094a8c7f4ecaf50948",
 }
 REPO_ROOT = Path(__file__).resolve().parents[3]
 

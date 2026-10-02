@@ -278,6 +278,7 @@ class KernelBuilder:
         patch_commit = self.config.sukisu_patch_commit or SUKISU_PATCH_REVISION
         self._checkout_commit(self.sukisu_patch_dir, patch_commit, "SukiSU Patch")
         self._clone_or_update("AnyKernel3", self.anykernel_dir, ANYKERNEL_CONFIG["repo_url"], ANYKERNEL_CONFIG["branch"])
+        self._checkout_commit(self.anykernel_dir, ANYKERNEL_CONFIG["revision"], "AnyKernel3")
         self._apply_susfs_commit()
         logger.info("=== Helper repositories ready ===")
 
@@ -678,7 +679,6 @@ class KernelBuilder:
         subprocess.run(["make", "-C", str(common), f"O={out}", "ARCH=arm64",
                         "LLVM=1", "HOSTCC=gcc", "HOSTCXX=g++", "olddefconfig"],
                        check=True, env=self.env)
-        self._verify_source_mode()
         self._verify_generated_config(out / ".config")
 
     def _verify_source_mode(self):

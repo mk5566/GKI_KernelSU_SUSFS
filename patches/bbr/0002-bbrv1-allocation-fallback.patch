@@ -52,7 +52,8 @@ diff --git a/net/ipv4/Kconfig b/net/ipv4/Kconfig
 +++ b/net/ipv4/Kconfig
 @@ -681,5 +681,6 @@
  config TCP_CONG_BBR3
- 	tristate "BBRv3 TCP"
+-	tristate "BBRv3 TCP"
++	bool "BBRv3 TCP"
 +	depends on TCP_CONG_BBR=y
  	default n
  	help

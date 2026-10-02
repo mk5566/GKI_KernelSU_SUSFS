@@ -8,10 +8,11 @@ As checked on 2026-10-03, the release is `android13-5.15-2026-09_r2`, Linux
 
 ## Kernel profile
 
-- Built-in SukiSU. `stable` resolves the latest formal upstream release;
+- Built-in SukiSU. `stable` pins the UAPI-4 source from the booting September 21 build;
   `dev` explicitly opts into upstream HEAD. Manager and kernel UAPI must match.
-- SUSFS mount hiding only, with the reviewed filesystem/root integration.
-  SUSFS and LZ4KD helper sources are pinned independently of GKI updates.
+- SUSFS mount hiding only, with the known-booting filesystem/root integration.
+  SUSFS, LZ4KD helpers and AnyKernel3 use the September 21 source revisions,
+  pinned independently of GKI updates.
   KPM, SukiSU debug, and SUSFS logging are disabled.
 - Zram offers **lz4kd** (default) and **lz4** only. LZ4 uses the official
   **1.10.0** freestanding source, a private crypto implementation, caller-owned
