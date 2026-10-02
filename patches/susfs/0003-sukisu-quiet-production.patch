@@ -1,0 +1,37 @@
+From: GKI maintainers <gki-builder@localhost>
+Subject: [PATCH] kernelsu: omit routine informational messages in production
+
+KSU_DEBUG=n does not suppress upstream's unconditional pr_info calls in
+setuid and syscall hooks. Type-check these calls without evaluating their
+arguments or emitting messages; retain warning and error diagnostics.
+Scope the override to KernelSU translation units, leaving GKI untouched.
+
+diff --git a/kernel/Kbuild b/kernel/Kbuild
+--- a/kernel/Kbuild
++++ b/kernel/Kbuild
+@@ -105,6 +105,7 @@
+ endif
+ 
+ ccflags-y += -I$(KSU_KERNEL_DIR) -I$(KSU_KERNEL_DIR)/include
++ccflags-y += -include $(KSU_KERNEL_DIR)/include/quiet.h
+ 
+ obj-$(CONFIG_KSU) += kernelsu.o
+ 
+diff --git a/kernel/include/quiet.h b/kernel/include/quiet.h
+new file mode 100644
+--- /dev/null
++++ b/kernel/include/quiet.h
+@@ -0,0 +1,13 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef KSU_QUIET_H
++#define KSU_QUIET_H
++
++#include <linux/printk.h>
++
++#ifndef CONFIG_KSU_DEBUG
++#undef pr_info
++#define pr_info(fmt, ...) \
++	no_printk(KERN_INFO pr_fmt(fmt), ##__VA_ARGS__)
++#endif
++
++#endif /* KSU_QUIET_H */

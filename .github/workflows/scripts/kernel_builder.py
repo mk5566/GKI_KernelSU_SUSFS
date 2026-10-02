@@ -415,6 +415,7 @@ class KernelBuilder:
         integration_patch = (Path(__file__).resolve().parents[3] / "patches/susfs/"
                              "0001-sukisu-main-uapi4-mount-support.patch")
         self._apply_patch_file(integration_patch)
+        self._apply_patch_file(REPO_ROOT / "patches/susfs/0003-sukisu-quiet-production.patch")
         self._chdir(self.work_dir)
 
     def apply_susfs_patches(self):

@@ -70,8 +70,10 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: kernel-failed-${{ github.run_id }}
+          include-hidden-files: true
           path: |
             /tmp/gki-build/BUILD_INFO.md
             /tmp/gki-build/android13-5.15/out/android13-5.15/common/.config
+            /tmp/gki-build/android13-5.15/out/android13-5.15/dist/vmlinux.symvers
             /tmp/gki-build/**/*.rej
           if-no-files-found: warn

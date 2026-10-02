@@ -47,10 +47,36 @@ diff --git a/net/ipv4/tcp_bbr3.c b/net/ipv4/tcp_bbr3.c
  
  	*bbr3_ptr = bbr;
  
+@@ -2320,7 +2329,7 @@
+ }
+ 
+ 
+-static struct tcp_congestion_ops tcp_bbr_cong_ops __read_mostly = {
++static struct tcp_congestion_ops tcp_bbr3_cong_ops __read_mostly = {
+ 	.flags		= TCP_CONG_NON_RESTRICTED | TCP_CONG_WANTS_CE_EVENTS,
+ 	.name		= "bbr3",
+ 	.owner		= THIS_MODULE,
+@@ -2338,12 +2347,12 @@
+ 
+ static int __init bbr3_register(void)
+ {
+-	return tcp_register_congestion_control(&tcp_bbr_cong_ops);
++	return tcp_register_congestion_control(&tcp_bbr3_cong_ops);
+ }
+ 
+ static void __exit bbr3_unregister(void)
+ {
+-	tcp_unregister_congestion_control(&tcp_bbr_cong_ops);
++	tcp_unregister_congestion_control(&tcp_bbr3_cong_ops);
+ }
+ 
+ module_init(bbr3_register);
 diff --git a/net/ipv4/Kconfig b/net/ipv4/Kconfig
 --- a/net/ipv4/Kconfig
 +++ b/net/ipv4/Kconfig
-@@ -681,5 +681,6 @@
+@@ -680,7 +680,8 @@
+ 	  ("Fair Queue") pacing packet scheduler.
+ 
  config TCP_CONG_BBR3
 -	tristate "BBRv3 TCP"
 +	bool "BBRv3 TCP"
