@@ -8,7 +8,7 @@ from pathlib import Path
 
 from config import BuildConfig, KSUChannel
 from kernel_builder import KernelBuilder
-from target import resolve_gki, resolve_sukisu, resolve_susfs, resolve_sukisu_patch
+from target import resolve_gki, resolve_sukisu
 
 
 def parse_args(argv=None):
@@ -20,6 +20,7 @@ def parse_args(argv=None):
     parser.add_argument("--preflight-only", action="store_true",
                         help="Apply the source stack and generate/verify .config, then stop")
     parser.add_argument("--output-json")
+    parser.add_argument("--base-boot", help="Repack a known booting device boot image, preserving its ramdisk and header")
     return parser.parse_args(argv)
 
 
@@ -27,14 +28,20 @@ def main(argv=None):
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
     args = parse_args(argv)
     config = BuildConfig(args.sukisu_channel)
+    config.base_boot = str(Path(args.base_boot).resolve()) if args.base_boot else ""
     gki = resolve_gki()
     config.gki_tag = gki.tag
     config.gki_commit = gki.commit
     config.kernel_version = gki.kernel_version
     config.manifest_branch = gki.manifest_branch
+    config.manifest_commit = gki.manifest_commit
+    config.official_build_id = gki.official_build_id
+    config.source_projects = gki.source_projects
     config.sukisu_tag, config.sukisu_commit = resolve_sukisu(config.sukisu_channel)
-    config.susfs_commit = args.susfs_commit or resolve_susfs()
-    config.sukisu_patch_commit = args.sukisu_patch_commit or resolve_sukisu_patch()
+    # These ports are audited as a pair. Do not change filesystem hooks or
+    # compressors underneath a GKI update just because a branch moved.
+    config.susfs_commit = args.susfs_commit or config.susfs_commit
+    config.sukisu_patch_commit = args.sukisu_patch_commit or config.sukisu_patch_commit
     logging.info("GKI %s %s %s; manifest %s; SukiSU %s %s; SUSFS %s; SukiSU_patch %s",
                  config.kernel_version, config.gki_tag, config.gki_commit,
                  config.manifest_branch, config.sukisu_tag or "dev", config.sukisu_commit,

@@ -33,8 +33,12 @@ class BuildConfig:
     gki_commit: str = ""
     kernel_version: str = ""
     manifest_branch: str = ""
+    manifest_commit: str = ""
+    official_build_id: str = ""
+    source_projects: tuple = ()
     susfs_commit: str = ""
     sukisu_patch_commit: str = ""
+    base_boot: str = ""
 
     def __post_init__(self):
         self.sukisu_channel = KSUChannel(self.sukisu_channel).value
@@ -68,6 +72,9 @@ class BuildConfig:
             "gki_commit": self.gki_commit,
             "kernel_version": self.kernel_version,
             "manifest_branch": self.manifest_branch,
+            "manifest_commit": self.manifest_commit,
+            "official_build_id": self.official_build_id,
+            "source_projects": self.source_projects,
             "susfs_commit": self.susfs_commit,
             "sukisu_patch_commit": self.sukisu_patch_commit,
             "artifact_stem": self.artifact_stem,

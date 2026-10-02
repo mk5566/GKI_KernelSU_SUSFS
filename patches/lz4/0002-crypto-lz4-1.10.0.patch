@@ -1,0 +1,64 @@
+From: GKI maintainers <gki-builder@localhost>
+Subject: [PATCH] crypto: use private freestanding LZ4 1.10.0
+
+Keep include/linux/lz4.h and lib/lz4 unchanged for vendor modules.
+
+diff --git a/crypto/lz4.c b/crypto/lz4.c
+--- a/crypto/lz4.c
++++ b/crypto/lz4.c
+@@ -9,7 +9,15 @@
+ #include <linux/module.h>
+ #include <linux/crypto.h>
+ #include <linux/vmalloc.h>
+-#include <linux/lz4.h>
++/* Private freestanding LZ4 1.10.0: no changes to the exported GKI LZ4 ABI. */
++#include <linux/string.h>
++#define LZ4_FREESTANDING 1
++#define LZ4_memcpy memcpy
++#define LZ4_memmove memmove
++#define LZ4_memset memset
++#define LZ4LIB_VISIBILITY static __maybe_unused
++#define LZ4_PUBLISH_STATIC_FUNCTIONS
++#include "lz4_110/lz4.c"
+ #include <crypto/internal/scompress.h>
+ 
+ struct lz4_ctx {
+@@ -20,7 +28,7 @@
+ {
+ 	void *ctx;
+ 
+-	ctx = vmalloc(LZ4_MEM_COMPRESS);
++	ctx = vmalloc(sizeof(LZ4_stream_t));
+ 	if (!ctx)
+ 		return ERR_PTR(-ENOMEM);
+ 
+@@ -53,8 +61,13 @@
+ static int __lz4_compress_crypto(const u8 *src, unsigned int slen,
+ 				 u8 *dst, unsigned int *dlen, void *ctx)
+ {
+-	int out_len = LZ4_compress_default(src, dst,
+-		slen, *dlen, ctx);
++	int out_len;
++
++	if (slen > INT_MAX || *dlen > INT_MAX)
++		return -EINVAL;
++
++	out_len = LZ4_compress_fast_extState(ctx, src, dst,
++		slen, *dlen, 1);
+ 
+ 	if (!out_len)
+ 		return -EINVAL;
+@@ -81,7 +94,12 @@
+ static int __lz4_decompress_crypto(const u8 *src, unsigned int slen,
+ 				   u8 *dst, unsigned int *dlen, void *ctx)
+ {
+-	int out_len = LZ4_decompress_safe(src, dst, slen, *dlen);
++	int out_len;
++
++	if (slen > INT_MAX || *dlen > INT_MAX)
++		return -EINVAL;
++
++	out_len = LZ4_decompress_safe(src, dst, slen, *dlen);
+ 
+ 	if (out_len < 0)
+ 		return -EINVAL;

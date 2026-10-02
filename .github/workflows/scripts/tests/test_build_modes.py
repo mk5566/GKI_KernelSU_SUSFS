@@ -13,22 +13,23 @@ from build import parse_args
 from config import ANDROID_FAMILY, BuildConfig, REPO_ROOT
 from kernel_builder import KernelBuilder
 from patch_plan import make_patch_plan
-from target import choose_gki_tag, choose_manifest_branch, peeled_commit, resolve_sukisu, resolve_susfs, resolve_sukisu_patch
+from target import choose_gki_tag, choose_manifest_branch, peeled_commit, resolve_sukisu, resolve_susfs, resolve_sukisu_patch, certified_releases
+from abi import compare_symvers, read_symvers
 
 
 class ResolverTests(unittest.TestCase):
-    def test_latest_android13_5_15_point_release_wins(self):
+    def test_monthly_release_excludes_uncertified_point_tags(self):
         self.assertEqual(ANDROID_FAMILY, "android13-5.15")
         refs = {
-            "android13-5.15.211_r00": "a" * 40,
-            "android13-5.15.211_r00^{}": "b" * 40,
+            "android13-5.15-2026-09_r1": "a" * 40,
+            "android13-5.15-2026-09_r1^{}": "b" * 40,
             "android13-5.15.216_r00": "c" * 40,
             "android13-5.15.216_r00^{}": "d" * 40,
-            "android13-5.15.216_r01": "e" * 40,
+            "android13-5.15-2026-09_r2": "e" * 40,
             "android14-5.15.300_r00": "f" * 40,
         }
-        self.assertEqual(choose_gki_tag(refs), "android13-5.15.216_r01")
-        self.assertEqual(peeled_commit(refs, "android13-5.15.216_r00"), "d" * 40)
+        self.assertEqual(choose_gki_tag(refs), "android13-5.15-2026-09_r2")
+        self.assertEqual(peeled_commit(refs, "android13-5.15-2026-09_r1"), "b" * 40)
         branches = "\n".join([
             "1" * 40 + "\trefs/heads/common-android13-5.15-2026-06",
             "2" * 40 + "\trefs/heads/common-android13-5.15-2026-09",
@@ -42,6 +43,24 @@ class ResolverTests(unittest.TestCase):
                              manifest_branch="common-android13-5.15-2026-09")
         self.assertEqual(config.artifact_stem, "android13-5.15.216-sukisu-dev")
         self.assertEqual(config.gki_commit, "d" * 40)
+
+    def test_only_published_certified_download_rows_are_eligible(self):
+        row = ('<tr><a href="https://ci.android.com/builds/submitted/123/kernel_aarch64/latest">kernel</a>'
+               '<a href="https://dl.google.com/android/gki/gki-certified-boot-'
+               'android13-5.15-2026-09_r2.zip">boot</a></tr>')
+        debug = row.replace('gki-certified-boot-', 'debug-boot-').replace('_r2', '_r99')
+        self.assertEqual(certified_releases(row + debug), {"android13-5.15-2026-09_r2": "123"})
+        with self.assertRaises(RuntimeError):
+            certified_releases(debug)
+
+    def test_frozen_symbol_crc_and_export_presence_are_required(self):
+        reference = read_symvers('0x1234\talloc_pages\tvmlinux\tEXPORT_SYMBOL\n')
+        self.assertEqual(compare_symvers(reference, {"alloc_pages": "0x1234", "root": "0xffff"}), 1)
+        for built in ({}, {"alloc_pages": "0x4321"}):
+            with self.subTest(built=built), self.assertRaisesRegex(RuntimeError, "GKI ABI mismatch"):
+                compare_symvers(reference, built)
+        with self.assertRaises(RuntimeError):
+            read_symvers('<html>artifact unavailable</html>')
 
     def test_sukisu_stable_and_dev_are_immutable(self):
         payload = b'{"tag_name":"v4.2.0","draft":false,"prerelease":false}'
@@ -66,10 +85,12 @@ class ModeTests(unittest.TestCase):
         self.assertTrue(plan.lz4 and plan.zram and plan.bbr and plan.tweaks)
         self.assertEqual(len(plan.all), len(plan.lz4) + len(plan.zram) + len(plan.bbr) + len(plan.tweaks))
         names = [path.name for path in plan.all]
-        self.assertIn("0001-lz4-1.9.4.patch", names)
+        self.assertIn("0002-crypto-lz4-1.10.0.patch", names)
         self.assertIn("lz4kd-integration.patch", names)
         self.assertIn("0001-bbrv3-android-kabi.patch", names)
         self.assertNotIn("silence_irq_cpu_logspam.patch", names)
+        self.assertNotIn("optimise_memcmp.patch", names)
+        self.assertNotIn("reduce_freeze_timeout.patch", names)
         self.assertFalse((REPO_ROOT / "patches/bbrv3").exists())
         self.assertFalse((REPO_ROOT / "patches/tweaks/silence_irq_cpu_logspam.patch").exists())
 

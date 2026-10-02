@@ -1,18 +1,19 @@
-# BBRv3 on android13-5.15.211
+# Google BBRv3 on the frozen android13-5.15 KMI
 
-`0001-bbrv3-android-kabi.patch` is the series that booted on this phone.
-It registers BBRv3 as `bbr3` and leaves stock BBRv1 registered as `bbr`.
+Origin: [Google's official BBRv3 source](https://github.com/google/bbr/blob/90210de4b779d40496dee0b89081780eeddf2a60/net/ipv4/tcp_bbr.c).
+The existing 5.15 backport retains the Google model/parameters, adapts callback
+signatures and random/PLB APIs, removes newer BPF kfunc registration, and
+registers v3 as `bbr3` beside stock BBRv1 `bbr`.
 
-The patch keeps `icsk_ca_priv` at 104 bytes and hides the extra BBRv3
-fields from `genksyms` with `__GENKSYMS__` and `__kabi_placeholder_*`.
-Vendor modules on Xiaomi 13 Ultra HyperOS 3 are built against that
-layout. Growing the array, or dropping the genksyms guards, changes
-symbol CRCs. Those modules then fail to load and the device stays on
-the Xiaomi logo.
+Do not copy Google's newer-kernel TCP structures over the frozen Android KMI.
+The backport stores v3 state outside the 104-byte `icsk_ca_priv` area and uses
+Android genksyms guards for shared structures. The build verifies all frozen
+export CRCs against the matching Google-certified release, rather than
+assuming these guards suffice.
 
-Do not replace this patch with a "cleaner" backport that edits
-`struct tcp_sock` or `icsk_ca_priv` in a way `genksyms` can see.
-
-5.15.211 calls `tcp_in_ack_event()` between the RACK window update and
-the TLP ack in `tcp_ack()`. The patch context includes that call. Do
-not delete it to match an older 5.15.180 hunk.
+`0002-bbrv1-allocation-fallback.patch` fixes the original backport's unchecked
+allocation-failure path. If `kzalloc(GFP_ATOMIC)` fails, initialization switches
+the socket's operations to built-in BBRv1 and initializes inline BBRv1 state.
+Both algorithms must be built in; the Kconfig dependency enforces this.
+Successful allocations are freed on release. No congestion callback is left
+pointing at missing v3 state.

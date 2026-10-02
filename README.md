@@ -1,84 +1,79 @@
-# Xiaomi 13 Ultra kernel: latest android13-5.15, SukiSU, SUSFS
+# Xiaomi 13 Ultra: stable GKI + SukiSU + mount-only SUSFS
 
-One GitHub Actions build. It produces a GKI-derived arm64 kernel for the
-Xiaomi 13 Ultra (ishtar) on HyperOS 3 and uploads two files: `boot.img` and
-`AnyKernel3.zip`.
+Build the newest **published, certified android13-5.15 monthly GKI release**.
+Each run resolves the source tag to its commit and pins the matching month's
+manifest. Point-release tags on the development/LTS branch are not selected.
+As checked on 2026-10-03, the release is `android13-5.15-2026-09_r2`, Linux
+`5.15.211`, published October 1. [Official GKI releases](https://source.android.com/docs/core/architecture/kernel/gki-android13-5_15-release-builds).
 
-Each run dynamically resolves:
-- Google's newest official `android13-5.15.<sublevel>_rNN` GKI tag and peels it
-  to a commit. As of this tree, that tag is `android13-5.15.216_r00`.
-- The newest `common-android13-5.15-YYYY-MM` manifest branch for the matching
-  Clang toolchain.
-- SukiSU-Ultra (`stable` formal release or `dev` default branch HEAD).
-- SUSFS (newest `gki-android13-5.15` branch HEAD from `ShirkNeko/susfs4ksu`).
-- SukiSU patch helper (newest `main` branch HEAD from `ShirkNeko/SukiSU_patch`).
-- AnyKernel3 (newest `gki-2.0` branch from `WildPlusKernel/AnyKernel3`).
+## Kernel profile
 
-The build strictly preserves the GKI ABI so pre-compiled vendor modules
-continue to load without symbol CRC or structure layout mismatches.
+- Built-in SukiSU. `stable` resolves the latest formal upstream release;
+  `dev` explicitly opts into upstream HEAD. Manager and kernel UAPI must match.
+- SUSFS mount hiding only, with the reviewed filesystem/root integration.
+  SUSFS and LZ4KD helper sources are pinned independently of GKI updates.
+  KPM, SukiSU debug, and SUSFS logging are disabled.
+- Zram offers **lz4kd** (default) and **lz4** only. LZ4 uses the official
+  **1.10.0** freestanding source, a private crypto implementation, caller-owned
+  compression state, and bounded decompression. The exported GKI LZ4 header,
+  library, and filesystem consumers remain unchanged.
+- **Google BBRv3**, adapted for Linux 5.15 and the frozen Android KMI, is the
+  TCP default. Stock **BBRv1** remains built in and is selected per socket if
+  BBRv3 cannot allocate its state. Reno is the mandatory core TCP fallback;
+  other optional congestion algorithms are disabled. FQ pacing remains enabled.
+- Preserve GKI memory management, security, vendor hooks, module versioning,
+  CFI, full Clang LTO, preemption and timing defaults. Use schedutil/performance
+  governors and none/mq-deadline I/O scheduling.
+- Retain four small patches: s2idle retry handling, alarmtimer wake timeout,
+  clear-page alignment, and idle CPU scan order. No unsafe SIMD `memcmp`,
+  forced freezer timeout, or unmeasured F2FS congestion/fsync overrides.
 
-## What the kernel contains
+## ABI and patch checks
 
-- SukiSU-Ultra is built in. The workflow choice is `stable` (latest formal
-  release tag, peeled to a commit) or `dev` (default branch HEAD, peeled to
-  a commit). The builder checks that the checkout matches that commit.
-  Supported kernel UAPI revisions are 2 and 4.
-- SUSFS is mount-only: `CONFIG_KSU_SUSFS` and `CONFIG_KSU_SUSFS_SUS_MOUNT`.
-  Each run resolves the latest HEAD on `gki-android13-5.15`.
-- KPM is forced off.
-- ZRAM is built in. The backends are `lz4kd` (default) and `lz4`.
-- LZ4 in the kernel is 1.9.4 with a 1KB hash table for 4KB zram pages.
-- TCP congestion is BBRv3 by default, with stock BBRv1 still built in.
-  Reno stays in the core stack. Cubic, Westwood, and the other optional
-  algorithms are turned off. FQ pacing stays on.
-- The BBRv3 patch is `patches/bbr/0001-bbrv3-android-kabi.patch`. It keeps
-  `icsk_ca_priv` at 104 bytes and hides the extra fields from genksyms
-  with `__GENKSYMS__` guards.
+Every selected patch applies once, without fuzz or silent skips. The build
+retains AOSP KMI symbol lists and trimming. After compilation, every frozen
+export and CRC is compared with **Google's matching certified build's
+`vmlinux.symvers`**. A missing export or differing CRC prevents packaging.
+Extra root exports are permitted. This check covers the frozen module KMI;
+only device testing can establish bootability and runtime stability.
 
-## Patches that stay
+The BBRv3 backport keeps `icsk_ca_priv` at 104 bytes. Private LZ4 1.10 does not
+replace vendor-visible `LZ4_stream_t` or exported `LZ4_*` functions. Debug
+symbols are omitted; GKI runtime diagnostics that affect structure layout or
+vendor interfaces stay at upstream defaults. CI build output is retained.
 
-Every patch is applied with `git apply --check` and then `git apply`. A
-reject fails the build. Nothing is applied with fuzz.
+## Build and temporary boot testing
 
-| Patch | Why it stays |
-|---|---|
-| `avoid_extra_s2idle_wake_attempts` | This phone uses s2idle. |
-| `minimise_wakeup_time` | Shortens alarmtimer wake slack. |
-| `reduce_freeze_timeout` | Shortens the suspend freeze wait. |
-| `clear_page_16bytes_align` | Faster aligned page clears on arm64. |
-| `f2fs_reduce_congestion` | `/data` is f2fs. |
-| `f2fs_enlarge_min_fsync_blocks` | Fewer tiny fsync flushes. |
-| `adjust_cpu_scan_order` | Scheduler scan starts at the next CPU. |
-| `optimise_memcmp` | arm64 memcmp fast path. |
+Run **Kernel Build** in GitHub Actions; choose `stable` or `dev`. The job tests
+the builder, integrates sources, compiles, checks the KMI, and uploads
+`boot.img` and `AnyKernel3.zip`. Exact source revisions, image hash, and ABI
+check result are recorded in `BUILD_INFO.md` in the build workspace.
 
-`silence_irq_cpu_logspam` only changed a ratelimited warning into a debug
-line. It is not in the tree.
+`boot.img` is a generic **ramdisk-less header-v4** image for devices whose
+generic ramdisk is in `init_boot`. It contains no invented 64 MiB partition
+padding, random AVB signing key, or device SPL. It does not reproduce OEM
+boot metadata or a ramdisk stored in `boot`. Test temporarily:
 
-## Performance and GKI ABI Preservation
+```sh
+fastboot boot boot.img
+```
 
-- `gki_defconfig` memory management and allocator settings are strictly
-  preserved. Debug and sanitizer options (`SLUB_DEBUG`, `PAGE_OWNER`,
-  `PAGE_PINNER`, `KFENCE`) are left at their GKI defaults to maintain exact
-  structure layouts (`struct page`, `struct kmem_cache`) for vendor modules.
-- Clang thin LTO, `CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE`, debug info stripped.
-- `HZ` 250 and `PREEMPT` stay at the GKI values.
-- CPU governors: `schedutil` and `performance`. Powersave, conservative,
-  ondemand, and userspace are off.
-- I/O: `none` and `mq-deadline`. BFQ and kyber are off.
-- ZRAM uses lz4kd.
-- The build checks that `icsk_ca_priv` remains the 104-byte array after patches.
+For a device-specific test image, preserve a known booting boot image's
+ramdisk, header, cmdline and other unpacked fields with the AOSP boot tools:
 
-## GitHub Actions
+```sh
+python .github/workflows/scripts/repack_boot.py --base-boot old-boot.img \
+  --image Image --output test-boot.img --tools /path/to/tools/mkbootimg
+fastboot boot test-boot.img
+```
 
-Run **Kernel Build** from the Actions tab. The only input is
-`sukisu_channel` (`stable` or `dev`).
+The compiled `Image` is also inside `AnyKernel3.zip`. A local Linux build can
+pass `--base-boot /path/to/old-boot.img` to `build.py`. Repacking replaces the
+kernel and drops the old signature/footer, which cannot authenticate a
+changed kernel. AnyKernel3 repacks the device's installed boot image.
 
-The Ubuntu 24.04 job syncs the AOSP projects this kernel needs, runs the
-unit tests, compiles with the manifest's Clang release, and uploads
-`boot.img` and `AnyKernel3.zip`. Artifact names follow the resolved sublevel
-(e.g., `android13-5.15.216-sukisu-stable`). `BUILD_INFO.md` is written in the
-workspace for the log.
-
-`boot.img` is mkbootimg header version 4, kernel only (the generic ramdisk
-stays in `init_boot`), then an AVB hash footer for a 64MiB boot partition
-signed with a generated test key.
+A passing compile/KMI check does not prove the Xiaomi boots. Retain the old
+flashed kernel while testing. Boot-loop diagnosis needs the device model,
+ROM, failed build identity, and preferably the previous-boot panic/pstore
+record. No phone settings or flashed partitions are changed by this project
+repair.
