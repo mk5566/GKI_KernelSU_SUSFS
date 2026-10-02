@@ -221,16 +221,17 @@ class KernelBuilder:
         config_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 
     def _apply_patch_file(self, patch_path: Path) -> bool:
-        """Validate and apply once, exactly, in the current Git checkout."""
+        """Apply once atomically; missing files or rejected hunks are fatal."""
         if not patch_path.is_file():
             raise RuntimeError(f"Selected patch missing: {patch_path}")
-        for extra in (("--check",), ()):
-            result = subprocess.run(
-                ["git", "apply", "--whitespace=nowarn", *extra, str(patch_path.resolve())],
-                                    cwd=self.shell.cwd, capture_output=True, text=True)
-            if result.returncode:
-                context = (result.stderr or result.stdout).strip()
-                raise RuntimeError(f"Selected patch failed: {patch_path.name}\n{context}")
+        # git apply validates all hunks before changing any file. A separate
+        # --check pass duplicates that work and adds no atomicity guarantee.
+        result = subprocess.run(
+            ["git", "apply", "--whitespace=nowarn", str(patch_path.resolve())],
+            cwd=self.shell.cwd, capture_output=True, text=True)
+        if result.returncode:
+            context = (result.stderr or result.stdout).strip()
+            raise RuntimeError(f"Selected patch failed: {patch_path.name}\n{context}")
         self.applied_integration_patches.append(patch_path.name)
         return True
 

@@ -8,6 +8,8 @@ to nearest timer expiration. This can cause device to be awake for more
 than needed.
 
 To fix this set wakeup timeout to min + 1 ms for safety margin.
+Clamp expired alarms to zero before adding the margin. A negative delta
+must not wrap into an unsigned, multi-day wakeup timeout.
 
 Tests revealed that average timer expiration is 1150ms in the future
 which suggests there is a room avilable to minimize wakeup times.
@@ -34,7 +36,7 @@ index 8d9f13d847f09..0d3dba04e78d8 100644
  
  	if (ktime_to_ns(min) < 2 * NSEC_PER_SEC) {
 -		pm_wakeup_event(dev, 2 * MSEC_PER_SEC);
-+		pm_wakeup_event(dev, ktime_to_ms(min) + 1);
++		pm_wakeup_event(dev, max_t(s64, ktime_to_ms(min), 0) + 1);
  		return -EBUSY;
  	}
  

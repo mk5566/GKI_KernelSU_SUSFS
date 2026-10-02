@@ -168,6 +168,26 @@ class ModeTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Final .config mismatch"):
                 builder._verify_generated_config(file)
 
+    def test_rejected_patch_cannot_leave_a_partial_integration(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            subprocess.run(["git", "init", "-q", d], check=True)
+            (root / "a.txt").write_text("old\n", encoding="utf-8")
+            (root / "b.txt").write_text("unexpected\n", encoding="utf-8")
+            patch_file = root / "two-files.patch"
+            patch_file.write_text(
+                "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n"
+                "@@ -1 +1 @@\n-old\n+new\n"
+                "diff --git a/b.txt b/b.txt\n--- a/b.txt\n+++ b/b.txt\n"
+                "@@ -1 +1 @@\n-old\n+new\n", encoding="utf-8")
+            builder = KernelBuilder(BuildConfig(), d)
+            builder.shell.cwd = d
+            with self.assertRaisesRegex(RuntimeError, "two-files.patch"):
+                builder._apply_patch_file(patch_file)
+            self.assertEqual((root / "a.txt").read_text(), "old\n")
+            self.assertEqual((root / "b.txt").read_text(), "unexpected\n")
+            self.assertEqual(builder.applied_integration_patches, [])
+
     def test_preflight_uses_manifest_selected_clang(self):
         with tempfile.TemporaryDirectory() as d:
             builder = KernelBuilder(BuildConfig(), d)
