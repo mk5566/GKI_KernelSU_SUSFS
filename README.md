@@ -24,8 +24,8 @@ As checked on 2026-10-03, the release is `android13-5.15-2026-09_r2`, Linux
   BBRv3 cannot allocate its state. Reno is the mandatory core TCP fallback;
   other optional congestion algorithms are disabled. FQ pacing remains enabled.
 - Preserve GKI memory management, security, vendor hooks, module versioning,
-  CFI, full Clang LTO, preemption and timing defaults. Use schedutil/performance
-  governors and none/mq-deadline I/O scheduling.
+  CFI, full Clang LTO, preemption, timing, CPU governors and I/O schedulers.
+  Keep governor support that supplies frozen vendor-facing cpufreq exports.
 - Retain four small patches: s2idle retry handling, alarmtimer wake timeout,
   clear-page alignment, and idle CPU scan order. No unsafe SIMD `memcmp`,
   forced freezer timeout, or unmeasured F2FS congestion/fsync overrides.

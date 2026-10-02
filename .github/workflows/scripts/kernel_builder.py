@@ -560,19 +560,9 @@ class KernelBuilder:
         for symbol in ("BIC", "HTCP", "WESTWOOD", "VEGAS", "VENO",
                        "HYBLA", "ILLINOIS", "DCTCP", "CDG", "NV", "CUBIC"):
             updates[f"CONFIG_TCP_CONG_{symbol.upper()}"] = "n"
-        # Generic arm64 GKI: retain none and mq-deadline, schedutil and
-        # performance. These optional alternatives are not selected here.
-        updates.update({
-            "CONFIG_MQ_IOSCHED_DEADLINE": "y",
-            "CONFIG_IOSCHED_BFQ": "n",
-            "CONFIG_MQ_IOSCHED_KYBER": "n",
-            "CONFIG_CPU_FREQ_GOV_SCHEDUTIL": "y",
-            "CONFIG_CPU_FREQ_GOV_PERFORMANCE": "y",
-            "CONFIG_CPU_FREQ_GOV_POWERSAVE": "n",
-            "CONFIG_CPU_FREQ_GOV_CONSERVATIVE": "n",
-            "CONFIG_CPU_FREQ_GOV_ONDEMAND": "n",
-            "CONFIG_CPU_FREQ_GOV_USERSPACE": "n",
-        })
+        # Preserve upstream governors and I/O schedulers. The conservative
+        # governor selects common code with frozen cpufreq_dbs_* exports;
+        # removing it would break the certified KMI and vendor consumers.
         self._upsert_defconfig(updates)
         self._configure_zram()
 
@@ -722,14 +712,6 @@ class KernelBuilder:
             "CONFIG_CRYPTO_LZ4KD": "y", "CONFIG_LZ4KD_COMPRESS": "y",
             "CONFIG_LZ4KD_DECOMPRESS": "y", "CONFIG_ZRAM_DEF_COMP_LZ4KD": "y",
             "CONFIG_ZRAM_DEF_COMP": '"lz4kd"', "CONFIG_ZRAM_WRITEBACK": "y",
-            "CONFIG_MQ_IOSCHED_DEADLINE": "y", "CONFIG_IOSCHED_BFQ": "n",
-            "CONFIG_MQ_IOSCHED_KYBER": "n",
-            "CONFIG_CPU_FREQ_GOV_SCHEDUTIL": "y",
-            "CONFIG_CPU_FREQ_GOV_PERFORMANCE": "y",
-            "CONFIG_CPU_FREQ_GOV_POWERSAVE": "n",
-            "CONFIG_CPU_FREQ_GOV_CONSERVATIVE": "n",
-            "CONFIG_CPU_FREQ_GOV_ONDEMAND": "n",
-            "CONFIG_CPU_FREQ_GOV_USERSPACE": "n",
             "CONFIG_TCP_CONG_BBR": "y",
             "CONFIG_TCP_CONG_BBR3": "y",
             "CONFIG_DEFAULT_TCP_CONG": '"bbr3"',

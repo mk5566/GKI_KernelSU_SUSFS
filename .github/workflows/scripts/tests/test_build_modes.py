@@ -140,9 +140,8 @@ class ModeTests(unittest.TestCase):
             self.assertIn("CONFIG_TCP_CONG_CUBIC=n", result)
             self.assertIn("CONFIG_ZRAM_DEF_COMP_LZ4KD=y", result)
             self.assertIn("CONFIG_ZRAM_DEF_COMP_LZ4=n", result)
-            self.assertIn("CONFIG_IOSCHED_BFQ=n", result)
-            self.assertIn("CONFIG_CPU_FREQ_GOV_CONSERVATIVE=n", result)
-            self.assertIn("CONFIG_CPU_FREQ_GOV_PERFORMANCE=y", result)
+            self.assertIn("CONFIG_IOSCHED_BFQ=y", result)
+            self.assertIn("CONFIG_CPU_FREQ_GOV_CONSERVATIVE=y", result)
             self.assertIn("CONFIG_KPM=n", result)
 
     def test_selected_patch_missing_and_conflict_are_fatal(self):
