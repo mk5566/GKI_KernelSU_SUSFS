@@ -2,7 +2,9 @@
 
 Sources: [official v1.10.0](https://github.com/lz4/lz4/tree/v1.10.0/lib).
 The source retains upstream's BSD-2-Clause license and copyright notices.
-Only standard C type/header includes are adapted to Linux types/limits.
+Standard C type/header includes are adapted to Linux types/limits. The
+integer-width assertion uses the compiler's `__SIZEOF_INT__`; local `current`
+variables are renamed to avoid Linux's task macro. Compression logic is unchanged.
 Upstream source SHA256 before these header adaptations:
 
 - `lz4.c`: `9396f7de527bc8435de9c7569fb7998e56545a84b4f3c2d808c0235c01774539`
