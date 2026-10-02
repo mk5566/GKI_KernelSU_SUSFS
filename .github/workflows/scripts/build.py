@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve the latest GKI stable and SukiSU, then compile one kernel."""
+"""Resolve SukiSU, integrate the one kernel stack, then compile."""
 import argparse
 import json
 import logging
@@ -8,11 +8,11 @@ from pathlib import Path
 
 from config import BuildConfig, KSUChannel
 from kernel_builder import KernelBuilder
-from target import resolve_gki, resolve_sukisu
+from target import resolve_sukisu
 
 
 def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description="latest android13-5.15 GKI stable")
+    parser = argparse.ArgumentParser(description="android13-5.15.211 GKI-derived build")
     parser.add_argument("--sukisu-channel", choices=[x.value for x in KSUChannel], default="stable")
     parser.add_argument("--workspace", default=os.environ.get("GKI_WORKSPACE", "/tmp/gki-build"))
     parser.add_argument("--preflight-only", action="store_true",
@@ -25,15 +25,10 @@ def main(argv=None):
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
     args = parse_args(argv)
     config = BuildConfig(args.sukisu_channel)
-    gki = resolve_gki()
-    config.gki_tag = gki.tag
-    config.gki_commit = gki.commit
-    config.kernel_version = gki.kernel_version
-    config.manifest_branch = gki.manifest_branch
     config.sukisu_tag, config.sukisu_commit = resolve_sukisu(config.sukisu_channel)
-    logging.info("GKI %s %s %s; manifest %s; SukiSU %s %s",
-                 config.kernel_version, config.gki_tag, config.gki_commit,
-                 config.manifest_branch, config.sukisu_tag or "dev", config.sukisu_commit)
+    logging.info("GKI %s %s; SukiSU %s %s",
+                 config.kernel_version, config.gki_commit,
+                 config.sukisu_tag or "dev", config.sukisu_commit)
     builder = KernelBuilder(config, args.workspace)
     result = builder.build(preflight_only=args.preflight_only)
     if args.output_json:

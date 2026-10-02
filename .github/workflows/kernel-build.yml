@@ -38,7 +38,7 @@ jobs:
           df -h . /tmp
       - name: Run builder tests
         run: python3 -m unittest discover -s .github/workflows/scripts/tests -v
-      - name: Integrate the latest android13-5.15 stable and compile
+      - name: Integrate the pinned source stack and compile
         shell: bash
         run: |
           set -euo pipefail
@@ -46,7 +46,6 @@ jobs:
             --sukisu-channel "$INPUT_SUKISU_CHANNEL" \
             --workspace "$GKI_WORKSPACE"
       - name: Publish boot.img and AnyKernel3.zip
-        id: publish
         shell: bash
         run: |
           set -euo pipefail
@@ -55,12 +54,9 @@ jobs:
           cp "$GKI_WORKSPACE/AnyKernel3.zip" artifacts/AnyKernel3.zip
           find artifacts -type f -printf '%p\n' | sort
           test "$(find artifacts -type f | wc -l)" -eq 2
-          name="$(tr -d '\r\n' < "$GKI_WORKSPACE/artifact_stem.txt")"
-          test -n "$name"
-          echo "name=$name" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v7
         with:
-          name: ${{ steps.publish.outputs.name }}
+          name: android13-5.15.211-sukisu-${{ inputs.sukisu_channel }}
           path: |
             artifacts/boot.img
             artifacts/AnyKernel3.zip

@@ -7,8 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass, field
-from config import (ANDROID_FAMILY, BuildConfig, KSU_REPO_CONFIG, SUSFS_REPO_CONFIG,
-                   SUKISU_PATCH_REPO_CONFIG, ANYKERNEL_CONFIG, SUPPORTED_SUKISU_UAPI,
+from config import (BuildConfig, KSU_REPO_CONFIG, SUSFS_REPO_CONFIG, SUKISU_PATCH_REPO_CONFIG,
+                   ANYKERNEL_CONFIG, SUPPORTED_SUKISU_UAPI,
                    SUSFS_REVISION, SUKISU_PATCH_REVISION, REPO_ROOT)
 from susfs_integration import select_mount_patch
 from patch_plan import make_patch_plan
@@ -106,44 +106,6 @@ class KernelBuilder:
         "CONFIG_DEFAULT_CUBIC": "n",
         "CONFIG_DEFAULT_TCP_CONG": '"bbr3"',
         "CONFIG_NET_SCH_FQ": "y",
-    }
-
-    # HZ 250 and PREEMPT stay. Vendor drivers are timed for that GKI model.
-    # KASAN, UBSAN, KFENCE and the allocator/scheduler debug options in
-    # gki_defconfig are off. BBRv3 is paced only when the default qdisc is fq.
-    PERF_CONFIG = {
-        "CONFIG_HZ_250": "y",
-        "CONFIG_PREEMPT": "y",
-        "CONFIG_ENERGY_MODEL": "y",
-        "CONFIG_SCHED_MC": "y",
-        "CONFIG_LTO_CLANG_THIN": "y",
-        "CONFIG_LTO_CLANG_FULL": "n",
-        "CONFIG_WQ_POWER_EFFICIENT_DEFAULT": "y",
-        "CONFIG_NET_SCH_DEFAULT": "y",
-        "CONFIG_DEFAULT_FQ": "y",
-        "CONFIG_SLAB_MERGE_DEFAULT": "y",
-        "CONFIG_SLUB_DEBUG": "n",
-        "CONFIG_SLUB_DEBUG_ON": "n",
-        "CONFIG_SCHEDSTATS": "n",
-        "CONFIG_SCHED_DEBUG": "n",
-        "CONFIG_DEBUG_MISC": "n",
-        "CONFIG_DEBUG_PREEMPT": "n",
-        "CONFIG_PROVE_LOCKING": "n",
-        "CONFIG_LOCK_STAT": "n",
-        "CONFIG_DEBUG_SPINLOCK": "n",
-        "CONFIG_DEBUG_MUTEXES": "n",
-        "CONFIG_DEBUG_ATOMIC_SLEEP": "n",
-        "CONFIG_KASAN": "n",
-        "CONFIG_KASAN_HW_TAGS": "n",
-        "CONFIG_KASAN_VMALLOC": "n",
-        "CONFIG_UBSAN": "n",
-        "CONFIG_KFENCE": "n",
-        "CONFIG_PAGE_OWNER": "n",
-        "CONFIG_PAGE_PINNER": "n",
-        "CONFIG_TRACE_MMIO_ACCESS": "n",
-        "CONFIG_INIT_ON_ALLOC_DEFAULT_ON": "n",
-        "CONFIG_DEBUG_INFO_BTF": "n",
-        "CONFIG_DEBUG_INFO_BTF_MODULES": "n",
     }
 
     def __init__(self, config: BuildConfig, workspace: str):
@@ -612,7 +574,6 @@ class KernelBuilder:
             "CONFIG_CPU_FREQ_GOV_ONDEMAND": "n",
             "CONFIG_CPU_FREQ_GOV_USERSPACE": "n",
         })
-        updates.update(self.PERF_CONFIG)
         self._upsert_defconfig(updates)
         self._configure_zram()
 
@@ -799,30 +760,6 @@ class KernelBuilder:
             "CONFIG_DEFAULT_TCP_CONG": '"bbr3"',
             "CONFIG_KPM": "n",
             "CONFIG_CRYPTO_LZ4": "y",
-            "CONFIG_HZ_250": "y",
-            "CONFIG_HZ": "250",
-            "CONFIG_PREEMPT": "y",
-            "CONFIG_BPF_SYSCALL": "y",
-            "CONFIG_CFI_CLANG": "y",
-            "CONFIG_KPROBES": "y",
-            "CONFIG_SHADOW_CALL_STACK": "y",
-            "CONFIG_LTO_CLANG_THIN": "y",
-            "CONFIG_LTO_CLANG_FULL": "n",
-            "CONFIG_WQ_POWER_EFFICIENT_DEFAULT": "y",
-            "CONFIG_NET_SCH_DEFAULT": "y",
-            "CONFIG_DEFAULT_FQ": "y",
-            "CONFIG_DEFAULT_NET_SCH": '"fq"',
-            "CONFIG_SLAB_MERGE_DEFAULT": "y",
-            "CONFIG_SLUB_DEBUG": "n",
-            "CONFIG_SCHEDSTATS": "n",
-            "CONFIG_SCHED_DEBUG": "n",
-            "CONFIG_KASAN": "n",
-            "CONFIG_UBSAN": "n",
-            "CONFIG_KFENCE": "n",
-            "CONFIG_PAGE_OWNER": "n",
-            "CONFIG_INIT_ON_ALLOC_DEFAULT_ON": "n",
-            "CONFIG_DEBUG_INFO": "n",
-            "CONFIG_DEBUG_INFO_BTF": "n",
         }
         for symbol in ("BIC", "HTCP", "WESTWOOD", "VEGAS", "VENO", "HYBLA",
                        "ILLINOIS", "DCTCP", "CDG", "NV", "CUBIC"):
@@ -1027,8 +964,7 @@ class KernelBuilder:
             f"- Status: {'success' if success else 'failed'}",
             f"- Message: {message or ('Build succeeded' if success else 'Build failed')}",
             f"- Build timestamp (UTC): {datetime.now(timezone.utc).isoformat()}",
-            f"- Android family: {ANDROID_FAMILY}",
-            f"- GKI tag: `{self.config.gki_tag}`",
+            "- Android family: android13-5.15.211",
             f"- GKI exact commit: `{self.config.gki_commit}`",
             f"- Kernel version: {self.config.kernel_version}",
             f"- Manifest branch: `{self.config.manifest_branch}`",
@@ -1045,12 +981,10 @@ class KernelBuilder:
             f"- Applied tweak patches: {', '.join(self.applied_tweak_patches) or 'none'}",
             f"- Other integration patches: {', '.join(self.applied_integration_patches)}",
             "- ZRAM: lz4kd default, lz4 available, other backends removed",
-            "- LZ4 library: 1.10.0, arm64 NEON decompress, 1KB hash table for 4KB zram pages",
+            "- LZ4 library: 1.9.4, 1KB hash table for 4KB zram pages",
             "- KPM: disabled",
             "- Governors kept: schedutil, performance. I/O kept: none, mq-deadline",
-            "- Performance: thin LTO, -O2, HZ 250, PREEMPT, fq default qdisc",
-            "- Disabled for speed and power: KASAN, UBSAN, KFENCE, init-on-alloc, schedstats, SLUB debug",
-            "- Struct layout: icsk_ca_priv stays 104 bytes so the congestion-control ABI does not move",
+            "- Struct layout: icsk_ca_priv stays 104 bytes so vendor module CRCs still match",
             f"- Compiler: {compiler_version}",
             f"- Kernel Image SHA256: `{image_sha}`",
             "- SUSFS profile: mount-only (core + SUS_MOUNT)",

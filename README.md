@@ -1,22 +1,19 @@
-# Xiaomi 13 Ultra kernel: latest android13-5.15, SukiSU, SUSFS
+# Xiaomi 13 Ultra kernel: android13-5.15.211, SukiSU, SUSFS
 
 One GitHub Actions build. It produces a GKI-derived arm64 kernel for the
 Xiaomi 13 Ultra (ishtar) on HyperOS 3 and uploads two files: `boot.img` and
 `AnyKernel3.zip`.
 
-Each run resolves Google's newest official `android13-5.15.<sublevel>_rNN`
-tag, peels it to a commit, and syncs the newest
-`common-android13-5.15-YYYY-MM` manifest branch for the toolchain. As of
-this tree, that tag is `android13-5.15.216_r00`
-(`5bfe2b8c1439354d25dc5b1779cd0bb75bb90a7f`). The resolver asks again at
-build time, so a newer point release is picked up without editing the
-workflow.
+The source pin is the commit that already booted this phone:
 
-The kernel release string includes that sublevel
-(`5.15.<sublevel>-android13-8-g<commit>`). Vendor modules built for a
-different sublevel, including the 5.15.211 modules on a phone that last
-booted `5.15.211-android13-8-gdc9467e8f9bf`, do not load. Flash this only
-when the installed vendor modules match the sublevel the build resolved.
+`5.15.211-android13-8-gdc9467e8f9bf`
+
+`dc9467e8f9bfdec0d012f9345ac5f12f63dc7eba`
+
+A newer android13-5.15 point release, including `android13-5.15.216_r00`,
+changes that release string. Vendor modules are built against the string
+above. They refuse to load, and the phone stays on the Xiaomi logo. This
+tree builds that one revision and no other kernel version.
 
 ## What the kernel contains
 
@@ -28,24 +25,23 @@ when the installed vendor modules match the sublevel the build resolved.
   The SUSFS revision is pinned in the builder.
 - KPM is forced off.
 - ZRAM is built in. The only backends are `lz4kd` (default) and `lz4`.
-- LZ4 in the kernel is 1.10.0, with the arm64 NEON decompressor and a 1KB
-  hash table for 4KB zram pages.
+- LZ4 in the kernel is updated to 1.9.4, with a 1KB hash table for 4KB zram
+  pages. Public 1.10.0 backports for this tree delete the in-tree sources and
+  apply with fuzz. They are not used.
 - TCP congestion is BBRv3 by default, with stock BBRv1 still built in.
   Reno stays in the core stack. Cubic, Westwood, and the other optional
-  algorithms are turned off. The default qdisc is `fq`, which is what
-  BBRv3 needs in order to pace.
+  algorithms are turned off. FQ pacing stays on.
 - The BBRv3 patch is `patches/bbr/0001-bbrv3-android-kabi.patch`. It keeps
   `icsk_ca_priv` at 104 bytes and hides the extra fields from genksyms.
-  A newer GKI sublevel still changes the release string. It does not, by
-  itself, grow that array. Replacing the patch with a backport that grows
-  the array, or that drops the `__GENKSYMS__` guards, breaks vendor-module
-  CRCs.
+  Replacing it with a backport that grows that array, or that drops the
+  `__GENKSYMS__` guards, breaks vendor-module CRCs and reproduces the logo hang.
 
 ## Patches that stay
 
 Every patch is applied with `git apply --check` and then `git apply`. A
-reject fails the build. Nothing is applied with fuzz. The LZ4, ZRAM, BBRv3,
-and tweak patches all apply on android13-5.15.216.
+reject fails the build. Nothing is applied with fuzz.
+
+The tweak set is the one that was on the booting 5.15.211 build, minus one:
 
 | Patch | Why it stays |
 |---|---|
@@ -63,25 +59,21 @@ line. It is not in the tree.
 
 ## Performance and efficiency
 
-- Clang thin LTO. `gki_defconfig` selects full LTO; this build switches it
-  to thin. The compiler flag stays `-O2`
-  (`CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE`). The LZ4 objects themselves are
-  built with `-O3`.
-- `HZ` 250 and `PREEMPT` stay at the GKI values.
-- CPU governors: `schedutil` and `performance`. Powersave, conservative,
-  ondemand, and userspace are off. `ENERGY_MODEL` and `SCHED_MC` stay on.
-- Workqueues that are marked power-efficient use that mode by default.
-- I/O: `none` and `mq-deadline`. BFQ and kyber are off. Slab caches are
-  allowed to merge.
-- ZRAM uses lz4kd. The LZ4 fallback uses the 1KB hash table above.
-- These GKI debug options are off: KASAN (including hardware tags), UBSAN,
-  KFENCE, page owner, init-on-alloc, SLUB debug, schedstats, scheduler
-  debug, and BTF. BPF, CFI, kprobes, and the shadow call stack stay on.
-  KSU needs kprobes. Android needs BPF.
+The build keeps the settings the booting kernel used, and drops options this
+phone does not need:
 
-KMI symbol enforcement is turned off so this defconfig can compile. The
-build checks that `icsk_ca_priv` is still the 104-byte array after the
-patches.
+- Clang thin LTO, `CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE`, no debug info.
+- `HZ` 250 and `PREEMPT` stay at the GKI values. Changing them changes
+  timing that vendor drivers assume.
+- CPU governors: `schedutil` and `performance`. Powersave, conservative,
+  ondemand, and userspace are off.
+- I/O: `none` and `mq-deadline`. BFQ and kyber are off. The device also has
+  its own vendor I/O module.
+- ZRAM uses lz4kd. The LZ4 fallback uses the smaller hash table above.
+
+KMI symbol enforcement is turned off so this defconfig can compile. That is
+not a claim that vendor modules will load. The build checks that
+`icsk_ca_priv` is still the 104-byte array after the patches.
 
 ## GitHub Actions
 
@@ -90,15 +82,16 @@ Run **Kernel Build** from the Actions tab. The only input is
 
 The Ubuntu 24.04 job syncs the AOSP projects this one kernel needs, runs the
 unit tests, compiles with the Clang version named in that manifest, and
-uploads `boot.img` and `AnyKernel3.zip`. The artifact name follows the
-resolved sublevel, for example `android13-5.15.216-sukisu-stable`.
-`BUILD_INFO.md` is written in the workspace for the log. It is not a
-success artifact. A failed run uploads that note, `.config`, and any
-`.rej` files.
+uploads `boot.img` and `AnyKernel3.zip`. The booting kernel was built with
+Clang `r450784e`. `BUILD_INFO.md` is written in
+the workspace for the log. It is not a success artifact. A failed run
+uploads that note, `.config`, and any `.rej` files.
 
-`boot.img` is mkbootimg header version 4, kernel only (the generic ramdisk
-stays in `init_boot`), then an AVB hash footer for a 64MiB boot partition
-signed with a generated test key.
+`boot.img` is the same layout that booted before: mkbootimg header version
+4, kernel only (the generic ramdisk stays in `init_boot`), then an AVB hash
+footer for a 64MiB boot partition signed with a generated test key.
 
 This repository is maintained for that GitHub job. The Windows checkout is
-not a kernel build host.
+not a kernel build host. Do not add a second kernel version, a second
+workflow input, or another compression or congestion algorithm without a
+boot test on this phone.

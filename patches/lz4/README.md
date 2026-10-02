@@ -1,16 +1,15 @@
-# LZ4 1.10.0
+# LZ4 1.9.4
 
-`0001-lz4-1.10.0.patch` replaces `lib/lz4` and `include/linux/lz4.h` with
-upstream LZ4 1.10.0 and the arm64 NEON decompressor. `git apply --check`
-accepts it on android13-5.15.216 with no fuzz.
+`0001-lz4-1.9.4.patch` updates `lib/lz4` and `include/linux/lz4.h` on
+android13-5.15.211. `LZ4_MEMORY_USAGE` is 10, a 1KB hash table, because
+zram pages are 4KB.
 
-The Makefile compiles the library with `-O3`, freestanding mode, the fast
-decode loop, and `-DLZ4_MEMORY_USAGE=10`. That is a 1KB hash table. ZRAM
-pages are 4KB, so the upstream default of 16KB (usage 14) is larger than
-the page it compresses.
+The patch is the SukiSU 1.9.4 update, retargeted so `git apply` accepts
+this exact kernel with no fuzz. Three context fixes were required: the
+Makefile SPDX line is already in 5.15.211, one header hunk was
+whitespace only and named the wrong following function, and Android has
+three extra comment lines inside `LZ4_decompress_generic`.
 
-Decompress call sites in `crypto/lz4.c`, `crypto/lz4hc.c`,
-`fs/f2fs/compress.c`, and `fs/incfs/data_mgmt.c` use
-`LZ4_arm64_decompress_safe` when `CONFIG_ARM64` and
-`CONFIG_KERNEL_MODE_NEON` are set. The other path stays the 4-argument
-`LZ4_decompress_safe`.
+LZ4 1.10.0 is newer upstream. The 5.15 ports that advertise it delete
+the in-tree sources and apply with fuzz. Do not replace this patch with
+one of those.
