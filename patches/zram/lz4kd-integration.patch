@@ -1,0 +1,163 @@
+From: GKI build maintainers <gki-builder@localhost>
+Subject: [PATCH] zram: offer lz4kd and lz4 only
+
+Source: https://github.com/ShirkNeko/SukiSU_patch
+Reference: 547ae94bcaec53d030398f857950c64662043a5d
+Base: android13-5.15.211 (dc9467e8f9bf)
+ZRAM advertises lz4 and lz4kd. lz4kd is the default. This patch does not
+touch kernel/module.c and does not add LZ4K.
+
+---
+diff --git a/crypto/Kconfig b/crypto/Kconfig
+index 4b28418..fc5fade 100644
+--- a/crypto/Kconfig
++++ b/crypto/Kconfig
+@@ -1819,6 +1819,14 @@ config CRYPTO_LZ4
+ 	help
+ 	  This is the LZ4 algorithm.
+ 
++config CRYPTO_LZ4KD
++	tristate "LZ4KD compression algorithm"
++	select CRYPTO_ALGAPI
++	select LZ4KD_COMPRESS
++	select LZ4KD_DECOMPRESS
++	help
++	  This is the LZ4KD algorithm.
++
+ config CRYPTO_LZ4HC
+ 	tristate "LZ4HC compression algorithm"
+ 	select CRYPTO_ALGAPI
+diff --git a/crypto/Makefile b/crypto/Makefile
+index e726f53..b07074b 100644
+--- a/crypto/Makefile
++++ b/crypto/Makefile
+@@ -155,6 +155,7 @@ obj-$(CONFIG_CRYPTO_AUTHENC) += authenc.o authencesn.o
+ obj-$(CONFIG_CRYPTO_LZO) += lzo.o lzo-rle.o
+ obj-$(CONFIG_CRYPTO_LZ4) += lz4.o
+ obj-$(CONFIG_CRYPTO_LZ4HC) += lz4hc.o
++obj-$(CONFIG_CRYPTO_LZ4KD) += lz4kd.o
+ obj-$(CONFIG_CRYPTO_XXHASH) += xxhash_generic.o
+ obj-$(CONFIG_CRYPTO_842) += 842.o
+ obj-$(CONFIG_CRYPTO_RNG2) += rng.o
+diff --git a/drivers/block/zram/Kconfig b/drivers/block/zram/Kconfig
+index 668c6bf..c1b29ad 100644
+--- a/drivers/block/zram/Kconfig
++++ b/drivers/block/zram/Kconfig
+@@ -2,7 +2,7 @@
+ config ZRAM
+ 	tristate "Compressed RAM block device support"
+ 	depends on BLOCK && SYSFS && ZSMALLOC && CRYPTO
+-	depends on CRYPTO_LZO || CRYPTO_ZSTD || CRYPTO_LZ4 || CRYPTO_LZ4HC || CRYPTO_842
++	depends on CRYPTO_LZ4 || CRYPTO_LZ4KD
+ 	help
+ 	  Creates virtual block devices called /dev/zramX (X = 0, 1, ...).
+ 	  Pages written to these disks are compressed and stored in memory
+@@ -14,45 +14,14 @@ config ZRAM
+ 
+ 	  See Documentation/admin-guide/blockdev/zram.rst for more information.
+ 
+-choice
+-	prompt "Default zram compressor"
+-	default ZRAM_DEF_COMP_LZORLE
+-	depends on ZRAM
+-
+-config ZRAM_DEF_COMP_LZORLE
+-	bool "lzo-rle"
+-	depends on CRYPTO_LZO
+-
+-config ZRAM_DEF_COMP_ZSTD
+-	bool "zstd"
+-	depends on CRYPTO_ZSTD
+-
+-config ZRAM_DEF_COMP_LZ4
+-	bool "lz4"
+-	depends on CRYPTO_LZ4
+-
+-config ZRAM_DEF_COMP_LZO
+-	bool "lzo"
+-	depends on CRYPTO_LZO
+-
+-config ZRAM_DEF_COMP_LZ4HC
+-	bool "lz4hc"
+-	depends on CRYPTO_LZ4HC
+-
+-config ZRAM_DEF_COMP_842
+-	bool "842"
+-	depends on CRYPTO_842
+-
+-endchoice
++config ZRAM_DEF_COMP_LZ4KD
++	bool "lz4kd"
++	depends on ZRAM && CRYPTO_LZ4KD
++	default y
+ 
+ config ZRAM_DEF_COMP
+ 	string
+-	default "lzo-rle" if ZRAM_DEF_COMP_LZORLE
+-	default "zstd" if ZRAM_DEF_COMP_ZSTD
+-	default "lz4" if ZRAM_DEF_COMP_LZ4
+-	default "lzo" if ZRAM_DEF_COMP_LZO
+-	default "lz4hc" if ZRAM_DEF_COMP_LZ4HC
+-	default "842" if ZRAM_DEF_COMP_842
++	default "lz4kd"
+ 
+ config ZRAM_WRITEBACK
+        bool "Write back incompressible or idle page to backing device"
+diff --git a/drivers/block/zram/zcomp.c b/drivers/block/zram/zcomp.c
+index 0916de9..f5afafc 100644
+--- a/drivers/block/zram/zcomp.c
++++ b/drivers/block/zram/zcomp.c
+@@ -15,20 +15,10 @@
+ #include "zcomp.h"
+ 
+ static const char * const backends[] = {
+-#if IS_ENABLED(CONFIG_CRYPTO_LZO)
+-	"lzo",
+-	"lzo-rle",
+-#endif
+ #if IS_ENABLED(CONFIG_CRYPTO_LZ4)
+ 	"lz4",
+ #endif
+-#if IS_ENABLED(CONFIG_CRYPTO_LZ4HC)
+-	"lz4hc",
+-#endif
+-#if IS_ENABLED(CONFIG_CRYPTO_842)
+-	"842",
+-#endif
+-#if IS_ENABLED(CONFIG_CRYPTO_ZSTD)
+-	"zstd",
++#if IS_ENABLED(CONFIG_CRYPTO_LZ4KD)
++	"lz4kd",
+ #endif
+ };
+ 
+diff --git a/lib/Kconfig b/lib/Kconfig
+index 659129e..f49b768 100644
+--- a/lib/Kconfig
++++ b/lib/Kconfig
+@@ -337,6 +337,12 @@ config LZ4HC_COMPRESS
+ config LZ4_DECOMPRESS
+ 	tristate
+ 
++config LZ4KD_COMPRESS
++	tristate
++
++config LZ4KD_DECOMPRESS
++	tristate
++
+ config ZSTD_COMPRESS
+ 	select XXHASH
+ 	tristate
+diff --git a/lib/Makefile b/lib/Makefile
+index 2420b4e..bd583fb 100644
+--- a/lib/Makefile
++++ b/lib/Makefile
+@@ -190,6 +190,8 @@ obj-$(CONFIG_LZO_DECOMPRESS) += lzo/
+ obj-$(CONFIG_LZ4_COMPRESS) += lz4/
+ obj-$(CONFIG_LZ4HC_COMPRESS) += lz4/
+ obj-$(CONFIG_LZ4_DECOMPRESS) += lz4/
++obj-$(CONFIG_LZ4KD_COMPRESS) += lz4kd/
++obj-$(CONFIG_LZ4KD_DECOMPRESS) += lz4kd/
+ obj-$(CONFIG_ZSTD_COMPRESS) += zstd/
+ obj-$(CONFIG_ZSTD_DECOMPRESS) += zstd/
+ obj-$(CONFIG_XZ_DEC) += xz/
