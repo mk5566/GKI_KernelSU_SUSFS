@@ -765,12 +765,12 @@ int LZ4_sizeofState(void) { return sizeof(LZ4_stream_t); }
 extern "C" {
 #endif
 
-int LZ4_compress_forceExtDict (LZ4_stream_t* LZ4_dict, const char* source, char* dest, int srcSize);
+static __maybe_unused int LZ4_compress_forceExtDict (LZ4_stream_t* LZ4_dict, const char* source, char* dest, int srcSize);
 
-int LZ4_decompress_safe_forceExtDict(const char* source, char* dest,
+static __maybe_unused int LZ4_decompress_safe_forceExtDict(const char* source, char* dest,
                                      int compressedSize, int maxOutputSize,
                                      const void* dictStart, size_t dictSize);
-int LZ4_decompress_safe_partial_forceExtDict(const char* source, char* dest,
+static __maybe_unused int LZ4_decompress_safe_partial_forceExtDict(const char* source, char* dest,
                                      int compressedSize, int targetOutputSize, int dstCapacity,
                                      const void* dictStart, size_t dictSize);
 #if defined (__cplusplus)
@@ -1590,7 +1590,7 @@ int LZ4_freeStream (LZ4_stream_t* LZ4_stream)
 
 typedef enum { _ld_fast, _ld_slow } LoadDict_mode_e;
 #define HASH_UNIT sizeof(reg_t)
-int LZ4_loadDict_internal(LZ4_stream_t* LZ4_dict,
+static __maybe_unused int LZ4_loadDict_internal(LZ4_stream_t* LZ4_dict,
                     const char* dictionary, int dictSize,
                     LoadDict_mode_e _ld)
 {
@@ -1790,7 +1790,7 @@ int LZ4_compress_fast_continue (LZ4_stream_t* LZ4_stream,
 
 
 /* Hidden debug function, to force-test external dictionary mode */
-int LZ4_compress_forceExtDict (LZ4_stream_t* LZ4_dict, const char* source, char* dest, int srcSize)
+static __maybe_unused int LZ4_compress_forceExtDict (LZ4_stream_t* LZ4_dict, const char* source, char* dest, int srcSize)
 {
     LZ4_stream_t_internal* const streamPtr = &LZ4_dict->internal_donotuse;
     int result;
@@ -2526,7 +2526,7 @@ static int LZ4_decompress_safe_partial_withSmallPrefix(const char* source, char*
 }
 
 LZ4_FORCE_O2
-int LZ4_decompress_safe_forceExtDict(const char* source, char* dest,
+static __maybe_unused int LZ4_decompress_safe_forceExtDict(const char* source, char* dest,
                                      int compressedSize, int maxOutputSize,
                                      const void* dictStart, size_t dictSize)
 {
@@ -2537,7 +2537,7 @@ int LZ4_decompress_safe_forceExtDict(const char* source, char* dest,
 }
 
 LZ4_FORCE_O2
-int LZ4_decompress_safe_partial_forceExtDict(const char* source, char* dest,
+static __maybe_unused int LZ4_decompress_safe_partial_forceExtDict(const char* source, char* dest,
                                      int compressedSize, int targetOutputSize, int dstCapacity,
                                      const void* dictStart, size_t dictSize)
 {
