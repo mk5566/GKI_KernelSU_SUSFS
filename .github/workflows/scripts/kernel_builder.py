@@ -7,8 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass, field
-from config import (BuildConfig, KSU_REPO_CONFIG, SUSFS_REPO_CONFIG, SUKISU_PATCH_REPO_CONFIG,
-                   ANYKERNEL_CONFIG, SUPPORTED_SUKISU_UAPI,
+from config import (ANDROID_FAMILY, BuildConfig, KSU_REPO_CONFIG, SUSFS_REPO_CONFIG,
+                   SUKISU_PATCH_REPO_CONFIG, ANYKERNEL_CONFIG, SUPPORTED_SUKISU_UAPI,
                    SUSFS_REVISION, SUKISU_PATCH_REVISION, REPO_ROOT)
 from susfs_integration import select_mount_patch
 from patch_plan import make_patch_plan
@@ -964,7 +964,8 @@ class KernelBuilder:
             f"- Status: {'success' if success else 'failed'}",
             f"- Message: {message or ('Build succeeded' if success else 'Build failed')}",
             f"- Build timestamp (UTC): {datetime.now(timezone.utc).isoformat()}",
-            "- Android family: android13-5.15.211",
+            f"- Android family: {ANDROID_FAMILY}",
+            f"- GKI tag: `{self.config.gki_tag}`",
             f"- GKI exact commit: `{self.config.gki_commit}`",
             f"- Kernel version: {self.config.kernel_version}",
             f"- Manifest branch: `{self.config.manifest_branch}`",

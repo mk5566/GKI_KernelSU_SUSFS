@@ -10,19 +10,38 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from build import parse_args
-from config import ANDROID_FAMILY, BuildConfig, GKI_COMMIT, KERNEL_VERSION, REPO_ROOT
+from config import ANDROID_FAMILY, BuildConfig, REPO_ROOT
 from kernel_builder import KernelBuilder
 from patch_plan import make_patch_plan
-from target import resolve_sukisu
+from target import choose_gki_tag, choose_manifest_branch, peeled_commit, resolve_sukisu
 
 
 class ResolverTests(unittest.TestCase):
-    def test_gki_pin_is_the_booting_5_15_211_commit(self):
+    def test_latest_android13_5_15_point_release_wins(self):
         self.assertEqual(ANDROID_FAMILY, "android13-5.15")
-        self.assertEqual(KERNEL_VERSION, "5.15.211")
-        self.assertEqual(GKI_COMMIT, "dc9467e8f9bfdec0d012f9345ac5f12f63dc7eba")
-        self.assertEqual(BuildConfig().gki_commit, GKI_COMMIT)
-        self.assertEqual(BuildConfig("dev").artifact_stem, "android13-5.15.211-sukisu-dev")
+        refs = {
+            "android13-5.15.211_r00": "a" * 40,
+            "android13-5.15.211_r00^{}": "b" * 40,
+            "android13-5.15.216_r00": "c" * 40,
+            "android13-5.15.216_r00^{}": "d" * 40,
+            "android13-5.15.216_r01": "e" * 40,
+            "android14-5.15.300_r00": "f" * 40,
+        }
+        self.assertEqual(choose_gki_tag(refs), "android13-5.15.216_r01")
+        self.assertEqual(peeled_commit(refs, "android13-5.15.216_r00"), "d" * 40)
+        branches = "\n".join([
+            "1" * 40 + "\trefs/heads/common-android13-5.15-2026-06",
+            "2" * 40 + "\trefs/heads/common-android13-5.15-2026-09",
+            "3" * 40 + "\trefs/heads/common-android13-5.15-lts",
+            "4" * 40 + "\trefs/heads/common-android14-6.1-2026-09",
+        ])
+        self.assertEqual(choose_manifest_branch(branches), "common-android13-5.15-2026-09")
+        config = BuildConfig("dev", kernel_version="5.15.216",
+                             gki_tag="android13-5.15.216_r00",
+                             gki_commit="d" * 40,
+                             manifest_branch="common-android13-5.15-2026-09")
+        self.assertEqual(config.artifact_stem, "android13-5.15.216-sukisu-dev")
+        self.assertEqual(config.gki_commit, "d" * 40)
 
     def test_sukisu_stable_and_dev_are_immutable(self):
         payload = b'{"tag_name":"v4.2.0","draft":false,"prerelease":false}'

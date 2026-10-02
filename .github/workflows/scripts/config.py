@@ -1,4 +1,4 @@
-"""One kernel: the android13-5.15.211 GKI that boots Xiaomi 13 Ultra HyperOS 3."""
+"""One kernel: the newest official android13-5.15 GKI stable."""
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -10,12 +10,6 @@ class KSUChannel(str, Enum):
 
 
 ANDROID_FAMILY = "android13-5.15"
-# Device uname on the booting build: 5.15.211-android13-8-gdc9467e8f9bf.
-# A newer point release changes that release string, so vendor modules refuse
-# to load and the bootloader logo never hands off to the OS.
-GKI_COMMIT = "dc9467e8f9bfdec0d012f9345ac5f12f63dc7eba"
-KERNEL_VERSION = "5.15.211"
-MANIFEST_BRANCH = "common-android13-5.15-2026-09"
 KSU_REPO_CONFIG = {"repo_url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra.git"}
 # Upstream stable and development may expose different UAPI revisions.
 SUPPORTED_SUKISU_UAPI = frozenset({2, 4})
@@ -35,6 +29,10 @@ class BuildConfig:
     sukisu_channel: str = KSUChannel.STABLE.value
     sukisu_tag: str = ""
     sukisu_commit: str = ""
+    gki_tag: str = ""
+    gki_commit: str = ""
+    kernel_version: str = ""
+    manifest_branch: str = ""
 
     def __post_init__(self):
         self.sukisu_channel = KSUChannel(self.sukisu_channel).value
@@ -48,20 +46,9 @@ class BuildConfig:
         return f"gki-{ANDROID_FAMILY}"
 
     @property
-    def kernel_version(self):
-        return KERNEL_VERSION
-
-    @property
-    def gki_commit(self):
-        return GKI_COMMIT
-
-    @property
-    def manifest_branch(self):
-        return MANIFEST_BRANCH
-
-    @property
     def artifact_stem(self):
-        return f"{ANDROID_FAMILY}.{KERNEL_VERSION.rsplit('.', 1)[-1]}-sukisu-{self.sukisu_channel}"
+        sublevel = self.kernel_version.rsplit(".", 1)[-1]
+        return f"{ANDROID_FAMILY}.{sublevel}-sukisu-{self.sukisu_channel}"
 
     def get_susfs_patch_filename(self):
         return "50_add_susfs_in_gki-android13-5.15.patch"
@@ -71,8 +58,9 @@ class BuildConfig:
             "sukisu_channel": self.sukisu_channel,
             "sukisu_tag": self.sukisu_tag,
             "sukisu_commit": self.sukisu_commit,
-            "kernel_version": self.kernel_version,
+            "gki_tag": self.gki_tag,
             "gki_commit": self.gki_commit,
+            "kernel_version": self.kernel_version,
             "manifest_branch": self.manifest_branch,
             "artifact_stem": self.artifact_stem,
         }
