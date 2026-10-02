@@ -73,6 +73,32 @@ def resolve_gki():
     return GKITarget(tag, commit, f"5.15.{sublevel}", branch)
 
 
+SUSFS_URL = "https://github.com/ShirkNeko/susfs4ksu.git"
+SUKISU_PATCH_URL = "https://github.com/ShirkNeko/SukiSU_patch.git"
+
+
+def resolve_susfs(branch="gki-android13-5.15"):
+    output = _git("ls-remote", "--heads", SUSFS_URL, f"refs/heads/{branch}")
+    for line in output.splitlines():
+        parts = line.split("\t", 1)
+        if len(parts) == 2 and parts[1].strip() == f"refs/heads/{branch}":
+            sha = parts[0].strip()
+            if re.fullmatch(r"[0-9a-f]{40}", sha):
+                return sha
+    raise RuntimeError(f"Cannot resolve SUSFS branch HEAD: {branch}")
+
+
+def resolve_sukisu_patch(branch="main"):
+    output = _git("ls-remote", "--heads", SUKISU_PATCH_URL, f"refs/heads/{branch}")
+    for line in output.splitlines():
+        parts = line.split("\t", 1)
+        if len(parts) == 2 and parts[1].strip() == f"refs/heads/{branch}":
+            sha = parts[0].strip()
+            if re.fullmatch(r"[0-9a-f]{40}", sha):
+                return sha
+    raise RuntimeError(f"Cannot resolve SukiSU_patch branch HEAD: {branch}")
+
+
 def resolve_sukisu(channel):
     if channel == "dev":
         output = _git("ls-remote", "--symref", KSU_URL, "HEAD")
@@ -83,14 +109,29 @@ def resolve_sukisu(channel):
         return "", sha[1]
     if channel != "stable":
         raise ValueError(f"Unknown SukiSU channel: {channel}")
-    request = urllib.request.Request(
-        "https://api.github.com/repos/SukiSU-Ultra/SukiSU-Ultra/releases/latest",
-        headers={"Accept": "application/vnd.github+json", "User-Agent": "gki-builder"})
-    with urllib.request.urlopen(request, timeout=30) as response:
-        release = json.load(response)
-    tag = release["tag_name"]
-    if release.get("draft") or release.get("prerelease") or not re.fullmatch(r"v?\d+(?:\.\d+)+", tag):
-        raise RuntimeError(f"SukiSU latest release is not a formal version: {tag}")
+    try:
+        request = urllib.request.Request(
+            "https://api.github.com/repos/SukiSU-Ultra/SukiSU-Ultra/releases/latest",
+            headers={"Accept": "application/vnd.github+json", "User-Agent": "gki-builder"})
+        with urllib.request.urlopen(request, timeout=30) as response:
+            release = json.load(response)
+        tag = release["tag_name"]
+        if release.get("draft") or release.get("prerelease") or not re.fullmatch(r"v?\d+(?:\.\d+)+", tag):
+            raise RuntimeError(f"SukiSU latest release is not a formal version: {tag}")
+    except Exception as e:
+        tags_output = _git("ls-remote", "--tags", KSU_URL)
+        all_tags = []
+        for line in tags_output.splitlines():
+            parts = line.split("\t", 1)
+            if len(parts) == 2 and parts[1].startswith("refs/tags/v"):
+                t = parts[1].removeprefix("refs/tags/").removesuffix("^{}")
+                if re.fullmatch(r"v?\d+(?:\.\d+)+", t):
+                    nums = [int(x) for x in re.sub(r"^v", "", t).split(".")]
+                    all_tags.append((nums, t))
+        if not all_tags:
+            raise RuntimeError(f"Cannot resolve SukiSU latest release: {e}")
+        tag = max(all_tags)[1]
+
     refs = parse_refs(_git("ls-remote", "--tags", KSU_URL, tag))
     commit = refs.get(tag + "^{}", refs.get(tag))
     if not commit or not re.fullmatch(r"[0-9a-f]{40}", commit):

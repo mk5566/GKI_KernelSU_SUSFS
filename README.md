@@ -4,12 +4,15 @@ One GitHub Actions build. It produces a GKI-derived arm64 kernel for the
 Xiaomi 13 Ultra (ishtar) on HyperOS 3 and uploads two files: `boot.img` and
 `AnyKernel3.zip`.
 
-Each run resolves Google's newest official `android13-5.15.<sublevel>_rNN`
-tag, peels it to a commit, and syncs the newest
-`common-android13-5.15-YYYY-MM` manifest branch for the toolchain. As of
-this tree, that tag is `android13-5.15.216_r00`
-(`5bfe2b8c1439354d25dc5b1779cd0bb75bb90a7f`). The resolver checks at build
-time so new point releases are picked up automatically.
+Each run dynamically resolves:
+- Google's newest official `android13-5.15.<sublevel>_rNN` GKI tag and peels it
+  to a commit. As of this tree, that tag is `android13-5.15.216_r00`.
+- The newest `common-android13-5.15-YYYY-MM` manifest branch for the matching
+  Clang toolchain.
+- SukiSU-Ultra (`stable` formal release or `dev` default branch HEAD).
+- SUSFS (newest `gki-android13-5.15` branch HEAD from `ShirkNeko/susfs4ksu`).
+- SukiSU patch helper (newest `main` branch HEAD from `ShirkNeko/SukiSU_patch`).
+- AnyKernel3 (newest `gki-2.0` branch from `WildPlusKernel/AnyKernel3`).
 
 The build strictly preserves the GKI ABI so pre-compiled vendor modules
 continue to load without symbol CRC or structure layout mismatches.
@@ -21,7 +24,7 @@ continue to load without symbol CRC or structure layout mismatches.
   a commit). The builder checks that the checkout matches that commit.
   Supported kernel UAPI revisions are 2 and 4.
 - SUSFS is mount-only: `CONFIG_KSU_SUSFS` and `CONFIG_KSU_SUSFS_SUS_MOUNT`.
-  The SUSFS revision is pinned in the builder.
+  Each run resolves the latest HEAD on `gki-android13-5.15`.
 - KPM is forced off.
 - ZRAM is built in. The backends are `lz4kd` (default) and `lz4`.
 - LZ4 in the kernel is 1.9.4 with a 1KB hash table for 4KB zram pages.

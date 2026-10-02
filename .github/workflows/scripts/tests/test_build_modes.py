@@ -13,7 +13,7 @@ from build import parse_args
 from config import ANDROID_FAMILY, BuildConfig, REPO_ROOT
 from kernel_builder import KernelBuilder
 from patch_plan import make_patch_plan
-from target import choose_gki_tag, choose_manifest_branch, peeled_commit, resolve_sukisu
+from target import choose_gki_tag, choose_manifest_branch, peeled_commit, resolve_sukisu, resolve_susfs, resolve_sukisu_patch
 
 
 class ResolverTests(unittest.TestCase):
@@ -52,6 +52,12 @@ class ResolverTests(unittest.TestCase):
         with patch("target._git", return_value="ref: refs/heads/main\tHEAD\n" +
                    "c" * 40 + "\tHEAD\n"):
             self.assertEqual(resolve_sukisu("dev"), ("", "c" * 40))
+
+    def test_susfs_and_patch_resolvers(self):
+        with patch("target._git", return_value="a" * 40 + "\trefs/heads/gki-android13-5.15\n"):
+            self.assertEqual(resolve_susfs(), "a" * 40)
+        with patch("target._git", return_value="b" * 40 + "\trefs/heads/main\n"):
+            self.assertEqual(resolve_sukisu_patch(), "b" * 40)
 
 
 class ModeTests(unittest.TestCase):

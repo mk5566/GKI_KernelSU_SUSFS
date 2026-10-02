@@ -263,13 +263,15 @@ class KernelBuilder:
         self._chdir(self.workspace)
 
     def _apply_susfs_commit(self):
-        self._checkout_commit(self.susfs_dir, SUSFS_REVISION, "SUSFS")
+        commit = self.config.susfs_commit or SUSFS_REVISION
+        self._checkout_commit(self.susfs_dir, commit, "SUSFS")
 
     def clone_repositories(self):
         logger.info("=== Cloning helper repositories ===")
         self._clone_or_update("SUSFS", self.susfs_dir, SUSFS_REPO_CONFIG["repo_url"], self.config.kernel_branch)
         self._clone_or_update("SukiSU Patch", self.sukisu_patch_dir, SUKISU_PATCH_REPO_CONFIG["repo_url"])
-        self._checkout_commit(self.sukisu_patch_dir, SUKISU_PATCH_REVISION, "SukiSU Patch")
+        patch_commit = self.config.sukisu_patch_commit or SUKISU_PATCH_REVISION
+        self._checkout_commit(self.sukisu_patch_dir, patch_commit, "SukiSU Patch")
         self._clone_or_update("AnyKernel3", self.anykernel_dir, ANYKERNEL_CONFIG["repo_url"], ANYKERNEL_CONFIG["branch"])
         self._apply_susfs_commit()
         logger.info("=== Helper repositories ready ===")
@@ -975,8 +977,8 @@ class KernelBuilder:
             f"- SukiSU exact commit: `{self.config.sukisu_commit}`",
             f"- SukiSU checkout: `{self._git_head(self.work_dir / 'KernelSU')}`",
             f"- SukiSU kernel UAPI: {self._read_ksu_uapi_version()}",
-            f"- SUSFS exact commit: `{SUSFS_REVISION}`",
-            f"- LZ4KD helper source commit: `{SUKISU_PATCH_REVISION}`",
+            f"- SUSFS exact commit: `{self.config.susfs_commit or SUSFS_REVISION}`",
+            f"- LZ4KD helper source commit: `{self.config.sukisu_patch_commit or SUKISU_PATCH_REVISION}`",
             "- TCP: BBRv3 default, stock BBRv1 built in, other congestion algorithms off",
             f"- Applied BBR patches: {', '.join(self.applied_bbr_patches) or 'none'}",
             f"- Applied tweak patches: {', '.join(self.applied_tweak_patches) or 'none'}",

@@ -14,7 +14,7 @@ KSU_REPO_CONFIG = {"repo_url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra.git
 # Upstream stable and development may expose different UAPI revisions.
 SUPPORTED_SUKISU_UAPI = frozenset({2, 4})
 # The mount-only port is reviewed against this exact SUSFS source revision.
-SUSFS_REVISION = "e565931d19256fd821ada01b35263506e7c7a364"
+SUSFS_REVISION = "687d2d18d94cb2e3e72d1074778d58384d58e379"
 SUSFS_REPO_CONFIG = {"repo_url": "https://github.com/ShirkNeko/susfs4ksu.git"}
 SUKISU_PATCH_REPO_CONFIG = {"repo_url": "https://github.com/ShirkNeko/SukiSU_patch.git"}
 SUKISU_PATCH_REVISION = "547ae94bcaec53d030398f857950c64662043a5d"
@@ -33,9 +33,15 @@ class BuildConfig:
     gki_commit: str = ""
     kernel_version: str = ""
     manifest_branch: str = ""
+    susfs_commit: str = ""
+    sukisu_patch_commit: str = ""
 
     def __post_init__(self):
         self.sukisu_channel = KSUChannel(self.sukisu_channel).value
+        if not self.susfs_commit:
+            self.susfs_commit = SUSFS_REVISION
+        if not self.sukisu_patch_commit:
+            self.sukisu_patch_commit = SUKISU_PATCH_REVISION
 
     @property
     def config_name(self):
@@ -62,5 +68,7 @@ class BuildConfig:
             "gki_commit": self.gki_commit,
             "kernel_version": self.kernel_version,
             "manifest_branch": self.manifest_branch,
+            "susfs_commit": self.susfs_commit,
+            "sukisu_patch_commit": self.sukisu_patch_commit,
             "artifact_stem": self.artifact_stem,
         }
