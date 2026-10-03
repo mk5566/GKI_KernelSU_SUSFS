@@ -160,6 +160,24 @@ class ModeTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "change.patch"):
                 builder._apply_patch_file(patch_file)
 
+    def test_builtin_zram_leaves_an_exact_empty_module_list(self):
+        with tempfile.TemporaryDirectory() as d:
+            builder = KernelBuilder(BuildConfig(), d)
+            defconfig = builder._defconfig_path()
+            defconfig.parent.mkdir(parents=True, exist_ok=True)
+            defconfig.write_text("CONFIG_ZRAM=m\n", encoding="utf-8")
+            android = builder.work_dir / "common/android"
+            android.mkdir(parents=True)
+            empty = android / "gki_aarch64_modules"
+            mixed = android / "gki_aarch64_modules_test"
+            empty.write_text("drivers/block/zram/zram.ko\nmm/zsmalloc.ko\n",
+                             encoding="utf-8")
+            mixed.write_text("drivers/block/zram/zram.ko\ndrivers/block/loop.ko\n",
+                             encoding="utf-8")
+            builder._configure_zram()
+            self.assertEqual(empty.read_bytes(), b"")
+            self.assertEqual(mixed.read_bytes(), b"drivers/block/loop.ko\n")
+
     def test_final_config_rejects_a_layout_that_is_not_this_kernel(self):
         with tempfile.TemporaryDirectory() as d:
             builder = KernelBuilder(BuildConfig(), d)

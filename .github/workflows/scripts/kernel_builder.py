@@ -603,7 +603,8 @@ class KernelBuilder:
                 lines = mod_list_file.read_text(encoding="utf-8").splitlines()
                 filtered = [l for l in lines if not any(x in l for x in ["zram", "zsmalloc"])]
                 if filtered != lines:
-                    mod_list_file.write_text("\n".join(filtered) + "\n", encoding="utf-8")
+                    content = "".join(line + "\n" for line in filtered)
+                    mod_list_file.write_text(content, encoding="utf-8", newline="\n")
                     logger.info(f"Removed built-in zram/zsmalloc from {mod_list_file.name}")
 
     def configure_kernel_name(self):

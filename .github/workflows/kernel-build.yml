@@ -74,6 +74,7 @@ jobs:
           path: |
             /tmp/gki-build/BUILD_INFO.md
             /tmp/gki-build/android13-5.15/out/android13-5.15/common/.config
+            /tmp/gki-build/android13-5.15/out/android13-5.15/common/Module.symvers
             /tmp/gki-build/android13-5.15/out/android13-5.15/dist/vmlinux.symvers
             /tmp/gki-build/**/*.rej
           if-no-files-found: warn
