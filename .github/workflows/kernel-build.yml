@@ -36,6 +36,15 @@ jobs:
             build-essential git curl zip unzip xz-utils openssl rsync bc bison flex \
             libssl-dev libelf-dev lz4 kmod zstd cpio
           df -h . /tmp
+      - name: Reserve memory for full LTO with GKI BTF metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo fallocate -l 12G /tmp/gki-link.swap
+          sudo chmod 600 /tmp/gki-link.swap
+          sudo mkswap /tmp/gki-link.swap
+          sudo swapon /tmp/gki-link.swap
+          free -h
       - name: Run builder tests
         run: python3 -m unittest discover -s .github/workflows/scripts/tests -v
       - name: Integrate the pinned source stack and compile
