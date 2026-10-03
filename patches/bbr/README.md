@@ -17,3 +17,10 @@ the socket's operations to built-in BBRv1 and initializes inline BBRv1 state.
 Both algorithms must be built in; the Kconfig dependency enforces this.
 Successful allocations are freed on release. No congestion callback is left
 pointing at missing v3 state.
+
+`0003-plb-pernet-initialization.patch` registers PLB before TCP and initializes
+its parameters in PLB's own namespace callback, after pernet core allocates
+the context. The original backport read an unallocated generic namespace
+slot from TCP's earlier callback. PLB registration now precedes TCP for the
+initial namespace and all later namespaces; lookups before registration
+return NULL.
