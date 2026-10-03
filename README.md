@@ -84,3 +84,23 @@ flashed kernel while testing. Boot-loop diagnosis needs the device model,
 ROM, failed build identity, and preferably the previous-boot panic/pstore
 record. No phone settings or flashed partitions are changed by this project
 repair.
+
+## Device validation
+
+On October 3, 2026, [build 37125240502](https://github.com/mk5566/GKI_KernelSU_SUSFS/actions/runs/37125240502)
+at `d6fec11` passed compilation, the module-order check, the final configuration
+checks and all 8,639 certified export CRCs. Its kernel temporarily booted a
+Xiaomi 13 Ultra (`ishtar`) running HyperOS 3 / Android 16 and reached Android
+with root access, enforcing SELinux and the same 404 vendor modules as the
+working fallback. WALT governors, OEM storage schedulers and FQ remained active.
+
+Both zram codecs round-tripped 8 MiB of mixed pages exactly; only lz4/lz4kd
+were listed, and deflate/lzo/zstd/lz4hc selections were rejected. Sixteen
+disposable network namespaces verified PLB allocation, initialization and
+isolation. Phone TCP sockets using the BBRv3 default echoed 1 MiB exactly.
+Temporary test devices and forwarding were removed; Android's zram0 stayed
+configured at 16 GiB. No partitions were flashed.
+
+These are boot and functional checks, not a long-duration stability test or
+a comparative performance benchmark. BBRv1 is available, but its allocation
+failure fallback was not forced during device testing.
