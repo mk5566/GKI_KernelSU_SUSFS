@@ -40,9 +40,11 @@ Extra root exports are permitted. This check covers the frozen module KMI;
 only device testing can establish bootability and runtime stability.
 
 The BBRv3 backport keeps `icsk_ca_priv` at 104 bytes. Private LZ4 1.10 does not
-replace vendor-visible `LZ4_stream_t` or exported `LZ4_*` functions. Debug
-symbols are omitted; GKI runtime diagnostics that affect structure layout or
-vendor interfaces stay at upstream defaults. CI build output is retained.
+replace vendor-visible `LZ4_stream_t` or exported `LZ4_*` functions. Certified
+DWARF/BTF metadata and runtime settings that affect vendor interfaces stay at
+upstream defaults. BTF module metadata affects `struct module` and cannot be
+disabled without changing vendor symbol CRCs. Routine root informational
+logging is disabled; CI build output is retained.
 
 ## Build and temporary boot testing
 

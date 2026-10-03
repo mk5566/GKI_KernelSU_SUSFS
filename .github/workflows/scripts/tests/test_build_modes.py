@@ -122,7 +122,9 @@ class ModeTests(unittest.TestCase):
             path = builder._defconfig_path()
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("CONFIG_TCP_CONG_CUBIC=y\nCONFIG_IOSCHED_BFQ=y\n"
-                            "CONFIG_CPU_FREQ_GOV_CONSERVATIVE=y\nCONFIG_KPM=y\n",
+                            "CONFIG_CPU_FREQ_GOV_CONSERVATIVE=y\nCONFIG_KPM=y\n"
+                            "CONFIG_DEBUG_INFO=y\nCONFIG_DEBUG_INFO_DWARF4=y\n"
+                            "CONFIG_DEBUG_INFO_BTF=y\nCONFIG_MODULE_ALLOW_BTF_MISMATCH=y\n",
                             encoding="utf-8")
             kconfig = builder.work_dir / "KernelSU/kernel/Kconfig"
             kconfig.parent.mkdir(parents=True, exist_ok=True)
@@ -143,6 +145,9 @@ class ModeTests(unittest.TestCase):
             self.assertIn("CONFIG_IOSCHED_BFQ=y", result)
             self.assertIn("CONFIG_CPU_FREQ_GOV_CONSERVATIVE=y", result)
             self.assertIn("CONFIG_KPM=n", result)
+            for symbol in ("DEBUG_INFO", "DEBUG_INFO_DWARF4", "DEBUG_INFO_BTF",
+                           "MODULE_ALLOW_BTF_MISMATCH"):
+                self.assertIn(f"CONFIG_{symbol}=y", result)
 
     def test_selected_patch_missing_and_conflict_are_fatal(self):
         with tempfile.TemporaryDirectory() as d:

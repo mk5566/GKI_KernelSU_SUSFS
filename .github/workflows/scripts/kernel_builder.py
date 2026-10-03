@@ -91,12 +91,8 @@ class KernelBuilder:
         "CONFIG_IP6_NF_MATCH_HL": "y",
         "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE": "y",
         "CONFIG_CC_OPTIMIZE_FOR_SIZE": None,
-        # Strip debug symbols to speed up build/link time and avoid disk bloat
-        "CONFIG_DEBUG_INFO": "n",
-        "CONFIG_DEBUG_INFO_NONE": "y",
-        "CONFIG_DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT": "n",
-        "CONFIG_DEBUG_INFO_DWARF4": "n",
-        "CONFIG_DEBUG_INFO_DWARF5": "n",
+        # Preserve certified DWARF/BTF defaults: BTF module metadata changes
+        # struct module and its transitive vendor symbol CRCs. It is not logging.
     }
 
     # BBRv3 is the default. Stock BBRv1 stays built in as the fallback.
@@ -636,7 +632,7 @@ class KernelBuilder:
             "CONFIG_DEFAULT_TCP_CONG": "Default TCP cong",
             "CONFIG_ZRAM": "ZRAM",
             "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE": "Optimize for performance",
-            "CONFIG_DEBUG_INFO_NONE": "Debug info disabled",
+            "CONFIG_DEBUG_INFO_BTF": "GKI BTF metadata",
         }
 
         logger.info("Key config status:")
@@ -721,6 +717,8 @@ class KernelBuilder:
             "CONFIG_CRYPTO_LZ4": "y",
             "CONFIG_MODVERSIONS": "y", "CONFIG_CFI_CLANG": "y",
             "CONFIG_LTO_CLANG_FULL": "y",
+            "CONFIG_DEBUG_INFO": "y", "CONFIG_DEBUG_INFO_BTF": "y",
+            "CONFIG_DEBUG_INFO_BTF_MODULES": "y",
         }
         for symbol in ("BIC", "HTCP", "WESTWOOD", "VEGAS", "VENO", "HYBLA",
                        "ILLINOIS", "DCTCP", "CDG", "NV", "CUBIC"):
@@ -908,7 +906,7 @@ class KernelBuilder:
             "- ZRAM crypto LZ4: official 1.10.0, private freestanding implementation",
             "- Exported GKI LZ4 library/header: unchanged",
             "- KPM: disabled",
-            "- Governors kept: schedutil, performance. I/O kept: none, mq-deadline",
+            "- CPU governors and I/O schedulers: certified GKI defaults preserved",
             f"- Certified GKI symbol CRCs matched: {self.abi_symbol_count}",
             f"- Boot packaging: {'device base image repacked' if self.config.base_boot else 'generic ramdisk-less GKI header v4; device ramdisk must be in init_boot'}",
             f"- Compiler: {compiler_version}",
