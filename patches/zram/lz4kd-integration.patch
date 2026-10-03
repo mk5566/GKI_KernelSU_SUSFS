@@ -104,10 +104,9 @@ index 668c6bf..c1b29ad 100644
  config ZRAM_WRITEBACK
         bool "Write back incompressible or idle page to backing device"
 diff --git a/drivers/block/zram/zcomp.c b/drivers/block/zram/zcomp.c
-index 0916de9..f5afafc 100644
 --- a/drivers/block/zram/zcomp.c
 +++ b/drivers/block/zram/zcomp.c
-@@ -15,20 +15,10 @@
+@@ -15,21 +15,11 @@
  #include "zcomp.h"
  
  static const char * const backends[] = {
@@ -131,6 +130,29 @@ index 0916de9..f5afafc 100644
  #endif
  };
  
+@@ -63,14 +53,14 @@
+ 
+ bool zcomp_available_algorithm(const char *comp)
+ {
+-	/*
+-	 * Crypto does not ignore a trailing new line symbol,
+-	 * so make sure you don't supply a string containing
+-	 * one.
+-	 * This also means that we permit zcomp initialisation
+-	 * with any compressing algorithm known to crypto api.
+-	 */
+-	return crypto_has_comp(comp, 0, 0) == 1;
++	int i;
++
++	/* Other GKI crypto consumers do not extend the zram profile. */
++	for (i = 0; i < ARRAY_SIZE(backends); i++) {
++		if (!strcmp(comp, backends[i]))
++			return crypto_has_comp(comp, 0, 0) == 1;
++	}
++	return false;
+ }
+ 
+ /* show available compressors */
 diff --git a/lib/Kconfig b/lib/Kconfig
 index 659129e..f49b768 100644
 --- a/lib/Kconfig

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       sukisu_channel:
-        description: SukiSU upstream channel
+        description: SukiSU (stable keeps the booting September 21 UAPI-4 revision; dev tracks upstream)
         required: true
         type: choice
         options: [stable, dev]
@@ -36,6 +36,15 @@ jobs:
             build-essential git curl zip unzip xz-utils openssl rsync bc bison flex \
             libssl-dev libelf-dev lz4 kmod zstd cpio
           df -h . /tmp
+      - name: Reserve memory for full LTO with GKI BTF metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo fallocate -l 12G /tmp/gki-link.swap
+          sudo chmod 600 /tmp/gki-link.swap
+          sudo mkswap /tmp/gki-link.swap
+          sudo swapon /tmp/gki-link.swap
+          free -h
       - name: Run builder tests
         run: python3 -m unittest discover -s .github/workflows/scripts/tests -v
       - name: Integrate the pinned source stack and compile
@@ -70,8 +79,11 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: kernel-failed-${{ github.run_id }}
+          include-hidden-files: true
           path: |
             /tmp/gki-build/BUILD_INFO.md
             /tmp/gki-build/android13-5.15/out/android13-5.15/common/.config
+            /tmp/gki-build/android13-5.15/out/android13-5.15/common/Module.symvers
+            /tmp/gki-build/android13-5.15/out/android13-5.15/dist/vmlinux.symvers
             /tmp/gki-build/**/*.rej
           if-no-files-found: warn

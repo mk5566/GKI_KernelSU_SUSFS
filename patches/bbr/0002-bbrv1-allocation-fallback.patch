@@ -1,0 +1,86 @@
+From: GKI maintainers <gki-builder@localhost>
+Subject: [PATCH] tcp: fall back to built-in BBRv1 on BBRv3 allocation failure
+
+diff --git a/net/ipv4/tcp_bbr.c b/net/ipv4/tcp_bbr.c
+--- a/net/ipv4/tcp_bbr.c
++++ b/net/ipv4/tcp_bbr.c
+@@ -1137,7 +1137,7 @@
+ 	}
+ }
+ 
+-static struct tcp_congestion_ops tcp_bbr_cong_ops __read_mostly = {
++struct tcp_congestion_ops tcp_bbr_cong_ops __read_mostly = {
+ 	.flags		= TCP_CONG_NON_RESTRICTED,
+ 	.name		= "bbr",
+ 	.owner		= THIS_MODULE,
+diff --git a/net/ipv4/tcp_bbr3.c b/net/ipv4/tcp_bbr3.c
+--- a/net/ipv4/tcp_bbr3.c
++++ b/net/ipv4/tcp_bbr3.c
+@@ -2019,17 +2019,26 @@
+ 	bbr->ecn_in_cycle  |= rs->delivered_ce > 0;
+ }
+ 
++/* Built-in BBRv1 fallback; both algorithms have no module references. */
++extern struct tcp_congestion_ops tcp_bbr_cong_ops;
++
+ static void bbr3_init(struct sock *sk)
+ {
+ 	struct tcp_sock *tp = tcp_sk(sk);
+ 	struct bbr3 **bbr3_ptr = (struct bbr3 **)inet_csk_ca(sk);
+ 	struct bbr3 *bbr;
+ 
+-	bbr = kmalloc(sizeof(struct bbr3), GFP_ATOMIC);
+-	if (unlikely(!bbr))
++	bbr = kzalloc(sizeof(*bbr), GFP_ATOMIC);
++	if (unlikely(!bbr)) {
++		struct inet_connection_sock *icsk = inet_csk(sk);
++
++		memset(icsk->icsk_ca_priv, 0, sizeof(icsk->icsk_ca_priv));
++		icsk->icsk_ca_ops = &tcp_bbr_cong_ops;
++		tp->fast_ack_mode = 0;
++		tp->ecn_flags &= ~TCP_ECN_ECT_PERMANENT;
++		tcp_bbr_cong_ops.init(sk);
+ 		return;
+-
+-	memset(bbr, 0, sizeof(struct bbr3));
++	}
+ 
+ 	*bbr3_ptr = bbr;
+ 
+@@ -2320,7 +2329,7 @@
+ }
+ 
+ 
+-static struct tcp_congestion_ops tcp_bbr_cong_ops __read_mostly = {
++static struct tcp_congestion_ops tcp_bbr3_cong_ops __read_mostly = {
+ 	.flags		= TCP_CONG_NON_RESTRICTED | TCP_CONG_WANTS_CE_EVENTS,
+ 	.name		= "bbr3",
+ 	.owner		= THIS_MODULE,
+@@ -2338,12 +2347,12 @@
+ 
+ static int __init bbr3_register(void)
+ {
+-	return tcp_register_congestion_control(&tcp_bbr_cong_ops);
++	return tcp_register_congestion_control(&tcp_bbr3_cong_ops);
+ }
+ 
+ static void __exit bbr3_unregister(void)
+ {
+-	tcp_unregister_congestion_control(&tcp_bbr_cong_ops);
++	tcp_unregister_congestion_control(&tcp_bbr3_cong_ops);
+ }
+ 
+ module_init(bbr3_register);
+diff --git a/net/ipv4/Kconfig b/net/ipv4/Kconfig
+--- a/net/ipv4/Kconfig
++++ b/net/ipv4/Kconfig
+@@ -680,7 +680,8 @@
+ 	  ("Fair Queue") pacing packet scheduler.
+ 
+ config TCP_CONG_BBR3
+-	tristate "BBRv3 TCP"
++	bool "BBRv3 TCP"
++	depends on TCP_CONG_BBR=y
+ 	default n
+ 	help
+ 

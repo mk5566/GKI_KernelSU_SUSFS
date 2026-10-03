@@ -3,6 +3,8 @@ import shutil
 import subprocess
 import logging
 import re
+import sys
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -12,10 +14,12 @@ from config import (ANDROID_FAMILY, BuildConfig, KSU_REPO_CONFIG, SUSFS_REPO_CON
                    SUSFS_REVISION, SUKISU_PATCH_REVISION, REPO_ROOT)
 from susfs_integration import select_mount_patch
 from patch_plan import make_patch_plan
+from abi import verify_gki_abi
+from repack_boot import repack_boot
 
 logger = logging.getLogger(__name__)
 
-REQUIRED_TOOLS = ("git", "curl", "python3", "make", "bash", "zip", "openssl")
+REQUIRED_TOOLS = ("git", "curl", "python3", "make", "bash", "zip")
 
 # Keep the GitHub-hosted runner's checkout within its available disk. These
 # projects provide build.sh, its hermetic tools, the pinned compiler/NDK, and
@@ -87,12 +91,8 @@ class KernelBuilder:
         "CONFIG_IP6_NF_MATCH_HL": "y",
         "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE": "y",
         "CONFIG_CC_OPTIMIZE_FOR_SIZE": None,
-        # Strip debug symbols to speed up build/link time and avoid disk bloat
-        "CONFIG_DEBUG_INFO": "n",
-        "CONFIG_DEBUG_INFO_NONE": "y",
-        "CONFIG_DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT": "n",
-        "CONFIG_DEBUG_INFO_DWARF4": "n",
-        "CONFIG_DEBUG_INFO_DWARF5": "n",
+        # Preserve certified DWARF/BTF defaults: BTF module metadata changes
+        # struct module and its transitive vendor symbol CRCs. It is not logging.
     }
 
     # BBRv3 is the default. Stock BBRv1 stays built in as the fallback.
@@ -123,6 +123,7 @@ class KernelBuilder:
         self.applied_bbr_patches = []
         self.applied_tweak_patches = []
         self.applied_integration_patches = []
+        self.abi_symbol_count = 0
         self._setup_env()
 
     def _setup_env(self):
@@ -216,16 +217,17 @@ class KernelBuilder:
         config_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 
     def _apply_patch_file(self, patch_path: Path) -> bool:
-        """Validate and apply once, exactly, in the current Git checkout."""
+        """Apply once atomically; missing files or rejected hunks are fatal."""
         if not patch_path.is_file():
             raise RuntimeError(f"Selected patch missing: {patch_path}")
-        for extra in (("--check",), ()):
-            result = subprocess.run(
-                ["git", "apply", "--whitespace=nowarn", *extra, str(patch_path.resolve())],
-                                    cwd=self.shell.cwd, capture_output=True, text=True)
-            if result.returncode:
-                context = (result.stderr or result.stdout).strip()
-                raise RuntimeError(f"Selected patch failed: {patch_path.name}\n{context}")
+        # git apply validates all hunks before changing any file. A separate
+        # --check pass duplicates that work and adds no atomicity guarantee.
+        result = subprocess.run(
+            ["git", "apply", "--whitespace=nowarn", str(patch_path.resolve())],
+            cwd=self.shell.cwd, capture_output=True, text=True)
+        if result.returncode:
+            context = (result.stderr or result.stdout).strip()
+            raise RuntimeError(f"Selected patch failed: {patch_path.name}\n{context}")
         self.applied_integration_patches.append(patch_path.name)
         return True
 
@@ -273,25 +275,19 @@ class KernelBuilder:
         patch_commit = self.config.sukisu_patch_commit or SUKISU_PATCH_REVISION
         self._checkout_commit(self.sukisu_patch_dir, patch_commit, "SukiSU Patch")
         self._clone_or_update("AnyKernel3", self.anykernel_dir, ANYKERNEL_CONFIG["repo_url"], ANYKERNEL_CONFIG["branch"])
+        self._checkout_commit(self.anykernel_dir, ANYKERNEL_CONFIG["revision"], "AnyKernel3")
         self._apply_susfs_commit()
         logger.info("=== Helper repositories ready ===")
 
     def configure_boot_tools(self):
         logger.info("=== Configuring manifest-pinned boot packaging tools ===")
-        avbtool = self.toolchain_dir / "linux-x86/bin/avbtool"
         mkbootimg = self.mkbootimg_dir / "mkbootimg.py"
         unpack = self.mkbootimg_dir / "unpack_bootimg.py"
-        self._require_path(avbtool, "avbtool")
         self._require_path(mkbootimg, "mkbootimg.py")
-        self.env["AVBTOOL"] = str(avbtool)
+        self._require_path(unpack, "unpack_bootimg.py")
         self.env["MKBOOTIMG"] = str(mkbootimg)
         self.env["UNPACK_BOOTIMG"] = str(unpack)
 
-        key_path = Path(os.environ.get("BOOT_SIGN_KEY_PATH", self.workspace / "boot_avb_testkey.pem"))
-        if not key_path.exists():
-            subprocess.run(["openssl", "genrsa", "-out", str(key_path), "2048"],
-                           cwd=self.workspace, env=self.env, check=True)
-        self.env["BOOT_SIGN_KEY_PATH"] = str(key_path)
         self.shell.env = self.env
         logger.info("=== Toolchain ready ===")
 
@@ -314,28 +310,23 @@ class KernelBuilder:
         branch = self.config.manifest_branch
         if not re.fullmatch(r"common-android13-5\.15-\d{4}-\d{2}", branch):
             raise RuntimeError(f"Unsafe manifest branch: {branch}")
-        candidates = [branch, f"deprecated/{branch}", f"common-deprecated/{branch[7:]}"]
-        init_ok = False
-        last_error = ""
-        for candidate in candidates:
-            result = self._run_cmd(
-                f"$REPO init --depth=1 -u https://android.googlesource.com/kernel/manifest "
-                f"-b {candidate} --repo-rev=v2.16 --no-clone-bundle",
-                check=False, capture_output=True)
-            output = ((result.stdout or "") + (result.stderr or "")).strip()
-            if result.returncode == 0:
-                logger.info("repo init used manifest branch %s", candidate)
-                init_ok = True
-                break
-            last_error = output or f"exit {result.returncode}"
-        if not init_ok:
-            raise RuntimeError(f"repo init failed for {branch}: {last_error}")
-        # Use the manifest's tools, but freeze kernel/common to the peeled tag.
+        if not re.fullmatch(r"[0-9a-f]{40}", self.config.manifest_commit):
+            raise RuntimeError("Matching manifest must be pinned to a commit")
+        self._run_cmd(
+            "$REPO init --depth=1 -u https://android.googlesource.com/kernel/manifest "
+            f"-b {self.config.manifest_commit} --repo-rev=v2.16 --no-clone-bundle", check=True)
+        # Freeze the source AND every required tool to the certified build.
         local_manifests = self.work_dir / ".repo/local_manifests"
         local_manifests.mkdir(parents=True, exist_ok=True)
+        manifest = ET.Element("manifest")
+        projects = {path: (name, revision) for name, path, revision in self.config.source_projects}
+        for path in REPO_SYNC_PROJECTS:
+            if path not in projects:
+                raise RuntimeError(f"Certified manifest missing required project: {path}")
+            name, revision = projects[path]
+            ET.SubElement(manifest, "extend-project", name=name, path=path, revision=revision)
         (local_manifests / "kernel-revision.xml").write_text(
-            '<manifest><extend-project name="kernel/common" path="common" '
-            f'revision="{self.config.gki_commit}" /></manifest>\n', encoding="utf-8")
+            ET.tostring(manifest, encoding="unicode") + "\n", encoding="utf-8")
         logger.info("Syncing kernel sources...")
         # One kernel, shallow, and only the projects build.sh actually needs.
         self._run_cmd("$REPO sync -c -j4 --no-tags --fail-fast --no-clone-bundle " +
@@ -421,6 +412,7 @@ class KernelBuilder:
         integration_patch = (Path(__file__).resolve().parents[3] / "patches/susfs/"
                              "0001-sukisu-main-uapi4-mount-support.patch")
         self._apply_patch_file(integration_patch)
+        self._apply_patch_file(REPO_ROOT / "patches/susfs/0003-sukisu-quiet-production.patch")
         self._chdir(self.work_dir)
 
     def apply_susfs_patches(self):
@@ -463,7 +455,7 @@ class KernelBuilder:
             )
 
         # Copy only the three LZ4KD source components. No LZ4K or module
-        # compatibility bypass is included in this standard build.
+        # version-check bypass is included in this standard build.
         for src, dst in [
             (
                 self.sukisu_patch_dir / "other/zram/lz4k/include/linux/lz4kd.h",
@@ -485,8 +477,9 @@ class KernelBuilder:
             else:
                 shutil.copy2(src, dst)
 
-        # Apply only the reviewed ZRAM slice. The upstream helper's combined
-        # patch also changes kernel/module.c and adds LZ4K. This one does not.
+        # The reviewed ZRAM slice omits LZ4K and the upstream module CRC
+        # bypass. Builtin provider handling only returns the normal EEXIST
+        # result for OEM attempts to load zram/zsmalloc a second time.
         for patch in make_patch_plan().zram:
             self._apply_patch_file(patch)
         self._verify_zram_backends()
@@ -526,6 +519,8 @@ class KernelBuilder:
             raise RuntimeError(f"kernel common/ directory missing: {common_dir}")
         self._chdir(common_dir)
         plan = make_patch_plan()
+        shutil.copytree(REPO_ROOT / "patches/lz4/source", common_dir / "crypto/lz4_110",
+                        dirs_exist_ok=True)
         for patch in plan.lz4:
             self._apply_patch_file(patch)
         for patch in plan.bbr:
@@ -560,22 +555,12 @@ class KernelBuilder:
         updates.update(self.NETWORK_CONFIG)
         # FQ paces BBRv3. Keep Reno in the core stack and drop the optional
         # congestion algorithms this phone does not use.
-        for symbol in ("BIC", "HTCP", "WESTWOOD", "VEGAS", "VENO", "Hybla",
+        for symbol in ("BIC", "HTCP", "WESTWOOD", "VEGAS", "VENO",
                        "HYBLA", "ILLINOIS", "DCTCP", "CDG", "NV", "CUBIC"):
             updates[f"CONFIG_TCP_CONG_{symbol.upper()}"] = "n"
-        # Generic arm64 GKI: retain none and mq-deadline, schedutil and
-        # performance. These optional alternatives are not selected here.
-        updates.update({
-            "CONFIG_MQ_IOSCHED_DEADLINE": "y",
-            "CONFIG_IOSCHED_BFQ": "n",
-            "CONFIG_MQ_IOSCHED_KYBER": "n",
-            "CONFIG_CPU_FREQ_GOV_SCHEDUTIL": "y",
-            "CONFIG_CPU_FREQ_GOV_PERFORMANCE": "y",
-            "CONFIG_CPU_FREQ_GOV_POWERSAVE": "n",
-            "CONFIG_CPU_FREQ_GOV_CONSERVATIVE": "n",
-            "CONFIG_CPU_FREQ_GOV_ONDEMAND": "n",
-            "CONFIG_CPU_FREQ_GOV_USERSPACE": "n",
-        })
+        # Preserve upstream governors and I/O schedulers. The conservative
+        # governor selects common code with frozen cpufreq_dbs_* exports;
+        # removing it would break the certified KMI and vendor consumers.
         self._upsert_defconfig(updates)
         self._configure_zram()
 
@@ -584,6 +569,9 @@ class KernelBuilder:
             "CONFIG_ZRAM": "y",
             "CONFIG_ZSMALLOC": "y",
             "CONFIG_CRYPTO_LZ4": "y",
+            "CONFIG_MODVERSIONS": "y",
+            "CONFIG_CFI_CLANG": "y",
+            "CONFIG_LTO_CLANG_FULL": "y",
             "CONFIG_CRYPTO_LZ4KD": "y",
             "CONFIG_LZ4_COMPRESS": "y",
             "CONFIG_LZ4_DECOMPRESS": "y",
@@ -612,39 +600,14 @@ class KernelBuilder:
                 lines = mod_list_file.read_text(encoding="utf-8").splitlines()
                 filtered = [l for l in lines if not any(x in l for x in ["zram", "zsmalloc"])]
                 if filtered != lines:
-                    mod_list_file.write_text("\n".join(filtered) + "\n", encoding="utf-8")
+                    content = "".join(line + "\n" for line in filtered)
+                    mod_list_file.write_text(content, encoding="utf-8", newline="\n")
                     logger.info(f"Removed built-in zram/zsmalloc from {mod_list_file.name}")
 
     def configure_kernel_name(self):
-        logger.info("=== Configuring kernel name ===")
-        self._chdir(self.work_dir)
-        safe_custom_version = ""
-
-        setlocalversion = self.work_dir / "common/scripts/setlocalversion"
-        if setlocalversion.exists():
-            content = setlocalversion.read_text(encoding="utf-8")
-            content = content.replace("-dirty", "")
-            if safe_custom_version:
-                lines = content.split('\n')
-                for i, line in enumerate(lines):
-                    if 'echo "$res"' in line and not line.strip().startswith('#'):
-                        lines[i] = f'\techo "{safe_custom_version}$res"'
-                        break
-                content = '\n'.join(lines)
-            setlocalversion.write_text(content, encoding="utf-8")
-
-        current_time = datetime.now(timezone.utc).strftime("%a %b %d %H:%M:%S UTC %Y")
-        mkcompile_h = self.work_dir / "common/scripts/mkcompile_h"
-        if mkcompile_h.exists():
-            content = mkcompile_h.read_text(encoding="utf-8")
-            content = content.replace(
-                'UTS_VERSION="$(echo $UTS_VERSION $CONFIG_FLAGS $TIMESTAMP | cut -b -$UTS_LEN)"',
-                f'UTS_VERSION="#1 SMP PREEMPT {current_time}"',
-            )
-            mkcompile_h.write_text(content, encoding="utf-8")
-
-        if safe_custom_version:
-            self._upsert_defconfig({"CONFIG_LOCALVERSION": f'"{safe_custom_version}"'})
+        # Preserve AOSP's KMI generation and release naming scripts.
+        self.env["KBUILD_BUILD_USER"] = "gki-builder"
+        self.env["KBUILD_BUILD_HOST"] = "github-actions"
 
     def show_kernel_config(self):
         logger.info("=== Kernel config summary ===")
@@ -670,7 +633,7 @@ class KernelBuilder:
             "CONFIG_DEFAULT_TCP_CONG": "Default TCP cong",
             "CONFIG_ZRAM": "ZRAM",
             "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE": "Optimize for performance",
-            "CONFIG_DEBUG_INFO_NONE": "Debug info disabled",
+            "CONFIG_DEBUG_INFO_BTF": "GKI BTF metadata",
         }
 
         logger.info("Key config status:")
@@ -706,7 +669,6 @@ class KernelBuilder:
         subprocess.run(["make", "-C", str(common), f"O={out}", "ARCH=arm64",
                         "LLVM=1", "HOSTCC=gcc", "HOSTCXX=g++", "olddefconfig"],
                        check=True, env=self.env)
-        self._verify_source_mode()
         self._verify_generated_config(out / ".config")
 
     def _verify_source_mode(self):
@@ -749,19 +711,15 @@ class KernelBuilder:
             "CONFIG_CRYPTO_LZ4KD": "y", "CONFIG_LZ4KD_COMPRESS": "y",
             "CONFIG_LZ4KD_DECOMPRESS": "y", "CONFIG_ZRAM_DEF_COMP_LZ4KD": "y",
             "CONFIG_ZRAM_DEF_COMP": '"lz4kd"', "CONFIG_ZRAM_WRITEBACK": "y",
-            "CONFIG_MQ_IOSCHED_DEADLINE": "y", "CONFIG_IOSCHED_BFQ": "n",
-            "CONFIG_MQ_IOSCHED_KYBER": "n",
-            "CONFIG_CPU_FREQ_GOV_SCHEDUTIL": "y",
-            "CONFIG_CPU_FREQ_GOV_PERFORMANCE": "y",
-            "CONFIG_CPU_FREQ_GOV_POWERSAVE": "n",
-            "CONFIG_CPU_FREQ_GOV_CONSERVATIVE": "n",
-            "CONFIG_CPU_FREQ_GOV_ONDEMAND": "n",
-            "CONFIG_CPU_FREQ_GOV_USERSPACE": "n",
             "CONFIG_TCP_CONG_BBR": "y",
             "CONFIG_TCP_CONG_BBR3": "y",
             "CONFIG_DEFAULT_TCP_CONG": '"bbr3"',
             "CONFIG_KPM": "n",
             "CONFIG_CRYPTO_LZ4": "y",
+            "CONFIG_MODVERSIONS": "y", "CONFIG_CFI_CLANG": "y",
+            "CONFIG_LTO_CLANG_FULL": "y",
+            "CONFIG_DEBUG_INFO": "y", "CONFIG_DEBUG_INFO_BTF": "y",
+            "CONFIG_DEBUG_INFO_BTF_MODULES": "y",
         }
         for symbol in ("BIC", "HTCP", "WESTWOOD", "VEGAS", "VENO", "HYBLA",
                        "ILLINOIS", "DCTCP", "CDG", "NV", "CUBIC"):
@@ -775,52 +733,16 @@ class KernelBuilder:
         self._verify_susfs_config(path)
         logger.info("Generated .config verified: BBRv3 default, BBRv1 built in, ZRAM lz4kd, KPM off")
 
-    def _disable_kmi_enforcement(self):
-        # Intentional custom GKI-derived build: no frozen KMI/ABI enforcement.
-        # This is not a claim of vendor module ABI compatibility.
-        # 1. Neutralize build.config.gki
-        build_config_gki = self.work_dir / "common/build.config.gki"
-        if build_config_gki.exists():
-            content = build_config_gki.read_text(encoding="utf-8")
-            content = content.replace('POST_DEFCONFIG_CMDS="check_defconfig"', 'POST_DEFCONFIG_CMDS=""')
-            content = content.replace("check_defconfig", "")
-            build_config_gki.write_text(content, encoding="utf-8")
-
-        # 2. Neutralize build.config.aarch64
-        build_config_aarch64 = self.work_dir / "common/build.config.aarch64"
-        if build_config_aarch64.exists():
-            content = build_config_aarch64.read_text(encoding="utf-8")
-            content = content.replace("GKI_MODULES_LIST=android/gki_aarch64_modules", "GKI_MODULES_LIST=")
-            build_config_aarch64.write_text(content, encoding="utf-8")
-
-        # 3. Neutralize build.config.gki.aarch64
-        build_config = self.work_dir / "common/build.config.gki.aarch64"
-        if build_config.exists():
-            content = build_config.read_text(encoding="utf-8")
-            content = content.replace("BUILD_SYSTEM_DLKM=1", "BUILD_SYSTEM_DLKM=0")
-            content = content.replace("BUILD_GKI_ARTIFACTS=1", "BUILD_GKI_ARTIFACTS=0")
-            content = content.replace("BUILD_GKI_CERTIFICATION_TOOLS=1", "BUILD_GKI_CERTIFICATION_TOOLS=0")
-            lines = [l for l in content.split('\n') if not any(k in l for k in [
-                'MODULES_ORDER=', 'MODULES_LIST=', 'KMI_SYMBOL_LIST_STRICT_MODE'
-            ])]
-            extra_flags = [
-                "TRIM_NONLISTED_KMI=0",
-                "KMI_SYMBOL_LIST_STRICT_MODE=0",
-                "KMI_SYMBOL_LIST_ADD_ONLY=0",
-                "KMI_ENFORCED=0",
-                "BUILD_SYSTEM_DLKM=0",
-                "BUILD_GKI_ARTIFACTS=0",
-                "BUILD_GKI_CERTIFICATION_TOOLS=0",
-                "MODULES_LIST=",
-                "MODULES_ORDER=",
-                "GKI_MODULES_LIST=",
-                "ABI_DEFINITION=",
-                "KMI_SYMBOL_LIST=",
-                "ADDITIONAL_KMI_SYMBOL_LISTS=",
-                "POST_DEFCONFIG_CMDS=",
-            ]
-            content = '\n'.join(lines) + '\n' + '\n'.join(extra_flags) + '\n'
-            build_config.write_text(content, encoding="utf-8")
+    def configure_build_fragment(self):
+        # Extra root symbols preclude an exact export-set check. Frozen GKI
+        # exports are checked against Google's certified symbol CRCs below.
+        fragment = self.work_dir / "build.config.custom"
+        fragment.write_text("\n".join((
+            "POST_DEFCONFIG_CMDS=", "KMI_SYMBOL_LIST_STRICT_MODE=",
+            "BUILD_SYSTEM_DLKM=", "BUILD_GKI_ARTIFACTS=",
+            "BUILD_GKI_CERTIFICATION_TOOLS=", "TRIM_NONLISTED_KMI=1",
+        )) + "\n", encoding="utf-8")
+        self.env["GKI_BUILD_CONFIG_FRAGMENT"] = str(fragment)
 
     def build_kernel(self) -> bool:
         logger.info("=== Starting kernel compile ===")
@@ -828,14 +750,7 @@ class KernelBuilder:
         try:
             logger.info("Starting kernel compilation with build.sh...")
             build_cmd = (
-                "LTO=thin "
-                "BUILD_SYSTEM_DLKM=0 "
-                "BUILD_GKI_ARTIFACTS=0 "
-                "BUILD_GKI_CERTIFICATION_TOOLS=0 "
-                "TRIM_NONLISTED_KMI=0 "
-                "KMI_ENFORCED=0 "
                 "INSTALL_MOD_STRIP=1 "
-                "POST_DEFCONFIG_CMDS=\"\" "
                 "BUILD_CONFIG=common/build.config.gki.aarch64 "
                 "build/build.sh"
             )
@@ -852,6 +767,12 @@ class KernelBuilder:
                             "android13-5.15" /
                             "common/.config")
             self._verify_generated_config(final_config)
+            dist = image_path.parent
+            symvers = dist / "vmlinux.symvers"
+            self._require_path(symvers, "built GKI symbol CRCs")
+            self.abi_symbol_count = verify_gki_abi(
+                self.config.official_build_id, symvers, self.workspace / "GKI-reference.symvers")
+            logger.info("Certified GKI ABI verified: %d frozen symbol CRCs", self.abi_symbol_count)
             logger.info(f"=== Kernel compile succeeded: {image_path} ===")
             return True
         except Exception as e:
@@ -881,17 +802,16 @@ class KernelBuilder:
 
         image_src = self._kernel_image_path()
         self._require_path(image_src, "compiled kernel Image")
-        self._run_cmd(f"cp {image_src} {bootimgs_dir}/Image && cp {image_src} {self.work_dir}/Image", check=True)
-
-        self._chdir(bootimgs_dir)
-        self._run_cmd("$MKBOOTIMG --header_version 4 --kernel Image --output boot.img", check=True)
-        self._run_cmd(
-            "$AVBTOOL add_hash_footer --partition_name boot --partition_size $((64 * 1024 * 1024)) "
-            "--image boot.img --algorithm SHA256_RSA2048 --key $BOOT_SIGN_KEY_PATH",
-            check=True,
-        )
         dest = self.workspace / "boot.img"
-        self._run_cmd(f"cp boot.img '{dest}'", check=True)
+        if self.config.base_boot:
+            repack_boot(self.config.base_boot, image_src, dest, self.mkbootimg_dir)
+        else:
+            # Generic GKI v4 container. No invented partition size, AVB key,
+            # OS patch level, cmdline, or device ramdisk.
+            subprocess.run([sys.executable, str(self.mkbootimg_dir / "mkbootimg.py"),
+                            "--header_version", "4", "--kernel", str(image_src),
+                            "--output", str(dest)], check=True, env=self.env)
+        shutil.copy2(image_src, self.workspace / "Image")
         return [str(dest)]
 
     def create_anykernel_zips(self) -> list:
@@ -984,10 +904,12 @@ class KernelBuilder:
             f"- Applied tweak patches: {', '.join(self.applied_tweak_patches) or 'none'}",
             f"- Other integration patches: {', '.join(self.applied_integration_patches)}",
             "- ZRAM: lz4kd default, lz4 available, other backends removed",
-            "- LZ4 library: 1.9.4, 1KB hash table for 4KB zram pages",
+            "- ZRAM crypto LZ4: official 1.10.0, private freestanding implementation",
+            "- Exported GKI LZ4 library/header: unchanged",
             "- KPM: disabled",
-            "- Governors kept: schedutil, performance. I/O kept: none, mq-deadline",
-            "- Struct layout: icsk_ca_priv stays 104 bytes so vendor module CRCs still match",
+            "- CPU governors and I/O schedulers: certified GKI defaults preserved",
+            f"- Certified GKI symbol CRCs matched: {self.abi_symbol_count}",
+            f"- Boot packaging: {'device base image repacked' if self.config.base_boot else 'generic ramdisk-less GKI header v4; device ramdisk must be in init_boot'}",
             f"- Compiler: {compiler_version}",
             f"- Kernel Image SHA256: `{image_sha}`",
             "- SUSFS profile: mount-only (core + SUS_MOUNT)",
@@ -1025,13 +947,14 @@ class KernelBuilder:
             self.configure_kernel()
             self.configure_kernel_name()
             self.show_kernel_config()
-            self._disable_kmi_enforcement()
-            self.generate_and_verify_config()
+            self.configure_build_fragment()
+            self._verify_source_mode()
             logger.info("Patch report: GKI %s %s; SukiSU %s; SUSFS %s; BBR %s; tweaks %s; integration count=%d",
                         self.config.kernel_version, self.config.gki_commit, self.config.sukisu_commit,
                         SUSFS_REVISION, self.applied_bbr_patches, self.applied_tweak_patches,
                         len(self.applied_integration_patches))
             if preflight_only:
+                self.generate_and_verify_config()
                 info = self.write_build_info(success=True, message="Source and generated config preflight passed")
                 return BuildResult(success=True, config=self.config, message="Preflight passed",
                                    artifacts=[str(info)], build_time=time.time() - start_time)

@@ -10,25 +10,26 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from build import parse_args
-from config import ANDROID_FAMILY, BuildConfig, REPO_ROOT
+from config import ANDROID_FAMILY, BuildConfig, REPO_ROOT, SUKISU_STABLE_REVISION
 from kernel_builder import KernelBuilder
 from patch_plan import make_patch_plan
-from target import choose_gki_tag, choose_manifest_branch, peeled_commit, resolve_sukisu, resolve_susfs, resolve_sukisu_patch
+from target import choose_gki_tag, choose_manifest_branch, peeled_commit, resolve_sukisu, resolve_susfs, resolve_sukisu_patch, certified_releases
+from abi import compare_symvers, read_symvers
 
 
 class ResolverTests(unittest.TestCase):
-    def test_latest_android13_5_15_point_release_wins(self):
+    def test_monthly_release_excludes_uncertified_point_tags(self):
         self.assertEqual(ANDROID_FAMILY, "android13-5.15")
         refs = {
-            "android13-5.15.211_r00": "a" * 40,
-            "android13-5.15.211_r00^{}": "b" * 40,
+            "android13-5.15-2026-09_r1": "a" * 40,
+            "android13-5.15-2026-09_r1^{}": "b" * 40,
             "android13-5.15.216_r00": "c" * 40,
             "android13-5.15.216_r00^{}": "d" * 40,
-            "android13-5.15.216_r01": "e" * 40,
+            "android13-5.15-2026-09_r2": "e" * 40,
             "android14-5.15.300_r00": "f" * 40,
         }
-        self.assertEqual(choose_gki_tag(refs), "android13-5.15.216_r01")
-        self.assertEqual(peeled_commit(refs, "android13-5.15.216_r00"), "d" * 40)
+        self.assertEqual(choose_gki_tag(refs), "android13-5.15-2026-09_r2")
+        self.assertEqual(peeled_commit(refs, "android13-5.15-2026-09_r1"), "b" * 40)
         branches = "\n".join([
             "1" * 40 + "\trefs/heads/common-android13-5.15-2026-06",
             "2" * 40 + "\trefs/heads/common-android13-5.15-2026-09",
@@ -43,12 +44,26 @@ class ResolverTests(unittest.TestCase):
         self.assertEqual(config.artifact_stem, "android13-5.15.216-sukisu-dev")
         self.assertEqual(config.gki_commit, "d" * 40)
 
+    def test_only_published_certified_download_rows_are_eligible(self):
+        row = ('<tr><a href="https://ci.android.com/builds/submitted/123/kernel_aarch64/latest">kernel</a>'
+               '<a href="https://dl.google.com/android/gki/gki-certified-boot-'
+               'android13-5.15-2026-09_r2.zip">boot</a></tr>')
+        debug = row.replace('gki-certified-boot-', 'debug-boot-').replace('_r2', '_r99')
+        self.assertEqual(certified_releases(row + debug), {"android13-5.15-2026-09_r2": "123"})
+        with self.assertRaises(RuntimeError):
+            certified_releases(debug)
+
+    def test_frozen_symbol_crc_and_export_presence_are_required(self):
+        reference = read_symvers('0x1234\talloc_pages\tvmlinux\tEXPORT_SYMBOL\n')
+        self.assertEqual(compare_symvers(reference, {"alloc_pages": "0x1234", "root": "0xffff"}), 1)
+        for built in ({}, {"alloc_pages": "0x4321"}):
+            with self.subTest(built=built), self.assertRaisesRegex(RuntimeError, "GKI ABI mismatch"):
+                compare_symvers(reference, built)
+        with self.assertRaises(RuntimeError):
+            read_symvers('<html>artifact unavailable</html>')
+
     def test_sukisu_stable_and_dev_are_immutable(self):
-        payload = b'{"tag_name":"v4.2.0","draft":false,"prerelease":false}'
-        with patch("target.urllib.request.urlopen", return_value=io.BytesIO(payload)), \
-             patch("target._git", return_value="a" * 40 + "\trefs/tags/v4.2.0\n" +
-                   "b" * 40 + "\trefs/tags/v4.2.0^{}\n"):
-            self.assertEqual(resolve_sukisu("stable"), ("v4.2.0", "b" * 40))
+        self.assertEqual(resolve_sukisu("stable"), ("v4.2.0-reviewed-uapi4", SUKISU_STABLE_REVISION))
         with patch("target._git", return_value="ref: refs/heads/main\tHEAD\n" +
                    "c" * 40 + "\tHEAD\n"):
             self.assertEqual(resolve_sukisu("dev"), ("", "c" * 40))
@@ -66,10 +81,12 @@ class ModeTests(unittest.TestCase):
         self.assertTrue(plan.lz4 and plan.zram and plan.bbr and plan.tweaks)
         self.assertEqual(len(plan.all), len(plan.lz4) + len(plan.zram) + len(plan.bbr) + len(plan.tweaks))
         names = [path.name for path in plan.all]
-        self.assertIn("0001-lz4-1.9.4.patch", names)
+        self.assertIn("0002-crypto-lz4-1.10.0.patch", names)
         self.assertIn("lz4kd-integration.patch", names)
         self.assertIn("0001-bbrv3-android-kabi.patch", names)
         self.assertNotIn("silence_irq_cpu_logspam.patch", names)
+        self.assertNotIn("optimise_memcmp.patch", names)
+        self.assertNotIn("reduce_freeze_timeout.patch", names)
         self.assertFalse((REPO_ROOT / "patches/bbrv3").exists())
         self.assertFalse((REPO_ROOT / "patches/tweaks/silence_irq_cpu_logspam.patch").exists())
 
@@ -105,7 +122,9 @@ class ModeTests(unittest.TestCase):
             path = builder._defconfig_path()
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("CONFIG_TCP_CONG_CUBIC=y\nCONFIG_IOSCHED_BFQ=y\n"
-                            "CONFIG_CPU_FREQ_GOV_CONSERVATIVE=y\nCONFIG_KPM=y\n",
+                            "CONFIG_CPU_FREQ_GOV_CONSERVATIVE=y\nCONFIG_KPM=y\n"
+                            "CONFIG_DEBUG_INFO=y\nCONFIG_DEBUG_INFO_DWARF4=y\n"
+                            "CONFIG_DEBUG_INFO_BTF=y\nCONFIG_MODULE_ALLOW_BTF_MISMATCH=y\n",
                             encoding="utf-8")
             kconfig = builder.work_dir / "KernelSU/kernel/Kconfig"
             kconfig.parent.mkdir(parents=True, exist_ok=True)
@@ -123,10 +142,12 @@ class ModeTests(unittest.TestCase):
             self.assertIn("CONFIG_TCP_CONG_CUBIC=n", result)
             self.assertIn("CONFIG_ZRAM_DEF_COMP_LZ4KD=y", result)
             self.assertIn("CONFIG_ZRAM_DEF_COMP_LZ4=n", result)
-            self.assertIn("CONFIG_IOSCHED_BFQ=n", result)
-            self.assertIn("CONFIG_CPU_FREQ_GOV_CONSERVATIVE=n", result)
-            self.assertIn("CONFIG_CPU_FREQ_GOV_PERFORMANCE=y", result)
+            self.assertIn("CONFIG_IOSCHED_BFQ=y", result)
+            self.assertIn("CONFIG_CPU_FREQ_GOV_CONSERVATIVE=y", result)
             self.assertIn("CONFIG_KPM=n", result)
+            for symbol in ("DEBUG_INFO", "DEBUG_INFO_DWARF4", "DEBUG_INFO_BTF",
+                           "MODULE_ALLOW_BTF_MISMATCH"):
+                self.assertIn(f"CONFIG_{symbol}=y", result)
 
     def test_selected_patch_missing_and_conflict_are_fatal(self):
         with tempfile.TemporaryDirectory() as d:
@@ -144,6 +165,24 @@ class ModeTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "change.patch"):
                 builder._apply_patch_file(patch_file)
 
+    def test_builtin_zram_leaves_an_exact_empty_module_list(self):
+        with tempfile.TemporaryDirectory() as d:
+            builder = KernelBuilder(BuildConfig(), d)
+            defconfig = builder._defconfig_path()
+            defconfig.parent.mkdir(parents=True, exist_ok=True)
+            defconfig.write_text("CONFIG_ZRAM=m\n", encoding="utf-8")
+            android = builder.work_dir / "common/android"
+            android.mkdir(parents=True)
+            empty = android / "gki_aarch64_modules"
+            mixed = android / "gki_aarch64_modules_test"
+            empty.write_text("drivers/block/zram/zram.ko\nmm/zsmalloc.ko\n",
+                             encoding="utf-8")
+            mixed.write_text("drivers/block/zram/zram.ko\ndrivers/block/loop.ko\n",
+                             encoding="utf-8")
+            builder._configure_zram()
+            self.assertEqual(empty.read_bytes(), b"")
+            self.assertEqual(mixed.read_bytes(), b"drivers/block/loop.ko\n")
+
     def test_final_config_rejects_a_layout_that_is_not_this_kernel(self):
         with tempfile.TemporaryDirectory() as d:
             builder = KernelBuilder(BuildConfig(), d)
@@ -151,6 +190,26 @@ class ModeTests(unittest.TestCase):
             file.write_text("CONFIG_TCP_CONG_BBR3=n\n", encoding="utf-8")
             with self.assertRaisesRegex(RuntimeError, "Final .config mismatch"):
                 builder._verify_generated_config(file)
+
+    def test_rejected_patch_cannot_leave_a_partial_integration(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            subprocess.run(["git", "init", "-q", d], check=True)
+            (root / "a.txt").write_text("old\n", encoding="utf-8")
+            (root / "b.txt").write_text("unexpected\n", encoding="utf-8")
+            patch_file = root / "two-files.patch"
+            patch_file.write_text(
+                "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n"
+                "@@ -1 +1 @@\n-old\n+new\n"
+                "diff --git a/b.txt b/b.txt\n--- a/b.txt\n+++ b/b.txt\n"
+                "@@ -1 +1 @@\n-old\n+new\n", encoding="utf-8")
+            builder = KernelBuilder(BuildConfig(), d)
+            builder.shell.cwd = d
+            with self.assertRaisesRegex(RuntimeError, "two-files.patch"):
+                builder._apply_patch_file(patch_file)
+            self.assertEqual((root / "a.txt").read_text(), "old\n")
+            self.assertEqual((root / "b.txt").read_text(), "unexpected\n")
+            self.assertEqual(builder.applied_integration_patches, [])
 
     def test_preflight_uses_manifest_selected_clang(self):
         with tempfile.TemporaryDirectory() as d:

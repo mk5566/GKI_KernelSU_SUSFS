@@ -1,1 +1,3 @@
 0001-bbrv3-android-kabi.patch
+0002-bbrv1-allocation-fallback.patch
+0003-plb-pernet-initialization.patch
