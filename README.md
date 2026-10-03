@@ -19,6 +19,9 @@ As checked on 2026-10-03, the release is `android13-5.15-2026-09_r2`, Linux
   **1.10.0** freestanding source, a private crypto implementation, caller-owned
   compression state, and bounded decompression. The exported GKI LZ4 header,
   library, and filesystem consumers remain unchanged.
+  OEM requests to load stock zram/zsmalloc modules receive the normal
+  already-loaded result when those drivers are built in. Module version
+  checks remain enforced for every module that actually loads.
 - **Google BBRv3**, adapted for Linux 5.15 and the frozen Android KMI, is the
   TCP default. Stock **BBRv1** remains built in and is selected per socket if
   BBRv3 cannot allocate its state. Reno is the mandatory core TCP fallback;

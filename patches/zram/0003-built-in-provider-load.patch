@@ -1,0 +1,32 @@
+From: GKI maintainers <gki-builder@localhost>
+Subject: [PATCH] modules: report builtin zram providers as already loaded
+
+OEM first-stage and system module lists can still request zram.ko and
+zsmalloc.ko when both drivers are built into a replacement GKI. Loading
+them would duplicate the providers or fail symbol resolution. Return
+-EEXIST, which Android libmodprobe treats as an already-loaded success.
+
+Only these exact names with their corresponding builtin config qualify.
+Explicit module blacklists, signature/security checks, and version checks
+for every module that actually loads retain their upstream behavior.
+
+diff --git a/kernel/module.c b/kernel/module.c
+--- a/kernel/module.c
++++ b/kernel/module.c
+@@ -4079,6 +4079,16 @@
+ 		goto free_copy;
+ 	}
+ 
++	/* OEM module lists still include these drivers when our replacement
++	 * is built in. Use the normal already-loaded result; never load a
++	 * second implementation or relax version checks for other modules.
++	 */
++	if ((IS_BUILTIN(CONFIG_ZRAM) && !strcmp(info->name, "zram")) ||
++	    (IS_BUILTIN(CONFIG_ZSMALLOC) && !strcmp(info->name, "zsmalloc"))) {
++		err = -EEXIST;
++		goto free_copy;
++	}
++
+ 	err = rewrite_section_headers(info, flags);
+ 	if (err)
+ 		goto free_copy;

@@ -455,7 +455,7 @@ class KernelBuilder:
             )
 
         # Copy only the three LZ4KD source components. No LZ4K or module
-        # compatibility bypass is included in this standard build.
+        # version-check bypass is included in this standard build.
         for src, dst in [
             (
                 self.sukisu_patch_dir / "other/zram/lz4k/include/linux/lz4kd.h",
@@ -477,8 +477,9 @@ class KernelBuilder:
             else:
                 shutil.copy2(src, dst)
 
-        # Apply only the reviewed ZRAM slice. The upstream helper's combined
-        # patch also changes kernel/module.c and adds LZ4K. This one does not.
+        # The reviewed ZRAM slice omits LZ4K and the upstream module CRC
+        # bypass. Builtin provider handling only returns the normal EEXIST
+        # result for OEM attempts to load zram/zsmalloc a second time.
         for patch in make_patch_plan().zram:
             self._apply_patch_file(patch)
         self._verify_zram_backends()
