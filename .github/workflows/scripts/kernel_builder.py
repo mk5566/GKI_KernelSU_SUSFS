@@ -19,6 +19,40 @@ from repack_boot import repack_boot
 
 logger = logging.getLogger(__name__)
 
+
+def unquote_kconfig_string(value):
+    value = value.strip()
+    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+        return value[1:-1]
+    return value
+
+
+def ensure_cmdline_tokens(cmdline, tokens):
+    """Keep existing parameters and make each requested token appear once.
+
+    A different value of the same parameter is replaced. Repeating this on
+    its own output does not add another copy.
+    """
+    parts = [part for part in cmdline.split() if part]
+    desired = set(tokens)
+    owned = {token.split("=", 1)[0] for token in tokens}
+    kept = []
+    seen = set()
+    for part in parts:
+        key = part.split("=", 1)[0]
+        if key in owned and part not in desired:
+            continue
+        if part in seen:
+            continue
+        kept.append(part)
+        seen.add(part)
+    for token in tokens:
+        if token not in seen:
+            kept.append(token)
+            seen.add(token)
+    return " ".join(kept)
+
+
 REQUIRED_TOOLS = ("git", "curl", "python3", "make", "bash", "zip")
 
 # Keep the GitHub-hosted runner's checkout within its available disk. These
@@ -108,6 +142,30 @@ class KernelBuilder:
         "CONFIG_NET_SCH_FQ": "y",
     }
 
+    # android13-5.15 already builds MGLRU, lazy RCU, menu, and TEO. It has
+    # no all-CPU no-CB choice and no cpuidle default-governor choice. Menu
+    # is rated above TEO, and lazy RCU stays idle unless every CPU is a
+    # no-CB CPU. Append those two parameters to the built-in command line
+    # and keep bootloader arguments through CONFIG_CMDLINE_EXTEND.
+    RUNTIME_CONFIG = {
+        "CONFIG_LRU_GEN": "y",
+        "CONFIG_LRU_GEN_ENABLED": "y",
+        "CONFIG_RCU_EXPERT": "y",
+        "CONFIG_RCU_NOCB_CPU": "y",
+        "CONFIG_RCU_LAZY": "y",
+        "CONFIG_RCU_LAZY_DEFAULT_OFF": "n",
+        "CONFIG_CPU_IDLE": "y",
+        "CONFIG_CPU_IDLE_GOV_MENU": "y",
+        "CONFIG_CPU_IDLE_GOV_TEO": "y",
+        "CONFIG_CMDLINE_EXTEND": "y",
+        "CONFIG_CMDLINE_FROM_BOOTLOADER": "n",
+        "CONFIG_CMDLINE_FORCE": "n",
+    }
+    CMDLINE_TOKENS = (
+        "cpuidle.governor=teo",
+        "rcu_nocbs=all",
+    )
+
     def __init__(self, config: BuildConfig, workspace: str):
         self.config = config
         self.workspace = Path(workspace).resolve()
@@ -187,6 +245,14 @@ class KernelBuilder:
 
     def _defconfig_path(self) -> Path:
         return self.work_dir / "common/arch/arm64/configs/gki_defconfig"
+
+    def _defconfig_assignment(self, key):
+        prefix = key + "="
+        for line in self._defconfig_path().read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped.startswith(prefix):
+                return stripped[len(prefix):]
+        return None
 
     def _upsert_defconfig(self, updates: dict):
         config_file = self._defconfig_path()
@@ -558,9 +624,12 @@ class KernelBuilder:
         for symbol in ("BIC", "HTCP", "WESTWOOD", "VEGAS", "VENO",
                        "HYBLA", "ILLINOIS", "DCTCP", "CDG", "NV", "CUBIC"):
             updates[f"CONFIG_TCP_CONG_{symbol.upper()}"] = "n"
-        # Preserve upstream governors and I/O schedulers. The conservative
-        # governor selects common code with frozen cpufreq_dbs_* exports;
-        # removing it would break the certified KMI and vendor consumers.
+        # Preserve upstream cpufreq governors and I/O schedulers. The
+        # conservative governor selects common code with frozen
+        # cpufreq_dbs_* exports; removing it would break the certified KMI.
+        updates.update(self.RUNTIME_CONFIG)
+        current = unquote_kconfig_string(self._defconfig_assignment("CONFIG_CMDLINE") or "")
+        updates["CONFIG_CMDLINE"] = '"' + ensure_cmdline_tokens(current, self.CMDLINE_TOKENS) + '"'
         self._upsert_defconfig(updates)
         self._configure_zram()
 
@@ -634,6 +703,11 @@ class KernelBuilder:
             "CONFIG_ZRAM": "ZRAM",
             "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE": "Optimize for performance",
             "CONFIG_DEBUG_INFO_BTF": "GKI BTF metadata",
+            "CONFIG_LRU_GEN_ENABLED": "Multi-gen LRU",
+            "CONFIG_RCU_LAZY": "Lazy RCU",
+            "CONFIG_RCU_LAZY_DEFAULT_OFF": "Lazy RCU default off",
+            "CONFIG_CPU_IDLE_GOV_TEO": "TEO cpuidle governor",
+            "CONFIG_CPU_IDLE_GOV_MENU": "Menu cpuidle governor",
         }
 
         logger.info("Key config status:")
@@ -730,8 +804,10 @@ class KernelBuilder:
             got = values.get(key, "n")
             if got != want:
                 raise RuntimeError(f"Final .config mismatch: {key}={got}, expected {want}")
+        self._verify_runtime_config(values)
         self._verify_susfs_config(path)
-        logger.info("Generated .config verified: BBRv3 default, BBRv1 built in, ZRAM lz4kd, KPM off")
+        logger.info("Generated .config verified: BBRv3 default, BBRv1 built in, "
+                    "ZRAM lz4kd, KPM off, MGLRU on, lazy RCU on, TEO default")
 
     def configure_build_fragment(self):
         # Extra root symbols preclude an exact export-set check. Frozen GKI
@@ -778,6 +854,24 @@ class KernelBuilder:
         except Exception as e:
             logger.error(f"Compile error: {e}")
             return False
+
+    def _verify_runtime_config(self, values):
+        for key, want in self.RUNTIME_CONFIG.items():
+            got = values.get(key, "n")
+            if got != want:
+                raise RuntimeError(f"Final .config mismatch: {key}={got}, expected {want}")
+        if values.get("CONFIG_LRU_GEN_STATS", "n") != "n":
+            raise RuntimeError("Final .config mismatch: CONFIG_LRU_GEN_STATS must stay off")
+        cmdline = unquote_kconfig_string(values.get("CONFIG_CMDLINE", ""))
+        tokens = cmdline.split()
+        for token in self.CMDLINE_TOKENS:
+            if tokens.count(token) != 1:
+                raise RuntimeError(
+                    f"Final .config command line must contain {token} once, got: {cmdline}")
+        if any(part.startswith("rcutree.enable_rcu_lazy=") for part in tokens):
+            raise RuntimeError(
+                "Final .config mismatch: lazy RCU is selected by "
+                "CONFIG_RCU_LAZY_DEFAULT_OFF, not a second parameter")
 
     def _verify_susfs_config(self, config_path: Path):
         self._require_path(config_path, "compiled kernel .config")
@@ -900,6 +994,9 @@ class KernelBuilder:
             f"- SUSFS exact commit: `{self.config.susfs_commit or SUSFS_REVISION}`",
             f"- LZ4KD helper source commit: `{self.config.sukisu_patch_commit or SUKISU_PATCH_REVISION}`",
             "- TCP: BBRv3 default, stock BBRv1 built in, other congestion algorithms off",
+            "- Multi-gen LRU: enabled by default; statistics off",
+            "- RCU: lazy callbacks on; offloaded from all CPUs",
+            "- CPU idle: TEO default, menu governor built in",
             f"- Applied BBR patches: {', '.join(self.applied_bbr_patches) or 'none'}",
             f"- Applied tweak patches: {', '.join(self.applied_tweak_patches) or 'none'}",
             f"- Other integration patches: {', '.join(self.applied_integration_patches)}",
@@ -907,7 +1004,7 @@ class KernelBuilder:
             "- ZRAM crypto LZ4: official 1.10.0, private freestanding implementation",
             "- Exported GKI LZ4 library/header: unchanged",
             "- KPM: disabled",
-            "- CPU governors and I/O schedulers: certified GKI defaults preserved",
+            "- cpufreq governors and I/O schedulers: certified GKI defaults preserved",
             f"- Certified GKI symbol CRCs matched: {self.abi_symbol_count}",
             f"- Boot packaging: {'device base image repacked' if self.config.base_boot else 'generic ramdisk-less GKI header v4; device ramdisk must be in init_boot'}",
             f"- Compiler: {compiler_version}",

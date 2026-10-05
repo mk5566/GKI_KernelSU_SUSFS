@@ -1,9 +1,10 @@
 # Xiaomi 13 Ultra: stable GKI + SukiSU + mount-only SUSFS
 
 Build the newest **published, certified android13-5.15 monthly GKI release**.
-Each run resolves the source tag to its commit and pins the matching month's
-manifest. Point-release tags on the development/LTS branch are not selected.
-As checked on 2026-10-03, the release is `android13-5.15-2026-09_r2`, Linux
+Each run resolves that tag, its commit, and the matching month's manifest.
+The source does not pin a month: a later certified release is selected on
+its own. Point-release tags on the development/LTS branch are not selected.
+As checked on 2026-10-03, the release was `android13-5.15-2026-09_r2`, Linux
 `5.15.211`, published October 1. [Official GKI releases](https://source.android.com/docs/core/architecture/kernel/gki-android13-5_15-release-builds).
 
 ## Build with GitHub Actions
@@ -36,9 +37,18 @@ channel choices use the same fixed kernel feature set described below.
   TCP default. Stock **BBRv1** remains built in and is selected per socket if
   BBRv3 cannot allocate its state. Reno is the mandatory core TCP fallback;
   other optional congestion algorithms are disabled. FQ pacing remains enabled.
-- Preserve GKI memory management, security, vendor hooks, module versioning,
-  CFI, full Clang LTO, preemption, timing, CPU governors and I/O schedulers.
-  Keep governor support that supplies frozen vendor-facing cpufreq exports.
+- Multi-gen LRU is enabled by default through the GKI options. Its statistics
+  option stays off. The runtime switch remains `/sys/kernel/mm/lru_gen/enabled`.
+- Lazy RCU is enabled by default, with callback offload compiled in. This GKI
+  has no build-time all-CPU no-CB option, so the built-in command line also
+  carries `rcu_nocbs=all`. Bootloader arguments are still appended.
+- TEO is the default cpuidle governor. Menu stays compiled and can be selected
+  through the cpuidle sysfs interface.
+- These three use the kernel's own runtime behavior. A passing build does not
+  measure latency or battery life; that still needs the device.
+- Preserve GKI security, vendor hooks, module versioning, CFI, full Clang LTO,
+  preemption, timing, cpufreq governors and I/O schedulers. Keep governor
+  support that supplies frozen vendor-facing cpufreq exports.
 - Retain four small patches: s2idle retry handling, alarmtimer wake timeout,
   clear-page alignment, and idle CPU scan order. No unsafe SIMD `memcmp`,
   forced freezer timeout, or unmeasured F2FS congestion/fsync overrides.

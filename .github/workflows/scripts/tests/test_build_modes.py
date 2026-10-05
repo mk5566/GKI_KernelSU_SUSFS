@@ -11,7 +11,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from build import parse_args
 from config import ANDROID_FAMILY, BuildConfig, REPO_ROOT, SUKISU_STABLE_REVISION
-from kernel_builder import KernelBuilder
+from kernel_builder import KernelBuilder, ensure_cmdline_tokens, unquote_kconfig_string
 from patch_plan import make_patch_plan
 from target import choose_gki_tag, choose_manifest_branch, peeled_commit, resolve_sukisu, resolve_susfs, resolve_sukisu_patch, certified_releases
 from abi import compare_symvers, read_symvers
@@ -73,6 +73,38 @@ class ResolverTests(unittest.TestCase):
             self.assertEqual(resolve_susfs(), "a" * 40)
         with patch("target._git", return_value="b" * 40 + "\trefs/heads/main\n"):
             self.assertEqual(resolve_sukisu_patch(), "b" * 40)
+
+    def test_a_later_certified_month_wins(self):
+        published = {
+            "android13-5.15-2026-06_r5": "16466989",
+            "android13-5.15-2026-09_r2": "16464335",
+            "android13-5.15-2026-10_r1": "17000000",
+        }
+        self.assertEqual(choose_gki_tag(published), "android13-5.15-2026-10_r1")
+        self.assertEqual(choose_gki_tag({
+            "android13-5.15-2026-10_r1": "1",
+            "android13-5.15-2027-01_r1": "2",
+        }), "android13-5.15-2027-01_r1")
+
+    def test_production_sources_do_not_pin_a_monthly_release(self):
+        needles = ("android13-5.15-2026-09", "5.15.211")
+        offenders = []
+        for path in (REPO_ROOT / ".github" / "workflows" / "scripts").rglob("*.py"):
+            if "tests" in path.parts:
+                continue
+            text = path.read_text(encoding="utf-8")
+            offenders.extend(f"{path.name}:{needle}" for needle in needles if needle in text)
+        workflow = (REPO_ROOT / ".github" / "workflows" / "kernel-build.yml").read_text(encoding="utf-8")
+        offenders.extend(f"kernel-build.yml:{needle}" for needle in needles if needle in workflow)
+        self.assertEqual(offenders, [])
+
+    def test_artifact_names_stay_on_the_existing_scheme(self):
+        for channel, version in (("stable", "5.15.230"), ("dev", "5.15.190")):
+            stem = BuildConfig(channel, kernel_version=version).artifact_stem
+            sublevel = version.rsplit(".", 1)[-1]
+            self.assertEqual(stem, f"android13-5.15.{sublevel}-sukisu-{channel}")
+            for word in ("mglru", "lazy", "teo", "optimi", "tuned", "custom"):
+                self.assertNotIn(word, stem.lower())
 
 
 class ModeTests(unittest.TestCase):
@@ -230,6 +262,136 @@ class ModeTests(unittest.TestCase):
                 builder.configure_kernel_toolchain()
             self.assertEqual(run.call_args.args[0], [str(clang_bin / "clang"), "--version"])
             self.assertEqual(builder.env["PATH"].split(os.pathsep)[0], str(clang_bin))
+
+
+class RuntimeConfigTests(unittest.TestCase):
+    TOKENS = KernelBuilder.CMDLINE_TOKENS
+    PRESERVED = ("stack_depot_disable=on kasan.stacktrace=off "
+                 "kvm-arm.mode=protected cgroup_disable=pressure")
+
+    def test_cmdline_tokens_are_appended_once(self):
+        once = ensure_cmdline_tokens(self.PRESERVED, self.TOKENS)
+        twice = ensure_cmdline_tokens(once, self.TOKENS)
+        self.assertEqual(once, twice)
+        self.assertTrue(once.startswith(self.PRESERVED + " "))
+        self.assertEqual(once.split()[:4], self.PRESERVED.split())
+        for token in self.TOKENS:
+            self.assertEqual(once.count(token), 1)
+        self.assertEqual(ensure_cmdline_tokens("  ", self.TOKENS), " ".join(self.TOKENS))
+        self.assertEqual(unquote_kconfig_string('"' + once + '"'), once)
+
+    def test_cmdline_replaces_a_conflicting_value_without_duplicating(self):
+        raw = self.PRESERVED + " cpuidle.governor=menu rcu_nocbs=0 cpuidle.governor=teo"
+        result = ensure_cmdline_tokens(raw, self.TOKENS)
+        self.assertEqual(result.count("cpuidle.governor=teo"), 1)
+        self.assertEqual(result.count("rcu_nocbs=all"), 1)
+        self.assertNotIn("cpuidle.governor=menu", result)
+        self.assertNotIn("rcu_nocbs=0", result)
+        self.assertEqual(ensure_cmdline_tokens(result + " " + " ".join(self.TOKENS), self.TOKENS), result)
+        self.assertNotIn("rcutree.enable_rcu_lazy=", result)
+
+    def _prepare(self, root, text):
+        builder = KernelBuilder(BuildConfig(), root)
+        path = builder._defconfig_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        kconfig = builder.work_dir / "KernelSU/kernel/Kconfig"
+        kconfig.parent.mkdir(parents=True, exist_ok=True)
+        kconfig.write_text("config KSU_SUSFS\nconfig KSU_SUSFS_SUS_MOUNT\n", encoding="utf-8")
+        return builder, path
+
+    def test_defconfig_enables_mglru_lazy_rcu_and_teo_once(self):
+        with tempfile.TemporaryDirectory() as root:
+            original = (
+                'CONFIG_CMDLINE="' + self.PRESERVED + '"\n'
+                "CONFIG_CMDLINE_EXTEND=y\n"
+                "CONFIG_RCU_EXPERT=y\n"
+                "CONFIG_RCU_NOCB_CPU=y\n"
+                "CONFIG_RCU_LAZY=y\n"
+                "CONFIG_RCU_LAZY_DEFAULT_OFF=y\n"
+                "CONFIG_LRU_GEN=y\n"
+                "CONFIG_CPU_IDLE=y\n"
+                "CONFIG_CPU_IDLE_GOV_MENU=y\n"
+                "CONFIG_CPU_IDLE_GOV_TEO=y\n"
+                "CONFIG_CPU_FREQ_GOV_CONSERVATIVE=y\n"
+            )
+            builder, path = self._prepare(root, original)
+            previous = Path.cwd()
+            try:
+                builder.configure_kernel()
+                builder.configure_kernel()
+            finally:
+                os.chdir(previous)
+            result = path.read_text(encoding="utf-8")
+            cmdline = unquote_kconfig_string(builder._defconfig_assignment("CONFIG_CMDLINE"))
+            self.assertEqual(cmdline, ensure_cmdline_tokens(self.PRESERVED, self.TOKENS))
+            self.assertEqual(result.count("cpuidle.governor=teo"), 1)
+            self.assertEqual(result.count("rcu_nocbs=all"), 1)
+            self.assertIn("CONFIG_LRU_GEN=y", result)
+            self.assertIn("CONFIG_LRU_GEN_ENABLED=y", result)
+            self.assertNotIn("CONFIG_LRU_GEN_STATS", result)
+            self.assertIn("CONFIG_RCU_LAZY=y", result)
+            self.assertIn("CONFIG_RCU_LAZY_DEFAULT_OFF=n", result)
+            self.assertIn("CONFIG_RCU_NOCB_CPU=y", result)
+            self.assertIn("CONFIG_CPU_IDLE_GOV_MENU=y", result)
+            self.assertIn("CONFIG_CPU_IDLE_GOV_TEO=y", result)
+            self.assertIn("CONFIG_CMDLINE_EXTEND=y", result)
+            self.assertIn("CONFIG_CMDLINE_FORCE=n", result)
+            self.assertIn("CONFIG_CPU_FREQ_GOV_CONSERVATIVE=y", result)
+            self.assertNotIn("rcutree.enable_rcu_lazy=", result)
+
+    def _valid_config(self, **overrides):
+        values = {
+            "CONFIG_KSU": "y", "CONFIG_KSU_SUSFS": "y",
+            "CONFIG_KSU_SUSFS_SUS_MOUNT": "y", "CONFIG_KPROBES": "y",
+            "CONFIG_KRETPROBES": "y", "CONFIG_HAVE_SYSCALL_TRACEPOINTS": "y",
+            "CONFIG_NET_SCH_FQ": "y", "CONFIG_ZRAM": "y", "CONFIG_ZSMALLOC": "y",
+            "CONFIG_CRYPTO_LZ4KD": "y", "CONFIG_LZ4KD_COMPRESS": "y",
+            "CONFIG_LZ4KD_DECOMPRESS": "y", "CONFIG_ZRAM_DEF_COMP_LZ4KD": "y",
+            "CONFIG_ZRAM_DEF_COMP": '"lz4kd"', "CONFIG_ZRAM_WRITEBACK": "y",
+            "CONFIG_TCP_CONG_BBR": "y", "CONFIG_TCP_CONG_BBR3": "y",
+            "CONFIG_DEFAULT_TCP_CONG": '"bbr3"', "CONFIG_CRYPTO_LZ4": "y",
+            "CONFIG_MODVERSIONS": "y", "CONFIG_CFI_CLANG": "y",
+            "CONFIG_LTO_CLANG_FULL": "y", "CONFIG_DEBUG_INFO": "y",
+            "CONFIG_DEBUG_INFO_BTF": "y", "CONFIG_DEBUG_INFO_BTF_MODULES": "y",
+            "CONFIG_CMDLINE": '"' + ensure_cmdline_tokens(self.PRESERVED, self.TOKENS) + '"',
+        }
+        values.update(KernelBuilder.RUNTIME_CONFIG)
+        values.update(overrides)
+        lines = []
+        for key, value in values.items():
+            lines.append(f"# {key} is not set" if value == "n" else f"{key}={value}")
+        return "\n".join(lines) + "\n"
+
+    def test_final_config_accepts_the_runtime_profile(self):
+        with tempfile.TemporaryDirectory() as root:
+            builder = KernelBuilder(BuildConfig(), root)
+            path = Path(root) / ".config"
+            path.write_text(self._valid_config(), encoding="utf-8")
+            builder._verify_generated_config(path)
+
+    def test_final_config_rejects_a_missing_runtime_selection(self):
+        cases = {
+            "mglru": {"CONFIG_LRU_GEN_ENABLED": "n"},
+            "mglru stats": {"CONFIG_LRU_GEN_STATS": "y"},
+            "lazy default": {"CONFIG_RCU_LAZY_DEFAULT_OFF": "y"},
+            "nocb": {"CONFIG_RCU_NOCB_CPU": "n"},
+            "menu": {"CONFIG_CPU_IDLE_GOV_MENU": "n"},
+            "teo": {"CONFIG_CPU_IDLE_GOV_TEO": "n"},
+            "forced cmdline": {"CONFIG_CMDLINE_FORCE": "y"},
+            "duplicate teo": {"CONFIG_CMDLINE": '"cpuidle.governor=teo cpuidle.governor=teo rcu_nocbs=all"'},
+            "missing nocbs": {"CONFIG_CMDLINE": '"cpuidle.governor=teo"'},
+            "second lazy switch": {"CONFIG_CMDLINE": '"' + ensure_cmdline_tokens(
+                self.PRESERVED, self.TOKENS) + ' rcutree.enable_rcu_lazy=1"'},
+        }
+        with tempfile.TemporaryDirectory() as root:
+            builder = KernelBuilder(BuildConfig(), root)
+            path = Path(root) / ".config"
+            for name, overrides in cases.items():
+                with self.subTest(name=name):
+                    path.write_text(self._valid_config(**overrides), encoding="utf-8")
+                    with self.assertRaisesRegex(RuntimeError, "Final .config"):
+                        builder._verify_generated_config(path)
 
 
 if __name__ == "__main__":
