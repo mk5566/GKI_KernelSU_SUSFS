@@ -1,6 +1,10 @@
 __pycache__/
 *.pyc
-slim-payload/
+.pytest_cache/
+.tmp-*/
 device_profiles/
-.tmp-common-verify/
-.tmp-sources/
+slim-payload/
+/artifacts/
+/boot.img
+/AnyKernel3.zip
+/Image

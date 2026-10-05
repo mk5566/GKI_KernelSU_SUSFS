@@ -7,6 +7,9 @@ Subject: [PATCH] net: tcp: backport BBRv3 to android13-5.15 with Android KABI
 - Adds BBRv3 congestion control
 - Ensures compatibility with Android KABI constraints
 - Adds TCP PLB support
+- Records the 5.15.211 tcp_in_ack_event() call that sits between the
+  RACK update and the TLP ack, so the patch applies with no fuzz.
+
 ---
  include/linux/netdevice.h      |    1 +
  include/linux/tcp.h            |    6 +
@@ -3115,7 +3118,9 @@ index 4268ac8..3842115 100644
  
  	/* ts_recent update must be made after we are sure that the packet
  	 * is in window.
-@@ -3956,7 +3985,7 @@ static int tcp_ack(struct sock *sk, const struct sk_buff *skb, int flag)
+@@ -3956,9 +3985,9 @@ static int tcp_ack(struct sock *sk, const struct sk_buff *skb, int flag)
+ 	tcp_rack_update_reo_wnd(sk, &rs);
+ 
  	tcp_in_ack_event(sk, flag);
  
  	if (tp->tlp_high_seq)

@@ -14,7 +14,7 @@ class ManagerCompatibilityTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.builder = KernelBuilder(BuildConfig(sub_level="211", os_patch_level="2026-09"), self.temp.name)
+        self.builder = KernelBuilder(BuildConfig(), self.temp.name)
 
     def test_builtin_and_main_header_layouts(self):
         for relative, declaration, expected in (
@@ -34,11 +34,13 @@ class ManagerCompatibilityTests(unittest.TestCase):
         self.assertIsNone(self.builder._read_ksu_uapi_version())
 
     def test_setup_success_cannot_hide_wrong_checkout(self):
-        requested = self.builder.config.ksu_setup_ref
-        with patch.object(self.builder, "_run_cmd"), \
-             patch.object(self.builder, "_chdir"), \
+        requested = "b" * 40
+        self.builder.config.sukisu_commit = requested
+        with patch.object(self.builder, "_chdir"), \
              patch.object(self.builder, "_require_path"), \
              patch("kernel_builder.subprocess.run", side_effect=[
+                 subprocess.CompletedProcess([], 0),
+                 subprocess.CompletedProcess([], 0),
                  subprocess.CompletedProcess([], 0, stdout=requested + "\n"),
                  subprocess.CompletedProcess([], 0, stdout="a" * 40 + "\n"),
              ]):
@@ -46,8 +48,9 @@ class ManagerCompatibilityTests(unittest.TestCase):
                 self.builder.add_kernelsu()
 
     def test_old_or_unknown_uapi_is_rejected_before_patching(self):
-        requested = self.builder.config.ksu_setup_ref
-        for uapi in (None, 2, 3, 5):
+        requested = "a" * 40
+        self.builder.config.sukisu_commit = requested
+        for uapi in (None, 1, 3, 5):
             with self.subTest(uapi=uapi), \
                  patch.object(self.builder, "_run_cmd"), \
                  patch.object(self.builder, "_chdir"), \
@@ -56,7 +59,7 @@ class ManagerCompatibilityTests(unittest.TestCase):
                  patch.object(self.builder, "_apply_patch_file") as apply_patch, \
                  patch("kernel_builder.subprocess.run", return_value=
                        subprocess.CompletedProcess([], 0, stdout=requested + "\n")):
-                with self.assertRaisesRegex(RuntimeError, "requires SukiSU UAPI 4"):
+                with self.assertRaisesRegex(RuntimeError, "not audited"):
                     self.builder.add_kernelsu()
                 apply_patch.assert_not_called()
 

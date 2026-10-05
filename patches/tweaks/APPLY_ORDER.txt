@@ -1,0 +1,5 @@
+# silence_irq_cpu_logspam only hid an affinity warning. It is not applied.
+avoid_extra_s2idle_wake_attempts.patch
+minimise_wakeup_time.patch
+clear_page_16bytes_align.patch
+adjust_cpu_scan_order.patch

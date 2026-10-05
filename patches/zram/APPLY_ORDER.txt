@@ -1,0 +1,2 @@
+lz4kd-integration.patch
+0003-built-in-provider-load.patch

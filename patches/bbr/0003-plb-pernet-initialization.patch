@@ -1,0 +1,115 @@
+From: GKI maintainers <gki-builder@localhost>
+Subject: [PATCH] tcp: initialize PLB only after pernet storage allocation
+
+TCP registers its pernet callback at fs_initcall time, before the sysctl
+initcall registers PLB. Accessing net_generic with PLB's zero ID reads the
+net_generic header as a pointer. On later namespace creation, TCP runs
+before pernet core allocates that namespace's PLB slot, which can also be
+outside the old generic array. Initialize and inherit PLB parameters in
+the owning pernet callback instead and register it before TCP. Return
+NULL before PLB registration.
+
+diff --git a/net/ipv4/tcp_ipv4.c b/net/ipv4/tcp_ipv4.c
+--- a/net/ipv4/tcp_ipv4.c
++++ b/net/ipv4/tcp_ipv4.c
+@@ -3146,7 +3146,6 @@
+ static int __net_init tcp_sk_init(struct net *net)
+ {
+ 	int res, cpu, cnt;
+-	struct tcp_plb_net_context *ctx, *init_ctx;
+ 
+ 	net->ipv4.tcp_sk = alloc_percpu(struct sock *);
+ 	if (!net->ipv4.tcp_sk)
+@@ -3242,18 +3241,6 @@
+ 	net->ipv4.sysctl_tcp_fastopen_blackhole_timeout = 0;
+ 	atomic_set(&net->ipv4.tfo_active_disable_times, 0);
+ 
+-	ctx = tcp_get_plb_ctx(net);
+-	init_ctx = tcp_get_plb_ctx(&init_net);
+-
+-	if (ctx && init_ctx && !net_eq(net, &init_net))
+-	{
+-		ctx->params.sysctl_tcp_plb_enabled = init_ctx->params.sysctl_tcp_plb_enabled; 
+-		ctx->params.sysctl_tcp_plb_idle_rehash_rounds = init_ctx->params.sysctl_tcp_plb_idle_rehash_rounds; 
+-		ctx->params.sysctl_tcp_plb_rehash_rounds = init_ctx->params.sysctl_tcp_plb_rehash_rounds; 
+-		ctx->params.sysctl_tcp_plb_suspend_rto_sec = init_ctx->params.sysctl_tcp_plb_suspend_rto_sec; 
+-		ctx->params.sysctl_tcp_plb_cong_thresh = init_ctx->params.sysctl_tcp_plb_cong_thresh; 
+-	}
+-
+ 	/* Reno is always built in */
+ 	if (!net_eq(net, &init_net) &&
+ 	    bpf_try_module_get(init_net.ipv4.tcp_congestion_control,
+diff --git a/net/ipv4/sysctl_net_ipv4.c b/net/ipv4/sysctl_net_ipv4.c
+--- a/net/ipv4/sysctl_net_ipv4.c
++++ b/net/ipv4/sysctl_net_ipv4.c
+@@ -66,7 +66,10 @@
+ 
+ struct tcp_plb_net_context *tcp_get_plb_ctx(struct net *net)
+ {
+-	return net_generic(net, tcp_plb_net_id);
++	unsigned int id = READ_ONCE(tcp_plb_net_id);
++
++	/* Do not interpret the net_generic header as an unregistered slot. */
++	return id ? net_generic(net, id) : NULL;
+ }
+ EXPORT_SYMBOL_GPL(tcp_get_plb_ctx);
+ 
+@@ -120,11 +123,24 @@
+ 	if (!ctx)
+ 		return -ENOMEM;
+ 	
+-	ctx->params.sysctl_tcp_plb_enabled = 0;
+-	ctx->params.sysctl_tcp_plb_idle_rehash_rounds = tcp_plb_max_rounds;
+-	ctx->params.sysctl_tcp_plb_rehash_rounds = tcp_plb_max_rounds;
+-	ctx->params.sysctl_tcp_plb_suspend_rto_sec = 0;
+-	ctx->params.sysctl_tcp_plb_cong_thresh = tcp_plb_max_cong_thresh;
++	/* pernet core has allocated this namespace's PLB context before
++	 * calling us. Other pernet callbacks must not initialize our slot.
++	 */
++	if (!net_eq(net, &init_net)) {
++		const struct tcp_plb_net_context *init_ctx = tcp_get_plb_ctx(&init_net);
++
++		ctx->params.sysctl_tcp_plb_enabled = READ_ONCE(init_ctx->params.sysctl_tcp_plb_enabled);
++		ctx->params.sysctl_tcp_plb_idle_rehash_rounds = READ_ONCE(init_ctx->params.sysctl_tcp_plb_idle_rehash_rounds);
++		ctx->params.sysctl_tcp_plb_rehash_rounds = READ_ONCE(init_ctx->params.sysctl_tcp_plb_rehash_rounds);
++		ctx->params.sysctl_tcp_plb_suspend_rto_sec = READ_ONCE(init_ctx->params.sysctl_tcp_plb_suspend_rto_sec);
++		ctx->params.sysctl_tcp_plb_cong_thresh = READ_ONCE(init_ctx->params.sysctl_tcp_plb_cong_thresh);
++	} else {
++		ctx->params.sysctl_tcp_plb_enabled = 0;
++		ctx->params.sysctl_tcp_plb_idle_rehash_rounds = tcp_plb_max_rounds;
++		ctx->params.sysctl_tcp_plb_rehash_rounds = tcp_plb_max_rounds;
++		ctx->params.sysctl_tcp_plb_suspend_rto_sec = 0;
++		ctx->params.sysctl_tcp_plb_cong_thresh = tcp_plb_max_cong_thresh;
++	}
+ 
+ 	table = kmemdup(plb_ctl_table_template, sizeof(plb_ctl_table_template), GFP_KERNEL);
+ 	if (!table) {
+@@ -174,6 +190,15 @@
+ 	.id   = &tcp_plb_net_id,
+ 	.size = sizeof(struct tcp_plb_net_context),
+ };
++
++/* Allocate PLB storage before TCP registers its fs_initcall pernet users.
++ * The network namespace and net sysctl cores are already initialized.
++ */
++static int __init tcp_plb_sysctl_init(void)
++{
++	return register_pernet_subsys(&plb_net_ops);
++}
++subsys_initcall(tcp_plb_sysctl_init);
+ 
+ /* Update system visible IP port range */
+ static void set_local_port_range(struct net *net, int range[2])
+@@ -1571,12 +1596,6 @@
+ 		return -ENOMEM;
+ 	}
+ 
+-	if (register_pernet_subsys(&plb_net_ops)) {
+-		unregister_pernet_subsys(&ipv4_sysctl_ops);
+-		unregister_net_sysctl_table(hdr);
+-		return -ENOMEM;
+-	}
+-
+ 	return 0;
+ }
+ 
