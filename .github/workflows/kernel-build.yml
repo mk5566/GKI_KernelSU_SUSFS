@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       sukisu_channel:
-        description: SukiSU (stable keeps the booting September 21 UAPI-4 revision; dev tracks upstream)
+        description: SukiSU source. stable keeps the reviewed booting revision; dev follows upstream. Kernel UAPI follows that source.
         required: true
         type: choice
         options: [stable, dev]

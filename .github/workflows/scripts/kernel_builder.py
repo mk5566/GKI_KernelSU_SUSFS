@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass, field
 from config import (ANDROID_FAMILY, BuildConfig, KSU_REPO_CONFIG, SUSFS_REPO_CONFIG,
-                   SUKISU_PATCH_REPO_CONFIG, ANYKERNEL_CONFIG, SUPPORTED_SUKISU_UAPI,
+                   SUKISU_PATCH_REPO_CONFIG, ANYKERNEL_CONFIG,
                    SUSFS_REVISION, SUKISU_PATCH_REVISION, REPO_ROOT)
 from susfs_integration import select_mount_patch
 from patch_plan import make_patch_plan
@@ -504,12 +504,8 @@ class KernelBuilder:
         if actual != requested:
             raise RuntimeError(f"SukiSU checkout mismatch: requested {requested}, got {actual}")
         uapi = self._read_ksu_uapi_version()
-        if uapi not in SUPPORTED_SUKISU_UAPI:
-            raise RuntimeError(
-                f"SukiSU UAPI {uapi} is not audited for this mount-only integration; "
-                f"supported: {sorted(SUPPORTED_SUKISU_UAPI)}"
-            )
-        logger.info(f"SukiSU kernel UAPI: {uapi}; the manager must use the same UAPI")
+        logger.info("SukiSU kernel UAPI: %s; the manager must use the same UAPI",
+                    uapi if uapi is not None else "unset")
 
         self._chdir(ksu_dir)
         integration_patch = (Path(__file__).resolve().parents[3] / "patches/susfs/"

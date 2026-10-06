@@ -47,21 +47,19 @@ class ManagerCompatibilityTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "SukiSU checkout mismatch"):
                 self.builder.add_kernelsu()
 
-    def test_old_or_unknown_uapi_is_rejected_before_patching(self):
+    def test_any_uapi_reaches_the_mount_patches(self):
         requested = "a" * 40
         self.builder.config.sukisu_commit = requested
-        for uapi in (None, 1, 3, 5):
+        for uapi in (None, 1, 2, 4, 5, 6):
             with self.subTest(uapi=uapi), \
-                 patch.object(self.builder, "_run_cmd"), \
                  patch.object(self.builder, "_chdir"), \
                  patch.object(self.builder, "_require_path"), \
                  patch.object(self.builder, "_read_ksu_uapi_version", return_value=uapi), \
                  patch.object(self.builder, "_apply_patch_file") as apply_patch, \
                  patch("kernel_builder.subprocess.run", return_value=
                        subprocess.CompletedProcess([], 0, stdout=requested + "\n")):
-                with self.assertRaisesRegex(RuntimeError, "not audited"):
-                    self.builder.add_kernelsu()
-                apply_patch.assert_not_called()
+                self.builder.add_kernelsu()
+                self.assertEqual(apply_patch.call_count, 2)
 
     def test_compiled_config_requires_builtin_and_hooks(self):
         symbols = ("CONFIG_KSU", "CONFIG_KPROBES", "CONFIG_KRETPROBES",

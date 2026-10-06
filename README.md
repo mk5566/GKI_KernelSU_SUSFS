@@ -19,8 +19,9 @@ channel choices use the same fixed kernel feature set described below.
 
 ## Kernel profile
 
-- Built-in SukiSU. `stable` pins the UAPI-4 source from the booting September 21 build;
-  `dev` explicitly opts into upstream HEAD. Manager and kernel UAPI must match.
+- Built-in SukiSU. `stable` pins the reviewed source from the booting September 21 build.
+  `dev` follows upstream HEAD. The kernel uses the UAPI declared by that SukiSU
+  source. The manager must use the same UAPI.
 - SUSFS mount hiding only, with the known-booting filesystem/root integration.
   SUSFS, LZ4KD helpers and AnyKernel3 use the September 21 source revisions,
   pinned independently of GKI updates.
