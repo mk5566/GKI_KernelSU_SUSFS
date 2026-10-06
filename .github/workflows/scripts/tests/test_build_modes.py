@@ -5,13 +5,16 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from build import parse_args
 from config import ANDROID_FAMILY, BuildConfig, REPO_ROOT, SUKISU_STABLE_REVISION
-from kernel_builder import KernelBuilder, ensure_cmdline_tokens, unquote_kconfig_string
+from kernel_builder import (KernelBuilder, apply_release_date_suffix,
+                            ensure_cmdline_tokens, release_date_suffix,
+                            unquote_kconfig_string)
 from patch_plan import make_patch_plan
 from target import choose_gki_tag, choose_manifest_branch, peeled_commit, resolve_sukisu, resolve_susfs, resolve_sukisu_patch, certified_releases
 from abi import compare_symvers, read_symvers
@@ -264,6 +267,62 @@ class ModeTests(unittest.TestCase):
             self.assertEqual(builder.env["PATH"].split(os.pathsep)[0], str(clang_bin))
 
 
+class ReleaseNameTests(unittest.TestCase):
+    FIXTURE = (
+        "\t\t# You cannot use 'git describe --dirty' because it tries to\n"
+        "\t\tif {\n"
+        "\t\t\tgit diff-index --name-only HEAD\n"
+        "\t\t} | read dummy; then\n"
+        "\t\t\tprintf '%s' -dirty\n"
+        "\t\tfi\n"
+    )
+
+    def test_release_suffix_uses_utc_month_and_day(self):
+        utc = timezone.utc
+        self.assertEqual(release_date_suffix(datetime(2026, 10, 6, 23, tzinfo=utc)), "oct6")
+        self.assertEqual(release_date_suffix(datetime(2026, 10, 10, tzinfo=utc)), "oct10")
+        self.assertEqual(release_date_suffix(datetime(2026, 1, 1, tzinfo=utc)), "jan1")
+        ahead = timezone(timedelta(hours=8))
+        self.assertEqual(release_date_suffix(datetime(2026, 10, 6, 0, 30, tzinfo=ahead)), "oct5")
+        with self.assertRaises(ValueError):
+            release_date_suffix(datetime(2026, 10, 6))
+
+    def test_setlocalversion_replaces_dirty_and_can_be_repeated(self):
+        once = apply_release_date_suffix(self.FIXTURE, "oct6")
+        twice = apply_release_date_suffix(once, "oct6")
+        self.assertEqual(once, twice)
+        self.assertIn("printf '%s' -oct6", once)
+        self.assertNotIn("printf '%s' -dirty", once)
+        self.assertIn("git describe --dirty", once)
+        self.assertEqual(apply_release_date_suffix(once, "oct7").count("printf '%s' -oct7"), 1)
+        with self.assertRaises(RuntimeError):
+            apply_release_date_suffix("no suffix here\n", "oct6")
+        with self.assertRaises(ValueError):
+            apply_release_date_suffix(self.FIXTURE, "oct6;rm")
+
+    def test_kernel_name_writes_the_build_date_into_setlocalversion(self):
+        with tempfile.TemporaryDirectory() as root:
+            builder = KernelBuilder(BuildConfig(), root)
+            path = builder.work_dir / "common/scripts/setlocalversion"
+            path.parent.mkdir(parents=True)
+            path.write_text(self.FIXTURE, encoding="utf-8")
+            builder.configure_kernel_name()
+            builder.configure_kernel_name()
+            suffix = release_date_suffix(datetime.now(timezone.utc))
+            text = path.read_text(encoding="utf-8")
+            self.assertEqual(text.count(f"printf '%s' -{suffix}"), 1)
+            self.assertNotIn("printf '%s' -dirty", text)
+            self.assertEqual(builder.release_suffix, suffix)
+            release = path.parents[2] / "out/android13-5.15/common/include/config/kernel.release"
+            release.parent.mkdir(parents=True)
+            release.write_text(f"5.15.211-android13-8-g703571a1a161-{suffix}\n", encoding="utf-8")
+            builder.config.gki_commit = "703571a1a1618be8e370bc29c8fda1af383713de"
+            builder._verify_kernel_release()
+            release.write_text("5.15.211-android13-8-g703571a1a161-dirty\n", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "Kernel release"):
+                builder._verify_kernel_release()
+
+
 class RuntimeConfigTests(unittest.TestCase):
     TOKENS = KernelBuilder.CMDLINE_TOKENS
     PRESERVED = ("stack_depot_disable=on kasan.stacktrace=off "
@@ -281,12 +340,11 @@ class RuntimeConfigTests(unittest.TestCase):
         self.assertEqual(unquote_kconfig_string('"' + once + '"'), once)
 
     def test_cmdline_replaces_a_conflicting_value_without_duplicating(self):
-        raw = self.PRESERVED + " cpuidle.governor=menu rcu_nocbs=0 cpuidle.governor=teo"
+        raw = self.PRESERVED + " cpuidle.governor=menu cpuidle.governor=teo"
         result = ensure_cmdline_tokens(raw, self.TOKENS)
         self.assertEqual(result.count("cpuidle.governor=teo"), 1)
-        self.assertEqual(result.count("rcu_nocbs=all"), 1)
         self.assertNotIn("cpuidle.governor=menu", result)
-        self.assertNotIn("rcu_nocbs=0", result)
+        self.assertNotIn("rcu_nocbs", result)
         self.assertEqual(ensure_cmdline_tokens(result + " " + " ".join(self.TOKENS), self.TOKENS), result)
         self.assertNotIn("rcutree.enable_rcu_lazy=", result)
 
@@ -300,7 +358,7 @@ class RuntimeConfigTests(unittest.TestCase):
         kconfig.write_text("config KSU_SUSFS\nconfig KSU_SUSFS_SUS_MOUNT\n", encoding="utf-8")
         return builder, path
 
-    def test_defconfig_enables_mglru_lazy_rcu_and_teo_once(self):
+    def test_defconfig_enables_mglru_and_teo_without_rcu_offload(self):
         with tempfile.TemporaryDirectory() as root:
             original = (
                 'CONFIG_CMDLINE="' + self.PRESERVED + '"\n'
@@ -326,12 +384,13 @@ class RuntimeConfigTests(unittest.TestCase):
             cmdline = unquote_kconfig_string(builder._defconfig_assignment("CONFIG_CMDLINE"))
             self.assertEqual(cmdline, ensure_cmdline_tokens(self.PRESERVED, self.TOKENS))
             self.assertEqual(result.count("cpuidle.governor=teo"), 1)
-            self.assertEqual(result.count("rcu_nocbs=all"), 1)
+            self.assertNotIn("rcu_nocbs", result)
             self.assertIn("CONFIG_LRU_GEN=y", result)
             self.assertIn("CONFIG_LRU_GEN_ENABLED=y", result)
             self.assertNotIn("CONFIG_LRU_GEN_STATS", result)
             self.assertIn("CONFIG_RCU_LAZY=y", result)
-            self.assertIn("CONFIG_RCU_LAZY_DEFAULT_OFF=n", result)
+            self.assertIn("CONFIG_RCU_LAZY_DEFAULT_OFF=y", result)
+            self.assertNotIn("CONFIG_RCU_LAZY_DEFAULT_OFF=n", result)
             self.assertIn("CONFIG_RCU_NOCB_CPU=y", result)
             self.assertIn("CONFIG_CPU_IDLE_GOV_MENU=y", result)
             self.assertIn("CONFIG_CPU_IDLE_GOV_TEO=y", result)
@@ -374,13 +433,13 @@ class RuntimeConfigTests(unittest.TestCase):
         cases = {
             "mglru": {"CONFIG_LRU_GEN_ENABLED": "n"},
             "mglru stats": {"CONFIG_LRU_GEN_STATS": "y"},
-            "lazy default": {"CONFIG_RCU_LAZY_DEFAULT_OFF": "y"},
+            "lazy default": {"CONFIG_RCU_LAZY_DEFAULT_OFF": "n"},
             "nocb": {"CONFIG_RCU_NOCB_CPU": "n"},
             "menu": {"CONFIG_CPU_IDLE_GOV_MENU": "n"},
             "teo": {"CONFIG_CPU_IDLE_GOV_TEO": "n"},
             "forced cmdline": {"CONFIG_CMDLINE_FORCE": "y"},
-            "duplicate teo": {"CONFIG_CMDLINE": '"cpuidle.governor=teo cpuidle.governor=teo rcu_nocbs=all"'},
-            "missing nocbs": {"CONFIG_CMDLINE": '"cpuidle.governor=teo"'},
+            "duplicate teo": {"CONFIG_CMDLINE": '"cpuidle.governor=teo cpuidle.governor=teo"'},
+            "rcu_nocbs": {"CONFIG_CMDLINE": '"cpuidle.governor=teo rcu_nocbs=all"'},
             "second lazy switch": {"CONFIG_CMDLINE": '"' + ensure_cmdline_tokens(
                 self.PRESERVED, self.TOKENS) + ' rcutree.enable_rcu_lazy=1"'},
         }

@@ -39,13 +39,14 @@ channel choices use the same fixed kernel feature set described below.
   other optional congestion algorithms are disabled. FQ pacing remains enabled.
 - Multi-gen LRU is enabled by default through the GKI options. Its statistics
   option stays off. The runtime switch remains `/sys/kernel/mm/lru_gen/enabled`.
-- Lazy RCU is enabled by default, with callback offload compiled in. This GKI
-  has no build-time all-CPU no-CB option, so the built-in command line also
-  carries `rcu_nocbs=all`. Bootloader arguments are still appended.
+- Lazy RCU stays at the certified default, off. No CPU is callback-offloaded.
+  Forcing lazy callbacks with `rcu_nocbs=all` stalled `fastboot boot`; the
+  phone returned to the flashed kernel. Callback offload remains compiled in.
 - TEO is the default cpuidle governor. Menu stays compiled and can be selected
   through the cpuidle sysfs interface.
-- These three use the kernel's own runtime behavior. A passing build does not
-  measure latency or battery life; that still needs the device.
+- Multi-gen LRU and TEO use the kernel's own runtime behavior. A passing build
+  does not measure latency or battery life, and it does not show that the image
+  boots. That still needs the device.
 - Preserve GKI security, vendor hooks, module versioning, CFI, full Clang LTO,
   preemption, timing, cpufreq governors and I/O schedulers. Keep governor
   support that supplies frozen vendor-facing cpufreq exports.
@@ -124,3 +125,12 @@ configured at 16 GiB. No partitions were flashed.
 These are boot and functional checks, not a long-duration stability test or
 a comparative performance benchmark. BBRv1 is available, but its allocation
 failure fallback was not forced during device testing.
+
+Run [37288766042](https://github.com/mk5566/GKI_KernelSU_SUSFS/actions/runs/37288766042)
+at `eb59b4c` also passed compilation and the 8,639 CRC check. `fastboot boot`
+of that image did not start Android, and the phone returned to the flashed
+kernel. That image forced lazy RCU on and appended `rcu_nocbs=all`. Those
+settings are no longer applied. That image's version string ended in `-dirty`
+because `setlocalversion` marks a patched tree. The booting kernel above has
+the same suffix. Later builds keep the GKI commit and use the UTC build date
+there instead, such as `-oct6`.

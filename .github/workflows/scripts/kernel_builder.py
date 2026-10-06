@@ -20,6 +20,39 @@ from repack_boot import repack_boot
 logger = logging.getLogger(__name__)
 
 
+_RELEASE_MONTHS = ("jan", "feb", "mar", "apr", "may", "jun",
+                   "jul", "aug", "sep", "oct", "nov", "dec")
+_DIRTY_RELEASE = "printf '%s' -dirty"
+_DATED_RELEASE = re.compile(r"printf '%s' -([a-z]{3}\d{1,2})")
+
+
+def release_date_suffix(moment):
+    """UTC month and day with no leading zero, as in oct6."""
+    if moment.tzinfo is None:
+        raise ValueError("release date requires a timezone")
+    moment = moment.astimezone(timezone.utc)
+    return f"{_RELEASE_MONTHS[moment.month - 1]}{moment.day}"
+
+
+def apply_release_date_suffix(script, suffix):
+    """Replace setlocalversion's -dirty with the build date.
+
+    The GKI commit hash stays ahead of this suffix. The edit is repeatable.
+    """
+    if not re.fullmatch(r"[a-z]{3}(?:[1-9]|[12]\d|3[01])", suffix):
+        raise ValueError(f"invalid release suffix: {suffix}")
+    replacement = f"printf '%s' -{suffix}"
+    if _DIRTY_RELEASE in script:
+        if script.count(_DIRTY_RELEASE) != 1:
+            raise RuntimeError("setlocalversion has more than one -dirty release suffix")
+        return script.replace(_DIRTY_RELEASE, replacement, 1)
+    matches = list(_DATED_RELEASE.finditer(script))
+    if len(matches) != 1:
+        raise RuntimeError("setlocalversion has no -dirty release suffix to replace")
+    match = matches[0]
+    return script[:match.start()] + replacement + script[match.end():]
+
+
 def unquote_kconfig_string(value):
     value = value.strip()
     if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
@@ -143,17 +176,21 @@ class KernelBuilder:
     }
 
     # android13-5.15 already builds MGLRU, lazy RCU, menu, and TEO. It has
-    # no all-CPU no-CB choice and no cpuidle default-governor choice. Menu
-    # is rated above TEO, and lazy RCU stays idle unless every CPU is a
-    # no-CB CPU. Append those two parameters to the built-in command line
-    # and keep bootloader arguments through CONFIG_CMDLINE_EXTEND.
+    # no cpuidle default-governor choice, and menu is rated above TEO, so
+    # the built-in command line selects TEO. Bootloader arguments stay
+    # appended through CONFIG_CMDLINE_EXTEND.
+    #
+    # Lazy RCU stays at the certified default. Turning it on requires
+    # rcu_nocbs=all, which offloads every CPU, including the boot CPU, while
+    # the offload threads are not created until early_initcall. That pair
+    # stalled fastboot boot and the bootloader returned to the flashed kernel.
     RUNTIME_CONFIG = {
         "CONFIG_LRU_GEN": "y",
         "CONFIG_LRU_GEN_ENABLED": "y",
         "CONFIG_RCU_EXPERT": "y",
         "CONFIG_RCU_NOCB_CPU": "y",
         "CONFIG_RCU_LAZY": "y",
-        "CONFIG_RCU_LAZY_DEFAULT_OFF": "n",
+        "CONFIG_RCU_LAZY_DEFAULT_OFF": "y",
         "CONFIG_CPU_IDLE": "y",
         "CONFIG_CPU_IDLE_GOV_MENU": "y",
         "CONFIG_CPU_IDLE_GOV_TEO": "y",
@@ -163,7 +200,6 @@ class KernelBuilder:
     }
     CMDLINE_TOKENS = (
         "cpuidle.governor=teo",
-        "rcu_nocbs=all",
     )
 
     def __init__(self, config: BuildConfig, workspace: str):
@@ -182,6 +218,7 @@ class KernelBuilder:
         self.applied_tweak_patches = []
         self.applied_integration_patches = []
         self.abi_symbol_count = 0
+        self.release_suffix = ""
         self._setup_env()
 
     def _setup_env(self):
@@ -674,9 +711,17 @@ class KernelBuilder:
                     logger.info(f"Removed built-in zram/zsmalloc from {mod_list_file.name}")
 
     def configure_kernel_name(self):
-        # Preserve AOSP's KMI generation and release naming scripts.
+        # Patches leave the tree dirty, so setlocalversion appends -dirty
+        # after -g<commit>. Keep that commit and use the UTC build date.
         self.env["KBUILD_BUILD_USER"] = "gki-builder"
         self.env["KBUILD_BUILD_HOST"] = "github-actions"
+        suffix = release_date_suffix(datetime.now(timezone.utc))
+        script = self.work_dir / "common/scripts/setlocalversion"
+        self._require_path(script, "kernel setlocalversion")
+        script.write_text(apply_release_date_suffix(
+            script.read_text(encoding="utf-8"), suffix), encoding="utf-8", newline="\n")
+        self.release_suffix = suffix
+        logger.info("Kernel release suffix: %s", suffix)
 
     def show_kernel_config(self):
         logger.info("=== Kernel config summary ===")
@@ -807,7 +852,7 @@ class KernelBuilder:
         self._verify_runtime_config(values)
         self._verify_susfs_config(path)
         logger.info("Generated .config verified: BBRv3 default, BBRv1 built in, "
-                    "ZRAM lz4kd, KPM off, MGLRU on, lazy RCU on, TEO default")
+                    "ZRAM lz4kd, KPM off, MGLRU on, lazy RCU off, TEO default")
 
     def configure_build_fragment(self):
         # Extra root symbols preclude an exact export-set check. Frozen GKI
@@ -843,6 +888,7 @@ class KernelBuilder:
                             "android13-5.15" /
                             "common/.config")
             self._verify_generated_config(final_config)
+            self._verify_kernel_release()
             dist = image_path.parent
             symvers = dist / "vmlinux.symvers"
             self._require_path(symvers, "built GKI symbol CRCs")
@@ -854,6 +900,18 @@ class KernelBuilder:
         except Exception as e:
             logger.error(f"Compile error: {e}")
             return False
+
+    def _verify_kernel_release(self):
+        path = (self.work_dir / "out/android13-5.15/common/include/config/kernel.release")
+        self._require_path(path, "kernel release string")
+        release = path.read_text(encoding="utf-8").strip()
+        suffix = f"-{self.release_suffix}"
+        short = (self.config.gki_commit or "")[:12]
+        if (not self.release_suffix or "-dirty" in release or not release.endswith(suffix)
+                or not short or f"-g{short}" not in release):
+            raise RuntimeError(
+                f"Kernel release must keep GKI commit {short} and end with {suffix}, got {release}")
+        logger.info("Kernel release: %s", release)
 
     def _verify_runtime_config(self, values):
         for key, want in self.RUNTIME_CONFIG.items():
@@ -868,10 +926,11 @@ class KernelBuilder:
             if tokens.count(token) != 1:
                 raise RuntimeError(
                     f"Final .config command line must contain {token} once, got: {cmdline}")
-        if any(part.startswith("rcutree.enable_rcu_lazy=") for part in tokens):
+        if any(part.startswith(("rcu_nocbs=", "rcutree.enable_rcu_lazy="))
+               for part in tokens):
             raise RuntimeError(
-                "Final .config mismatch: lazy RCU is selected by "
-                "CONFIG_RCU_LAZY_DEFAULT_OFF, not a second parameter")
+                "Final .config mismatch: lazy RCU and callback offload stay "
+                "at the certified default")
 
     def _verify_susfs_config(self, config_path: Path):
         self._require_path(config_path, "compiled kernel .config")
@@ -984,6 +1043,7 @@ class KernelBuilder:
             f"- GKI tag: `{self.config.gki_tag}`",
             f"- GKI exact commit: `{self.config.gki_commit}`",
             f"- Kernel version: {self.config.kernel_version}",
+            f"- Kernel release suffix: {self.release_suffix or 'not set'}",
             f"- Manifest branch: `{self.config.manifest_branch}`",
             f"- Kernel source: `{self._git_head(self.work_dir / 'common')}`",
             f"- SukiSU channel: {self.config.sukisu_channel}",
@@ -995,7 +1055,7 @@ class KernelBuilder:
             f"- LZ4KD helper source commit: `{self.config.sukisu_patch_commit or SUKISU_PATCH_REVISION}`",
             "- TCP: BBRv3 default, stock BBRv1 built in, other congestion algorithms off",
             "- Multi-gen LRU: enabled by default; statistics off",
-            "- RCU: lazy callbacks on; offloaded from all CPUs",
+            "- RCU: certified lazy-off default; no CPU is callback-offloaded",
             "- CPU idle: TEO default, menu governor built in",
             f"- Applied BBR patches: {', '.join(self.applied_bbr_patches) or 'none'}",
             f"- Applied tweak patches: {', '.join(self.applied_tweak_patches) or 'none'}",
