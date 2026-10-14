@@ -10,18 +10,22 @@ As checked on 2026-10-03, the release was `android13-5.15-2026-09_r2`, Linux
 ## Build with GitHub Actions
 
 1. Open [Kernel Build](https://github.com/mk5566/GKI_KernelSU_SUSFS/actions/workflows/kernel-build.yml).
-2. Select **Run workflow**, use branch **main**, and keep **sukisu_channel: stable**
-   for the reviewed source stack. Choose `dev` only to test upstream SukiSU.
+2. Select **Run workflow**, use branch **main**, and keep **sukisu_channel: stable**.
+   Both `stable` and the existing `dev` choice now follow the latest upstream SukiSU.
 3. Download the successful run's artifact containing `boot.img` and `AnyKernel3.zip`.
 
 The workflow is manual only. Pushing to `main` does not start a build. Both
 channel choices use the same fixed kernel feature set described below.
+Before syncing GKI, CI checks the complete SukiSU patch stack against a fresh
+upstream checkout, so source-layout changes fail early.
 
 ## Kernel profile
 
-- Built-in SukiSU. `stable` pins the reviewed source from the booting September 21 build.
-  `dev` follows upstream HEAD. The kernel uses the UAPI declared by that SukiSU
-  source. The manager must use the same UAPI.
+- Built-in SukiSU follows the latest upstream default-branch HEAD for both
+  channel choices. Each run resolves it once to an exact commit for setup and
+  checkout, recorded in `BUILD_INFO.md`. The kernel uses that source's UAPI;
+  the manager must use the same UAPI. The mount integration is rebased against
+  upstream `0bca5d152f1ed8eb6ebadff4ea342a806e7a7400` (UAPI 5).
 - SUSFS mount hiding only, with the known-booting filesystem/root integration.
   SUSFS, LZ4KD helpers and AnyKernel3 use the September 21 source revisions,
   pinned independently of GKI updates.

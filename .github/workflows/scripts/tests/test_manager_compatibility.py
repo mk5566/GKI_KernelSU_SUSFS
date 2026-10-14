@@ -22,6 +22,8 @@ class ManagerCompatibilityTests(unittest.TestCase):
              "DECLARE(__u32, KERNEL_SU_UAPI_VERSION, 2);", 2),
             ("uapi/supercall.h",
              "static const __u32 KERNEL_SU_UAPI_VERSION = 4;", 4),
+            ("uapi/supercall.h",
+             "static const __u32 KERNEL_SU_UAPI_VERSION = 5;", 5),
         ):
             with self.subTest(relative=relative):
                 header = self.builder.work_dir / "KernelSU" / relative

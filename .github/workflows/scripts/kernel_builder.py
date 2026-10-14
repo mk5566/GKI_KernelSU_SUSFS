@@ -509,7 +509,7 @@ class KernelBuilder:
 
         self._chdir(ksu_dir)
         integration_patch = (Path(__file__).resolve().parents[3] / "patches/susfs/"
-                             "0001-sukisu-main-uapi4-mount-support.patch")
+                             "0001-sukisu-main-mount-support.patch")
         self._apply_patch_file(integration_patch)
         self._apply_patch_file(REPO_ROOT / "patches/susfs/0003-sukisu-quiet-production.patch")
         self._chdir(self.work_dir)
@@ -1043,7 +1043,7 @@ class KernelBuilder:
             f"- Manifest branch: `{self.config.manifest_branch}`",
             f"- Kernel source: `{self._git_head(self.work_dir / 'common')}`",
             f"- SukiSU channel: {self.config.sukisu_channel}",
-            f"- SukiSU tag: {self.config.sukisu_tag or 'none (dev)'}",
+            f"- SukiSU tag: {self.config.sukisu_tag or 'none (upstream HEAD)'}",
             f"- SukiSU exact commit: `{self.config.sukisu_commit}`",
             f"- SukiSU checkout: `{self._git_head(self.work_dir / 'KernelSU')}`",
             f"- SukiSU kernel UAPI: {self._read_ksu_uapi_version()}",

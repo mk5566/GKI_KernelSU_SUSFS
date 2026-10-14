@@ -44,7 +44,7 @@ def main(argv=None):
     config.sukisu_patch_commit = args.sukisu_patch_commit or config.sukisu_patch_commit
     logging.info("GKI %s %s %s; manifest %s; SukiSU %s %s; SUSFS %s; SukiSU_patch %s",
                  config.kernel_version, config.gki_tag, config.gki_commit,
-                 config.manifest_branch, config.sukisu_tag or "dev", config.sukisu_commit,
+                 config.manifest_branch, config.sukisu_tag or "upstream HEAD", config.sukisu_commit,
                  config.susfs_commit, config.sukisu_patch_commit)
     builder = KernelBuilder(config, args.workspace)
     result = builder.build(preflight_only=args.preflight_only)

@@ -1,5 +1,12 @@
+From: GKI maintainers <gki-builder@localhost>
+Subject: [PATCH] kernelsu: integrate mount-only SUSFS with upstream main
+
+Base: SukiSU-Ultra 0bca5d152f1ed8eb6ebadff4ea342a806e7a7400 (UAPI 5).
+Keep upstream module blacklist and forced-feature boot handling intact.
+SUSFS uses its own reboot protocol; it does not change the driver UAPI.
+
 diff --git a/kernel/Kbuild b/kernel/Kbuild
-index 71d8e3a6..546baf9f 100644
+index a9dd635..13c1c99 100644
 --- a/kernel/Kbuild
 +++ b/kernel/Kbuild
 @@ -1,6 +1,7 @@
@@ -7,11 +14,11 @@ index 71d8e3a6..546baf9f 100644
  
  kernelsu-objs += feature/kernel_umount.o
 +kernelsu-$(CONFIG_KSU_SUSFS) += feature/susfs.o
+ kernelsu-objs += feature/module_blacklist.o
  kernelsu-objs += feature/sulog.o
  kernelsu-objs += feature/sucompat.o
- 
 diff --git a/kernel/Kconfig b/kernel/Kconfig
-index e84cffc8..ebf4cac8 100644
+index e84cffc..ebf4cac 100644
 --- a/kernel/Kconfig
 +++ b/kernel/Kconfig
 @@ -18,6 +18,21 @@ config KSU_DEBUG
@@ -37,7 +44,7 @@ index e84cffc8..ebf4cac8 100644
      bool "Use manual su"
      depends on KSU
 diff --git a/kernel/core/init.c b/kernel/core/init.c
-index 765370a7..f17fe4df 100644
+index 8b5d7a8..8bdc686 100644
 --- a/kernel/core/init.c
 +++ b/kernel/core/init.c
 @@ -6,6 +6,9 @@
@@ -50,7 +57,7 @@ index 765370a7..f17fe4df 100644
  
  #include "policy/allowlist.h"
  #include "policy/app_profile.h"
-@@ -140,6 +143,10 @@ int __init kernelsu_init(void)
+@@ -143,6 +146,10 @@ int __init kernelsu_init(void)
  
      ksu_init_symbol_resolver();
  
@@ -63,7 +70,7 @@ index 765370a7..f17fe4df 100644
      }
 diff --git a/kernel/feature/susfs.c b/kernel/feature/susfs.c
 new file mode 100644
-index 00000000..fcf4f3ca
+index 0000000..fcf4f3c
 --- /dev/null
 +++ b/kernel/feature/susfs.c
 @@ -0,0 +1,68 @@
@@ -137,7 +144,7 @@ index 00000000..fcf4f3ca
 +}
 diff --git a/kernel/feature/susfs.h b/kernel/feature/susfs.h
 new file mode 100644
-index 00000000..96cef93b
+index 0000000..96cef93
 --- /dev/null
 +++ b/kernel/feature/susfs.h
 @@ -0,0 +1,15 @@
@@ -157,7 +164,7 @@ index 00000000..96cef93b
 +
 +#endif
 diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
-index d3f3ac49..70a1d5a9 100644
+index d3f3ac4..70a1d5a 100644
 --- a/kernel/hook/setuid_hook.c
 +++ b/kernel/hook/setuid_hook.c
 @@ -20,6 +20,7 @@
@@ -185,7 +192,7 @@ index d3f3ac49..70a1d5a9 100644
      return 0;
  }
 diff --git a/kernel/policy/app_profile.c b/kernel/policy/app_profile.c
-index 01f13a2f..ce6140c1 100644
+index 01f13a2..ce6140c 100644
 --- a/kernel/policy/app_profile.c
 +++ b/kernel/policy/app_profile.c
 @@ -20,6 +20,7 @@
@@ -205,7 +212,7 @@ index 01f13a2f..ce6140c1 100644
  
      if (profile->flags & FLAG_KSU_NO_NEW_PRIVS) {
 diff --git a/kernel/runtime/boot_event.c b/kernel/runtime/boot_event.c
-index 7fcb1d9d..75c841c8 100644
+index 91848e6..dcdec0e 100644
 --- a/kernel/runtime/boot_event.c
 +++ b/kernel/runtime/boot_event.c
 @@ -3,6 +3,9 @@
@@ -217,11 +224,11 @@ index 7fcb1d9d..75c841c8 100644
 +#endif
  
  #include "policy/allowlist.h"
- #include "klog.h" // IWYU pragma: keep
-@@ -31,6 +34,9 @@ void on_post_fs_data(void)
-     // Sanity check for safe mode only needs early-boot input samples.
-     ksu_stop_input_hook_runtime();
+ #include "policy/feature.h"
+@@ -34,6 +37,9 @@ void on_post_fs_data(void)
      ksu_selinux_hide_handle_post_fs_data();
+     // retry forced features which failed at second stage
+     ksu_feature_apply_forced();
 +#ifdef CONFIG_KSU_SUSFS
 +    susfs_start_sdcard_monitor_fn();
 +#endif
@@ -229,10 +236,10 @@ index 7fcb1d9d..75c841c8 100644
  
  extern void ext4_unregister_sysfs(struct super_block *sb);
 diff --git a/kernel/selinux/selinux.c b/kernel/selinux/selinux.c
-index 7bc6d6d0..248bcf5d 100644
+index e5dcc4d..40e9bff 100644
 --- a/kernel/selinux/selinux.c
 +++ b/kernel/selinux/selinux.c
-@@ -195,6 +195,23 @@ bool is_ksu_domain(void)
+@@ -204,6 +204,23 @@ bool is_ksu_domain(void)
      return is_task_ksu_domain(current_cred());
  }
  

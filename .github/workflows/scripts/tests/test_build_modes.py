@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from build import parse_args
-from config import ANDROID_FAMILY, BuildConfig, REPO_ROOT, SUKISU_STABLE_REVISION
+from config import ANDROID_FAMILY, BuildConfig, REPO_ROOT
 from kernel_builder import (KernelBuilder, apply_release_date_suffix,
                             ensure_cmdline_tokens, release_date_suffix,
                             unquote_kconfig_string)
@@ -65,11 +65,23 @@ class ResolverTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             read_symvers('<html>artifact unavailable</html>')
 
-    def test_sukisu_stable_and_dev_are_immutable(self):
-        self.assertEqual(resolve_sukisu("stable"), ("v4.2.0-reviewed-uapi4", SUKISU_STABLE_REVISION))
-        with patch("target._git", return_value="ref: refs/heads/main\tHEAD\n" +
-                   "c" * 40 + "\tHEAD\n"):
-            self.assertEqual(resolve_sukisu("dev"), ("", "c" * 40))
+    def test_all_sukisu_channels_resolve_latest_to_an_exact_commit(self):
+        for channel in ("stable", "dev"):
+            with self.subTest(channel=channel), \
+                 patch("target._git", return_value="ref: refs/heads/main\tHEAD\n" +
+                       "c" * 40 + "\tHEAD\n") as git:
+                self.assertEqual(resolve_sukisu(channel), ("", "c" * 40))
+                self.assertEqual(git.call_count, 1)
+                self.assertEqual(git.call_args.args[:2], ("ls-remote", "--symref"))
+
+    def test_sukisu_resolution_fails_instead_of_falling_back_to_an_old_pin(self):
+        for output in ("", "ref: refs/heads/main\tHEAD\n", "c" * 40 + "\tHEAD\n",
+                       "ref: refs/heads/main\tHEAD\ninvalid\tHEAD\n"):
+            with self.subTest(output=output), patch("target._git", return_value=output):
+                with self.assertRaisesRegex(RuntimeError, "Cannot resolve SukiSU"):
+                    resolve_sukisu("stable")
+        with self.assertRaises(ValueError):
+            resolve_sukisu("unknown")
 
     def test_susfs_and_patch_resolvers(self):
         with patch("target._git", return_value="a" * 40 + "\trefs/heads/gki-android13-5.15\n"):

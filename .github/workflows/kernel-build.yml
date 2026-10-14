@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       sukisu_channel:
-        description: SukiSU source. stable keeps the reviewed booting revision; dev follows upstream. Kernel UAPI follows that source.
+        description: SukiSU source (both choices follow latest upstream; kernel and manager UAPI must match)
         required: true
         type: choice
         options: [stable, dev]
@@ -46,7 +46,12 @@ jobs:
           sudo swapon /tmp/gki-link.swap
           free -h
       - name: Run builder tests
-        run: python3 -m unittest discover -s .github/workflows/scripts/tests -v
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth=1 https://github.com/SukiSU-Ultra/SukiSU-Ultra.git "$RUNNER_TEMP/sukisu-upstream"
+          SUKISU_TEST_SOURCE="$RUNNER_TEMP/sukisu-upstream" \
+            python3 -m unittest discover -s .github/workflows/scripts/tests -v
       - name: Integrate the pinned source stack and compile
         shell: bash
         run: |

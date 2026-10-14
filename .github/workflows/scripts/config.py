@@ -12,7 +12,6 @@ class KSUChannel(str, Enum):
 ANDROID_FAMILY = "android13-5.15"
 KSU_REPO_CONFIG = {"repo_url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra.git"}
 # The mount-only port is reviewed against this exact SUSFS source revision.
-SUKISU_STABLE_REVISION = "cf87e3f4ddd3f6e5464d85acf56aaa6950e70841"
 SUSFS_REVISION = "e565931d19256fd821ada01b35263506e7c7a364"
 SUSFS_REPO_CONFIG = {"repo_url": "https://github.com/ShirkNeko/susfs4ksu.git"}
 SUKISU_PATCH_REPO_CONFIG = {"repo_url": "https://github.com/ShirkNeko/SukiSU_patch.git"}

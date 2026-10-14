@@ -6,7 +6,6 @@ import urllib.request
 import base64
 import xml.etree.ElementTree as ET
 from abi import artifact_url
-from config import SUKISU_STABLE_REVISION
 from dataclasses import dataclass
 
 
@@ -142,15 +141,13 @@ def resolve_sukisu_patch(branch="main"):
 
 
 def resolve_sukisu(channel):
-    if channel == "dev":
-        output = _git("ls-remote", "--symref", KSU_URL, "HEAD")
-        match = re.search(r"^ref: refs/heads/(\S+)\s+HEAD$", output, re.M)
-        sha = re.search(r"^([0-9a-f]{40})\s+HEAD$", output, re.M)
-        if not match or not sha:
-            raise RuntimeError("Cannot resolve SukiSU default branch")
-        return "", sha[1]
-    if channel != "stable":
+    if channel not in ("stable", "dev"):
         raise ValueError(f"Unknown SukiSU channel: {channel}")
-    # Keep the actual UAPI-4 source that booted in run 35612891639, rather
-    # than silently reverting to the older UAPI-2 formal v4.2.0 release.
-    return "v4.2.0-reviewed-uapi4", SUKISU_STABLE_REVISION
+    # Both existing workflow choices follow upstream. Resolve once so setup.sh
+    # and the kernel checkout use the same exact commit throughout this build.
+    output = _git("ls-remote", "--symref", KSU_URL, "HEAD")
+    branch = re.search(r"^ref: refs/heads/(\S+)\s+HEAD$", output, re.M)
+    sha = re.search(r"^([0-9a-f]{40})\s+HEAD$", output, re.M)
+    if not branch or not sha:
+        raise RuntimeError("Cannot resolve SukiSU default branch")
+    return "", sha[1]
