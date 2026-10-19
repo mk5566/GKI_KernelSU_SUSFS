@@ -1,22 +1,20 @@
 From: GKI maintainers <gki-builder@localhost>
 Subject: [PATCH] kernelsu: integrate mount-only SUSFS with upstream main
 
-Base: SukiSU-Ultra 0bca5d152f1ed8eb6ebadff4ea342a806e7a7400 (UAPI 5).
-Keep upstream module blacklist and forced-feature boot handling intact.
+Application checked: SukiSU-Ultra 0bca5d15 (UAPI 5), decfaa5b (UAPI 6).
+Anchor build/include additions to core entries, not optional feature lists.
+Keep upstream module blacklist, mount hiding and forced-feature handling intact.
 SUSFS uses its own reboot protocol; it does not change the driver UAPI.
 
 diff --git a/kernel/Kbuild b/kernel/Kbuild
 index a9dd635..13c1c99 100644
 --- a/kernel/Kbuild
 +++ b/kernel/Kbuild
-@@ -1,6 +1,7 @@
+@@ -1,3 +1,4 @@
  kernelsu-objs := core/init.o
++kernelsu-$(CONFIG_KSU_SUSFS) += feature/susfs.o
  
  kernelsu-objs += feature/kernel_umount.o
-+kernelsu-$(CONFIG_KSU_SUSFS) += feature/susfs.o
- kernelsu-objs += feature/module_blacklist.o
- kernelsu-objs += feature/sulog.o
- kernelsu-objs += feature/sucompat.o
 diff --git a/kernel/Kconfig b/kernel/Kconfig
 index e84cffc..ebf4cac 100644
 --- a/kernel/Kconfig
@@ -167,14 +165,11 @@ diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
 index d3f3ac4..70a1d5a 100644
 --- a/kernel/hook/setuid_hook.c
 +++ b/kernel/hook/setuid_hook.c
-@@ -20,6 +20,7 @@
+@@ -20,3 +20,4 @@
  #include "supercall/supercall.h"
  #include "hook/tp_marker.h"
- #include "feature/kernel_umount.h"
 +#include "feature/susfs.h"
- 
- int ksu_handle_setresuid(uid_t old_uid, uid_t new_uid)
- {
+ #include "feature/kernel_umount.h"
 @@ -28,6 +29,7 @@ int ksu_handle_setresuid(uid_t old_uid, uid_t new_uid)
      pr_info("handle_setresuid from %d to %d\n", old_uid, new_uid);
  

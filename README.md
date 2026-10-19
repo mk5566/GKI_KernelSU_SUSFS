@@ -17,15 +17,19 @@ As checked on 2026-10-03, the release was `android13-5.15-2026-09_r2`, Linux
 The workflow is manual only. Pushing to `main` does not start a build. Both
 channel choices use the same fixed kernel feature set described below.
 Before syncing GKI, CI checks the complete SukiSU patch stack against a fresh
-upstream checkout, so source-layout changes fail early.
+upstream checkout and passes that exact tested commit to the build. An upstream
+update during the job cannot change the source being compiled. Source-layout
+changes that break required hooks still fail early, without fuzz or skipped hunks.
 
 ## Kernel profile
 
 - Built-in SukiSU follows the latest upstream default-branch HEAD for both
   channel choices. Each run resolves it once to an exact commit for setup and
   checkout, recorded in `BUILD_INFO.md`. The kernel uses that source's UAPI;
-  the manager must use the same UAPI. The mount integration is rebased against
-  upstream `0bca5d152f1ed8eb6ebadff4ea342a806e7a7400` (UAPI 5).
+  the manager must use the same UAPI. The mount integration anchors additions
+  to core build entries and hook includes, so unrelated upstream feature entries
+  can change without requiring a rebase. Regression tests cover the previous
+  layout and the October 18 mount-hide additions; required hook changes remain fatal.
 - SUSFS mount hiding only, with the known-booting filesystem/root integration.
   SUSFS, LZ4KD helpers and AnyKernel3 use the September 21 source revisions,
   pinned independently of GKI updates.

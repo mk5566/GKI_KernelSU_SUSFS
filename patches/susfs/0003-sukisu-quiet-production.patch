@@ -5,17 +5,16 @@ KSU_DEBUG=n does not suppress upstream's unconditional pr_info calls in
 setuid and syscall hooks. Type-check these calls without evaluating their
 arguments or emitting messages; retain warning and error diagnostics.
 Scope the override to KernelSU translation units, leaving GKI untouched.
+Anchor to the compiler include flags; allow upstream preinit rules after them.
 
 diff --git a/kernel/Kbuild b/kernel/Kbuild
 --- a/kernel/Kbuild
 +++ b/kernel/Kbuild
-@@ -105,6 +105,7 @@
+@@ -105,4 +105,5 @@
  endif
  
  ccflags-y += -I$(KSU_KERNEL_DIR) -I$(KSU_KERNEL_DIR)/include
 +ccflags-y += -include $(KSU_KERNEL_DIR)/include/quiet.h
- 
- obj-$(CONFIG_KSU) += kernelsu.o
  
 diff --git a/kernel/include/quiet.h b/kernel/include/quiet.h
 new file mode 100644

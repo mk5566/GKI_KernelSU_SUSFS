@@ -10,17 +10,53 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from build import parse_args
+from build import main as build_main, parse_args
 from config import ANDROID_FAMILY, BuildConfig, REPO_ROOT
 from kernel_builder import (KernelBuilder, apply_release_date_suffix,
                             ensure_cmdline_tokens, release_date_suffix,
                             unquote_kconfig_string)
 from patch_plan import make_patch_plan
-from target import choose_gki_tag, choose_manifest_branch, peeled_commit, resolve_sukisu, resolve_susfs, resolve_sukisu_patch, certified_releases
+from target import GKITarget, choose_gki_tag, choose_manifest_branch, peeled_commit, resolve_sukisu, resolve_susfs, resolve_sukisu_patch, certified_releases
 from abi import compare_symvers, read_symvers
 
 
 class ResolverTests(unittest.TestCase):
+    def test_build_uses_the_tested_commit_even_if_upstream_moves(self):
+        tested = "a" * 40
+        newer = "b" * 40
+        target = GKITarget("certified-tag", "c" * 40, "5.15.211", "manifest-branch")
+        for channel in ("stable", "dev"):
+            with self.subTest(channel=channel), \
+                 patch("build.resolve_gki", return_value=target), \
+                 patch("build.resolve_sukisu", return_value=("", newer)) as resolve, \
+                 patch("build.KernelBuilder") as builder, \
+                 patch("build.logging.basicConfig"):
+                builder.return_value.build.return_value.success = True
+                self.assertEqual(build_main(["--sukisu-channel", channel,
+                                             "--sukisu-commit", tested]), 0)
+                resolve.assert_not_called()
+                config = builder.call_args.args[0]
+                self.assertEqual(config.sukisu_commit, tested)
+                self.assertEqual(config.sukisu_channel, channel)
+                builder.return_value.build.assert_called_once_with(preflight_only=False)
+
+    def test_unpinned_local_build_resolves_upstream_once(self):
+        target = GKITarget("certified-tag", "c" * 40, "5.15.211", "manifest-branch")
+        with patch("build.resolve_gki", return_value=target), \
+             patch("build.resolve_sukisu", return_value=("", "d" * 40)) as resolve, \
+             patch("build.KernelBuilder") as builder, \
+             patch("build.logging.basicConfig"):
+            builder.return_value.build.return_value.success = True
+            self.assertEqual(build_main([]), 0)
+            resolve.assert_called_once_with("stable")
+            self.assertEqual(builder.call_args.args[0].sukisu_commit, "d" * 40)
+
+    def test_tested_commit_must_be_an_immutable_sha(self):
+        for value in ("main", "HEAD", "a" * 7, "a" * 39, "a" * 41, "G" * 40, "a" * 40 + "\n"):
+            with self.subTest(value=value), self.assertRaises(SystemExit), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                parse_args(["--sukisu-commit", value])
+
     def test_monthly_release_excludes_uncertified_point_tags(self):
         self.assertEqual(ANDROID_FAMILY, "android13-5.15")
         refs = {
@@ -162,6 +198,15 @@ class ModeTests(unittest.TestCase):
         self.assertIn("artifacts/boot.img", text)
         self.assertIn("artifacts/AnyKernel3.zip", text)
         self.assertNotIn("BUILD_INFO.md\n", text.split("Publish boot.img", 1)[-1].split("if: failure()", 1)[0])
+
+    def test_workflow_passes_the_tested_checkout_to_compilation(self):
+        text = (REPO_ROOT / ".github/workflows/kernel-build.yml").read_text(encoding="utf-8")
+        tests, compile_step = text.split("- name: Integrate the pinned source stack and compile", 1)
+        self.assertIn('git -C "$RUNNER_TEMP/sukisu-upstream" rev-parse HEAD', tests)
+        self.assertIn('SUKISU_BUILD_COMMIT=', tests)
+        self.assertIn('>> "$GITHUB_ENV"', tests)
+        self.assertIn('SUKISU_TEST_SOURCE="$RUNNER_TEMP/sukisu-upstream"', tests)
+        self.assertIn('--sukisu-commit "$SUKISU_BUILD_COMMIT"', compile_step)
 
     def test_defconfig_is_bbrv3_lz4kd_and_no_kpm(self):
         with tempfile.TemporaryDirectory() as d:

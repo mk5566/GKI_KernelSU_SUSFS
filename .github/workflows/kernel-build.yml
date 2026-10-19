@@ -50,6 +50,9 @@ jobs:
         run: |
           set -euo pipefail
           git clone --depth=1 https://github.com/SukiSU-Ultra/SukiSU-Ultra.git "$RUNNER_TEMP/sukisu-upstream"
+          # Freeze the tested checkout for setup and compilation in this run.
+          echo "SUKISU_BUILD_COMMIT=$(git -C "$RUNNER_TEMP/sukisu-upstream" rev-parse HEAD)" >> "$GITHUB_ENV"
+          git -C "$RUNNER_TEMP/sukisu-upstream" log -1 --format='SukiSU test/build commit: %H (%s)'
           SUKISU_TEST_SOURCE="$RUNNER_TEMP/sukisu-upstream" \
             python3 -m unittest discover -s .github/workflows/scripts/tests -v
       - name: Integrate the pinned source stack and compile
@@ -58,6 +61,7 @@ jobs:
           set -euo pipefail
           python3 .github/workflows/scripts/build.py \
             --sukisu-channel "$INPUT_SUKISU_CHANNEL" \
+            --sukisu-commit "$SUKISU_BUILD_COMMIT" \
             --workspace "$GKI_WORKSPACE"
       - name: Publish boot.img and AnyKernel3.zip
         id: publish

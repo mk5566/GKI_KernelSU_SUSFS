@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 import os
+import re
 from pathlib import Path
 
 from config import BuildConfig, KSUChannel
@@ -11,9 +12,17 @@ from kernel_builder import KernelBuilder
 from target import resolve_gki, resolve_sukisu
 
 
+def exact_commit(value):
+    if not re.fullmatch(r"[0-9a-f]{40}", value):
+        raise argparse.ArgumentTypeError("SukiSU commit must be a full lowercase 40-digit SHA")
+    return value
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="latest android13-5.15 GKI stable")
     parser.add_argument("--sukisu-channel", choices=[x.value for x in KSUChannel], default="stable")
+    parser.add_argument("--sukisu-commit", type=exact_commit,
+                        help="Build the exact SukiSU commit already checked by CI")
     parser.add_argument("--susfs-commit", help="Override resolved SUSFS commit")
     parser.add_argument("--sukisu-patch-commit", help="Override resolved SukiSU_patch commit")
     parser.add_argument("--workspace", default=os.environ.get("GKI_WORKSPACE", "/tmp/gki-build"))
@@ -37,7 +46,10 @@ def main(argv=None):
     config.manifest_commit = gki.manifest_commit
     config.official_build_id = gki.official_build_id
     config.source_projects = gki.source_projects
-    config.sukisu_tag, config.sukisu_commit = resolve_sukisu(config.sukisu_channel)
+    if args.sukisu_commit:
+        config.sukisu_commit = args.sukisu_commit
+    else:
+        config.sukisu_tag, config.sukisu_commit = resolve_sukisu(config.sukisu_channel)
     # These ports are audited as a pair. Do not change filesystem hooks or
     # compressors underneath a GKI update just because a branch moved.
     config.susfs_commit = args.susfs_commit or config.susfs_commit
