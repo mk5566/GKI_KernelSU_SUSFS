@@ -206,6 +206,7 @@ class ModeTests(unittest.TestCase):
         self.assertIn('SUKISU_BUILD_COMMIT=', tests)
         self.assertIn('>> "$GITHUB_ENV"', tests)
         self.assertIn('SUKISU_TEST_SOURCE="$RUNNER_TEMP/sukisu-upstream"', tests)
+        self.assertIn('GKI_TEST_NETWORK=1', tests)
         self.assertIn('--sukisu-commit "$SUKISU_BUILD_COMMIT"', compile_step)
 
     def test_defconfig_is_bbrv3_lz4kd_and_no_kpm(self):

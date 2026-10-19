@@ -5,8 +5,11 @@ import urllib.request
 def artifact_url(build_id, name):
     if not build_id.isdigit() or name not in ("vmlinux.symvers", f"manifest_{build_id}.xml"):
         raise ValueError("Invalid certified GKI artifact")
-    return ("https://androidbuildinternal.googleapis.com/android/internal/build/v3/"
-            f"builds/{build_id}/kernel_aarch64/attempts/latest/artifacts/{name}/url?redirect=true")
+    # Use AOSP's public download_from_ci route. The internal v3 /url API
+    # returns 501 for these public artifacts, including the CRC reference.
+    # Keep both consumers on the same exact certified build and target.
+    return (f"https://ci.android.com/builds/submitted/{build_id}/"
+            f"kernel_aarch64/latest/raw/{name}")
 
 
 def read_symvers(text):

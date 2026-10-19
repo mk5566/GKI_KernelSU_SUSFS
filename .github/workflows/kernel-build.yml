@@ -53,7 +53,7 @@ jobs:
           # Freeze the tested checkout for setup and compilation in this run.
           echo "SUKISU_BUILD_COMMIT=$(git -C "$RUNNER_TEMP/sukisu-upstream" rev-parse HEAD)" >> "$GITHUB_ENV"
           git -C "$RUNNER_TEMP/sukisu-upstream" log -1 --format='SukiSU test/build commit: %H (%s)'
-          SUKISU_TEST_SOURCE="$RUNNER_TEMP/sukisu-upstream" \
+          GKI_TEST_NETWORK=1 SUKISU_TEST_SOURCE="$RUNNER_TEMP/sukisu-upstream" \
             python3 -m unittest discover -s .github/workflows/scripts/tests -v
       - name: Integrate the pinned source stack and compile
         shell: bash

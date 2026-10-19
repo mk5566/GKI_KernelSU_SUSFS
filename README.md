@@ -20,6 +20,11 @@ Before syncing GKI, CI checks the complete SukiSU patch stack against a fresh
 upstream checkout and passes that exact tested commit to the build. An upstream
 update during the job cannot change the source being compiled. Source-layout
 changes that break required hooks still fail early, without fuzz or skipped hunks.
+CI also resolves the latest certified GKI release and validates both its pinned
+manifest and its symbol CRC reference through AOSP's
+[public artifact download route](https://android.googlesource.com/kernel/build/+/refs/heads/main/gki/download_from_ci)
+before syncing or compiling the kernel. Both downloads retain the exact build ID
+and `kernel_aarch64` target; unavailable or invalid certified data is fatal.
 
 ## Kernel profile
 
