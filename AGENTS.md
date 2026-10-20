@@ -4,8 +4,11 @@ This repository has one purpose: manually build the latest published, certified
 Android 13 GKI 5.15 release through `.github/workflows/kernel-build.yml`.
 `main` is the maintained branch. `README.md` describes the supported profile.
 
-- Preserve the reviewed kernel configuration, source pins, patch contents and
+- Preserve the reviewed kernel configuration, patch contents and
   `APPLY_ORDER.txt` ordering unless the owner explicitly requests kernel changes.
+  Resolve supported upstream dependencies once per run to exact commits and
+  retain those revisions in build evidence. Keep the compiler and build tools
+  from the matching certified GKI manifest. New BBR/LZ4 ports require review.
 - Keep `workflow_dispatch` as the only build trigger and `stable` as the default
   SukiSU channel. Do not dispatch builds or publish releases during project cleanup.
 - Keep required-patch failures, generated-config checks and certified export CRC

@@ -1,4 +1,5 @@
 import io
+import json
 import contextlib
 import os
 import subprocess
@@ -21,6 +22,16 @@ from abi import compare_symvers, read_symvers
 
 
 class ResolverTests(unittest.TestCase):
+    def setUp(self):
+        for name, value in (("resolve_susfs", "1" * 40),
+                            ("resolve_sukisu_patch", "2" * 40),
+                            ("resolve_anykernel", "3" * 40),
+                            ("resolve_branch", "4" * 40),
+                            ("check_reviewed_upstreams", None)):
+            mock = patch(f"build.{name}", return_value=value)
+            mock.start()
+            self.addCleanup(mock.stop)
+
     def test_build_uses_the_tested_commit_even_if_upstream_moves(self):
         tested = "a" * 40
         newer = "b" * 40
@@ -52,10 +63,11 @@ class ResolverTests(unittest.TestCase):
             self.assertEqual(builder.call_args.args[0].sukisu_commit, "d" * 40)
 
     def test_tested_commit_must_be_an_immutable_sha(self):
-        for value in ("main", "HEAD", "a" * 7, "a" * 39, "a" * 41, "G" * 40, "a" * 40 + "\n"):
-            with self.subTest(value=value), self.assertRaises(SystemExit), \
-                 contextlib.redirect_stderr(io.StringIO()):
-                parse_args(["--sukisu-commit", value])
+        for option in ("--sukisu-commit", "--susfs-commit", "--sukisu-patch-commit", "--anykernel-commit"):
+            for value in ("main", "HEAD", "a" * 7, "a" * 39, "a" * 41, "G" * 40, "a" * 40 + "\n"):
+                with self.subTest(option=option, value=value), self.assertRaises(SystemExit), \
+                     contextlib.redirect_stderr(io.StringIO()):
+                    parse_args([option, value])
 
     def test_monthly_release_excludes_uncertified_point_tags(self):
         self.assertEqual(ANDROID_FAMILY, "android13-5.15")
@@ -197,17 +209,21 @@ class ModeTests(unittest.TestCase):
         self.assertEqual(names, ["sukisu_channel"])
         self.assertIn("artifacts/boot.img", text)
         self.assertIn("artifacts/AnyKernel3.zip", text)
-        self.assertNotIn("BUILD_INFO.md\n", text.split("Publish boot.img", 1)[-1].split("if: failure()", 1)[0])
+        self.assertIn("Upload successful build evidence", text)
+        self.assertIn("path: /tmp/gki-build/evidence/", text)
+        self.assertIn("include-hidden-files: true", text)
+        self.assertNotIn("  push:", text)
+        self.assertNotIn("  schedule:", text)
 
     def test_workflow_passes_the_tested_checkout_to_compilation(self):
         text = (REPO_ROOT / ".github/workflows/kernel-build.yml").read_text(encoding="utf-8")
-        tests, compile_step = text.split("- name: Integrate the pinned source stack and compile", 1)
-        self.assertIn('git -C "$RUNNER_TEMP/sukisu-upstream" rev-parse HEAD', tests)
-        self.assertIn('SUKISU_BUILD_COMMIT=', tests)
-        self.assertIn('>> "$GITHUB_ENV"', tests)
+        tests, compile_step = text.split("- name: Integrate the resolved source stack and compile", 1)
+        self.assertIn('--resolve-only', tests)
+        self.assertIn('fetch --depth=1 https://github.com/SukiSU-Ultra/SukiSU-Ultra.git "$commit"', tests)
+        self.assertIn('GKI_TEST_SOURCES="$GKI_WORKSPACE/sources.json"', tests)
         self.assertIn('SUKISU_TEST_SOURCE="$RUNNER_TEMP/sukisu-upstream"', tests)
         self.assertIn('GKI_TEST_NETWORK=1', tests)
-        self.assertIn('--sukisu-commit "$SUKISU_BUILD_COMMIT"', compile_step)
+        self.assertIn('--sources "$GKI_WORKSPACE/sources.json"', compile_step)
 
     def test_defconfig_is_bbrv3_lz4kd_and_no_kpm(self):
         with tempfile.TemporaryDirectory() as d:
@@ -471,6 +487,12 @@ class RuntimeConfigTests(unittest.TestCase):
             "CONFIG_MODVERSIONS": "y", "CONFIG_CFI_CLANG": "y",
             "CONFIG_LTO_CLANG_FULL": "y", "CONFIG_DEBUG_INFO": "y",
             "CONFIG_DEBUG_INFO_BTF": "y", "CONFIG_DEBUG_INFO_BTF_MODULES": "y",
+            "CONFIG_DEBUG_INFO_DWARF4": "y", "CONFIG_SECURITY_SELINUX": "y",
+            "CONFIG_LZ4_COMPRESS": "y", "CONFIG_LZ4_DECOMPRESS": "y",
+            "CONFIG_TMPFS_XATTR": "y", "CONFIG_TMPFS_POSIX_ACL": "y",
+            "CONFIG_IP_NF_TARGET_TTL": "y", "CONFIG_IP6_NF_TARGET_HL": "y",
+            "CONFIG_IP6_NF_MATCH_HL": "y", "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE": "y",
+            "CONFIG_TCP_CONG_ADVANCED": "y", "CONFIG_DEFAULT_BBR3": "y",
             "CONFIG_CMDLINE": '"' + ensure_cmdline_tokens(self.PRESERVED, self.TOKENS) + '"',
         }
         values.update(KernelBuilder.RUNTIME_CONFIG)
@@ -487,6 +509,22 @@ class RuntimeConfigTests(unittest.TestCase):
             path.write_text(self._valid_config(), encoding="utf-8")
             builder._verify_generated_config(path)
 
+    def test_configuration_reports_link_both_checks_to_their_config_hashes(self):
+        with tempfile.TemporaryDirectory() as root:
+            builder = KernelBuilder(BuildConfig(), root)
+            path = Path(root) / ".config"
+            path.write_text(self._valid_config(), encoding="utf-8")
+            builder._verify_generated_config(path, stage="precompile")
+            builder._verify_generated_config(path, stage="final")
+            report = json.loads((Path(root) / "CONFIG_REPORT.json").read_text(encoding="utf-8"))
+            self.assertEqual(set(report), {"precompile", "final"})
+            self.assertEqual(report["final"]["expected"], report["final"]["actual"])
+            self.assertEqual(report["final"]["sha256"], report["precompile"]["sha256"])
+            for duplicate in ("CONFIG_KSU=n\n", "# CONFIG_KSU is not set\n"):
+                path.write_text(self._valid_config() + duplicate, encoding="utf-8")
+                with self.assertRaisesRegex(RuntimeError, "duplicate assignment"):
+                    builder._verify_generated_config(path)
+
     def test_final_config_rejects_a_missing_runtime_selection(self):
         cases = {
             "mglru": {"CONFIG_LRU_GEN_ENABLED": "n"},
@@ -496,7 +534,18 @@ class RuntimeConfigTests(unittest.TestCase):
             "menu": {"CONFIG_CPU_IDLE_GOV_MENU": "n"},
             "teo": {"CONFIG_CPU_IDLE_GOV_TEO": "n"},
             "forced cmdline": {"CONFIG_CMDLINE_FORCE": "y"},
+            "performance disabled": {"CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE": "n"},
+            "size optimization": {"CONFIG_CC_OPTIMIZE_FOR_SIZE": "y"},
+            "root debug logging": {"CONFIG_KSU_DEBUG": "y"},
+            "susfs logging": {"CONFIG_KSU_SUSFS_ENABLE_LOG": "y"},
+            "wrong default selection": {"CONFIG_DEFAULT_BBR3": "n"},
+            "missing tmpfs attributes": {"CONFIG_TMPFS_XATTR": "n"},
+            "SELinux disabled": {"CONFIG_SECURITY_SELINUX": "n"},
+            "CFI permissive": {"CONFIG_CFI_PERMISSIVE": "y"},
+            "forced signed modules": {"CONFIG_MODULE_SIG_FORCE": "y"},
+            "thin LTO": {"CONFIG_LTO_CLANG_THIN": "y"},
             "duplicate teo": {"CONFIG_CMDLINE": '"cpuidle.governor=teo cpuidle.governor=teo"'},
+            "conflicting teo": {"CONFIG_CMDLINE": '"cpuidle.governor=teo cpuidle.governor=menu"'},
             "rcu_nocbs": {"CONFIG_CMDLINE": '"cpuidle.governor=teo rcu_nocbs=all"'},
             "second lazy switch": {"CONFIG_CMDLINE": '"' + ensure_cmdline_tokens(
                 self.PRESERVED, self.TOKENS) + ' rcutree.enable_rcu_lazy=1"'},

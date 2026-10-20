@@ -25,10 +25,11 @@ jobs:
       GKI_WORKSPACE: /tmp/gki-build
       INPUT_SUKISU_CHANNEL: ${{ inputs.sukisu_channel }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
-          python-version: '3.11'
+          python-version: '3.x'
+          check-latest: true
       - name: Install kernel build dependencies
         run: |
           sudo apt-get update
@@ -45,23 +46,29 @@ jobs:
           sudo mkswap /tmp/gki-link.swap
           sudo swapon /tmp/gki-link.swap
           free -h
+      - name: Resolve current dependencies once
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/workflows/scripts/build.py --resolve-only \
+            --sukisu-channel "$INPUT_SUKISU_CHANNEL" --workspace "$GKI_WORKSPACE"
       - name: Run builder tests
         shell: bash
         run: |
           set -euo pipefail
-          git clone --depth=1 https://github.com/SukiSU-Ultra/SukiSU-Ultra.git "$RUNNER_TEMP/sukisu-upstream"
-          # Freeze the tested checkout for setup and compilation in this run.
-          echo "SUKISU_BUILD_COMMIT=$(git -C "$RUNNER_TEMP/sukisu-upstream" rev-parse HEAD)" >> "$GITHUB_ENV"
-          git -C "$RUNNER_TEMP/sukisu-upstream" log -1 --format='SukiSU test/build commit: %H (%s)'
-          GKI_TEST_NETWORK=1 SUKISU_TEST_SOURCE="$RUNNER_TEMP/sukisu-upstream" \
+          commit="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sukisu_commit"])' "$GKI_WORKSPACE/sources.json")"
+          git init "$RUNNER_TEMP/sukisu-upstream"
+          git -C "$RUNNER_TEMP/sukisu-upstream" fetch --depth=1 https://github.com/SukiSU-Ultra/SukiSU-Ultra.git "$commit"
+          git -C "$RUNNER_TEMP/sukisu-upstream" checkout --detach FETCH_HEAD
+          GKI_TEST_NETWORK=1 GKI_TEST_SOURCES="$GKI_WORKSPACE/sources.json" \
+            SUKISU_TEST_SOURCE="$RUNNER_TEMP/sukisu-upstream" \
             python3 -m unittest discover -s .github/workflows/scripts/tests -v
-      - name: Integrate the pinned source stack and compile
+      - name: Integrate the resolved source stack and compile
         shell: bash
         run: |
           set -euo pipefail
           python3 .github/workflows/scripts/build.py \
-            --sukisu-channel "$INPUT_SUKISU_CHANNEL" \
-            --sukisu-commit "$SUKISU_BUILD_COMMIT" \
+            --sources "$GKI_WORKSPACE/sources.json" \
             --workspace "$GKI_WORKSPACE"
       - name: Publish boot.img and AnyKernel3.zip
         id: publish
@@ -83,6 +90,15 @@ jobs:
             artifacts/boot.img
             artifacts/AnyKernel3.zip
           if-no-files-found: error
+      - name: Upload successful build evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: kernel-evidence-${{ github.run_id }}
+          path: /tmp/gki-build/evidence/
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Summarize verified build
+        run: cat "$GKI_WORKSPACE/evidence/BUILD_INFO.md" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload failure diagnostics
         if: failure()
         uses: actions/upload-artifact@v7
@@ -91,6 +107,10 @@ jobs:
           include-hidden-files: true
           path: |
             /tmp/gki-build/BUILD_INFO.md
+            /tmp/gki-build/sources.json
+            /tmp/gki-build/GKI-reference.symvers
+            /tmp/gki-build/CONFIG_REPORT.json
+            /tmp/gki-build/checkouts.json
             /tmp/gki-build/android13-5.15/out/android13-5.15/common/.config
             /tmp/gki-build/android13-5.15/out/android13-5.15/common/Module.symvers
             /tmp/gki-build/android13-5.15/out/android13-5.15/dist/vmlinux.symvers

@@ -7,14 +7,16 @@ import os
 import re
 from pathlib import Path
 
-from config import BuildConfig, KSUChannel
+from config import BuildConfig, KSUChannel, REPO_TOOL_CONFIG
 from kernel_builder import KernelBuilder
-from target import resolve_gki, resolve_sukisu
+from evidence import write_sources, load_sources
+from target import (resolve_gki, resolve_sukisu, resolve_susfs, resolve_sukisu_patch,
+                    resolve_anykernel, resolve_branch, check_reviewed_upstreams)
 
 
 def exact_commit(value):
     if not re.fullmatch(r"[0-9a-f]{40}", value):
-        raise argparse.ArgumentTypeError("SukiSU commit must be a full lowercase 40-digit SHA")
+        raise argparse.ArgumentTypeError("Commit must be a full lowercase 40-digit SHA")
     return value
 
 
@@ -23,9 +25,13 @@ def parse_args(argv=None):
     parser.add_argument("--sukisu-channel", choices=[x.value for x in KSUChannel], default="stable")
     parser.add_argument("--sukisu-commit", type=exact_commit,
                         help="Build the exact SukiSU commit already checked by CI")
-    parser.add_argument("--susfs-commit", help="Override resolved SUSFS commit")
-    parser.add_argument("--sukisu-patch-commit", help="Override resolved SukiSU_patch commit")
+    parser.add_argument("--susfs-commit", type=exact_commit, help="Use an exact SUSFS commit")
+    parser.add_argument("--sukisu-patch-commit", type=exact_commit, help="Use an exact LZ4KD helper commit")
+    parser.add_argument("--anykernel-commit", type=exact_commit, help="Use an exact AnyKernel3 commit")
     parser.add_argument("--workspace", default=os.environ.get("GKI_WORKSPACE", "/tmp/gki-build"))
+    parser.add_argument("--resolve-only", action="store_true",
+                        help="Resolve current dependencies and save workspace/sources.json, then stop")
+    parser.add_argument("--sources", help="Build using the sources.json already resolved and tested in this run")
     parser.add_argument("--preflight-only", action="store_true",
                         help="Apply the source stack and generate/verify .config, then stop")
     parser.add_argument("--output-json")
@@ -38,26 +44,40 @@ def main(argv=None):
     args = parse_args(argv)
     config = BuildConfig(args.sukisu_channel)
     config.base_boot = str(Path(args.base_boot).resolve()) if args.base_boot else ""
-    gki = resolve_gki()
-    config.gki_tag = gki.tag
-    config.gki_commit = gki.commit
-    config.kernel_version = gki.kernel_version
-    config.manifest_branch = gki.manifest_branch
-    config.manifest_commit = gki.manifest_commit
-    config.official_build_id = gki.official_build_id
-    config.source_projects = gki.source_projects
-    if args.sukisu_commit:
-        config.sukisu_commit = args.sukisu_commit
+    if args.sources:
+        if any((args.sukisu_commit, args.susfs_commit, args.sukisu_patch_commit, args.anykernel_commit)):
+            raise RuntimeError("Do not override an already resolved source record")
+        config = load_sources(args.sources)
+        config.base_boot = str(Path(args.base_boot).resolve()) if args.base_boot else ""
     else:
-        config.sukisu_tag, config.sukisu_commit = resolve_sukisu(config.sukisu_channel)
-    # These ports are audited as a pair. Do not change filesystem hooks or
-    # compressors underneath a GKI update just because a branch moved.
-    config.susfs_commit = args.susfs_commit or config.susfs_commit
-    config.sukisu_patch_commit = args.sukisu_patch_commit or config.sukisu_patch_commit
-    logging.info("GKI %s %s %s; manifest %s; SukiSU %s %s; SUSFS %s; SukiSU_patch %s",
+        check_reviewed_upstreams()
+        gki = resolve_gki()
+        config.gki_tag = gki.tag
+        config.gki_commit = gki.commit
+        config.kernel_version = gki.kernel_version
+        config.manifest_branch = gki.manifest_branch
+        config.manifest_commit = gki.manifest_commit
+        config.official_build_id = gki.official_build_id
+        config.source_projects = gki.source_projects
+        if args.sukisu_commit:
+            config.sukisu_commit = args.sukisu_commit
+        else:
+            config.sukisu_tag, config.sukisu_commit = resolve_sukisu(config.sukisu_channel)
+        # Resolve each helper once; checkout and evidence use these immutable SHAs.
+        config.susfs_commit = args.susfs_commit or resolve_susfs()
+        config.sukisu_patch_commit = args.sukisu_patch_commit or resolve_sukisu_patch()
+        config.anykernel_commit = args.anykernel_commit or resolve_anykernel()
+        config.repo_commit = resolve_branch(REPO_TOOL_CONFIG)
+    if args.resolve_only:
+        config.validate()
+        workspace = Path(args.workspace)
+        workspace.mkdir(parents=True, exist_ok=True)
+        logging.info("Resolved sources: %s", write_sources(config, workspace))
+        return 0
+    logging.info("GKI %s %s %s; manifest %s; SukiSU %s %s; SUSFS %s; SukiSU_patch %s; AnyKernel3 %s",
                  config.kernel_version, config.gki_tag, config.gki_commit,
                  config.manifest_branch, config.sukisu_tag or "upstream HEAD", config.sukisu_commit,
-                 config.susfs_commit, config.sukisu_patch_commit)
+                 config.susfs_commit, config.sukisu_patch_commit, config.anykernel_commit)
     builder = KernelBuilder(config, args.workspace)
     result = builder.build(preflight_only=args.preflight_only)
     if args.output_json:

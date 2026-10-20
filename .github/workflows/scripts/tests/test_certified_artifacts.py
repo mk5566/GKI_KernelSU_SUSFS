@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from abi import artifact_url, read_symvers, verify_gki_abi
 from kernel_builder import REPO_SYNC_PROJECTS
 from target import GKI_RELEASES_URL, GKI_URL, MANIFEST_URL, resolve_gki
+from evidence import load_sources
 
 
 class CertifiedArtifactTests(unittest.TestCase):
@@ -133,15 +134,18 @@ class CertifiedArtifactTests(unittest.TestCase):
     def test_live_certified_manifest_and_crc_reference_are_available(self):
         # This runs in CI before kernel sync/compilation, using production
         # resolution and both production download URLs. No build-ID pin.
-        target = resolve_gki()
+        source_record = os.environ.get("GKI_TEST_SOURCES")
+        target = load_sources(source_record) if source_record else resolve_gki()
         projects = {path: revision for _, path, revision in target.source_projects}
         self.assertTrue(set(REPO_SYNC_PROJECTS).issubset(projects))
-        self.assertEqual(projects["common"], target.commit)
+        commit = target.gki_commit if source_record else target.commit
+        tag = target.gki_tag if source_record else target.tag
+        self.assertEqual(projects["common"], commit)
         with urllib.request.urlopen(artifact_url(target.official_build_id, "vmlinux.symvers"),
                                     timeout=60) as response:
             symbols = read_symvers(response.read().decode("utf-8"))
         self.assertGreater(len(symbols), 0)
-        print(f"\nCertified downloads verified: {target.tag}, build {target.official_build_id}, "
+        print(f"\nCertified downloads verified: {tag}, build {target.official_build_id}, "
               f"{len(target.source_projects)} pinned projects, {len(symbols)} reference exports")
 
 

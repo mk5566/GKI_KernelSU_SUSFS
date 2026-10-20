@@ -4,8 +4,7 @@ Build the newest **published, certified android13-5.15 monthly GKI release**.
 Each run resolves that tag, its commit, and the matching month's manifest.
 The source does not pin a month: a later certified release is selected on
 its own. Point-release tags on the development/LTS branch are not selected.
-As checked on 2026-10-03, the release was `android13-5.15-2026-09_r2`, Linux
-`5.15.211`, published October 1. [Official GKI releases](https://source.android.com/docs/core/architecture/kernel/gki-android13-5_15-release-builds).
+[Official GKI releases](https://source.android.com/docs/core/architecture/kernel/gki-android13-5_15-release-builds).
 
 ## Build with GitHub Actions
 
@@ -13,18 +12,43 @@ As checked on 2026-10-03, the release was `android13-5.15-2026-09_r2`, Linux
 2. Select **Run workflow**, use branch **main**, and keep **sukisu_channel: stable**.
    Both `stable` and the existing `dev` choice now follow the latest upstream SukiSU.
 3. Download the successful run's artifact containing `boot.img` and `AnyKernel3.zip`.
+4. Keep the separate **kernel-evidence-RUN_ID** download with those images.
 
 The workflow is manual only. Pushing to `main` does not start a build. Both
 channel choices use the same fixed kernel feature set described below.
-Before syncing GKI, CI checks the complete SukiSU patch stack against a fresh
-upstream checkout and passes that exact tested commit to the build. An upstream
-update during the job cannot change the source being compiled. Source-layout
-changes that break required hooks still fail early, without fuzz or skipped hunks.
+CI resolves sources, tests the exact SukiSU checkout, validates configuration,
+compiles, checks certified export CRCs, and verifies packaging/evidence. Upstream
+changes during the job cannot change the selected revisions. Required source or
+configuration changes fail explicitly, without fuzz or skipped hunks.
 CI also resolves the latest certified GKI release and validates both its pinned
 manifest and its symbol CRC reference through AOSP's
 [public artifact download route](https://android.googlesource.com/kernel/build/+/refs/heads/main/gki/download_from_ci)
 before syncing or compiling the kernel. Both downloads retain the exact build ID
-and `kernel_aarch64` target; unavailable or invalid certified data is fatal.
+  and `kernel_aarch64` target; unavailable or invalid certified data is fatal.
+
+## Dependency updates
+
+Every run resolves fresh upstream revisions into `sources.json` once. Testing,
+checkout and compilation use that same record, and actual checkouts must match.
+There is no fallback to an old source when resolution or integration fails.
+
+| Dependency | Update policy |
+| --- | --- |
+| GKI | Newest published certified monthly branch release |
+| Compiler, kernel build tools, boot tools | Exact revisions in that certified build's manifest |
+| SukiSU | Latest default-branch HEAD; CI tests the exact commit compiled |
+| SUSFS | Latest `gki-android13-5.15` HEAD, mount-only integration |
+| LZ4KD sources | Latest `SukiSU_patch/main` HEAD; only the three codec components are copied |
+| AnyKernel3 | Latest `gki-2.0` HEAD |
+| Repo source-sync tool | Latest `stable` branch, resolved to an exact commit |
+| Python / CI actions | Latest stable Python 3; current v7 action tags follow upstream fixes |
+| Ubuntu build packages | Fresh package index and current packages from Ubuntu 24.04 repositories |
+| Local BBRv3 / LZ4 ports | Check Google's `v3` HEAD and LZ4's latest stable release every run |
+
+BBRv3 and private LZ4 are reviewed local integrations, not replaceable upstream
+kernel trees. If either upstream advances, the build stops with an update request;
+rebase the port and validate it before building again. Required patch changes,
+configuration drift and vendor CRC mismatches also stop the build.
 
 ## Kernel profile
 
@@ -35,9 +59,8 @@ and `kernel_aarch64` target; unavailable or invalid certified data is fatal.
   to core build entries and hook includes, so unrelated upstream feature entries
   can change without requiring a rebase. Regression tests cover the previous
   layout and the October 18 mount-hide additions; required hook changes remain fatal.
-- SUSFS mount hiding only, with the known-booting filesystem/root integration.
-  SUSFS, LZ4KD helpers and AnyKernel3 use the September 21 source revisions,
-  pinned independently of GKI updates.
+- SUSFS mount hiding only, preserving the filesystem/root integration's scope.
+  Helper revisions resolve independently of the certified GKI release.
   KPM, SukiSU debug, and SUSFS logging are disabled. KernelSU's unconditional
   informational messages are compiled out; warning/error diagnostics stay available.
 - Zram offers **lz4kd** (default) and **lz4** only. LZ4 uses the official
@@ -71,7 +94,10 @@ and `kernel_aarch64` target; unavailable or invalid certified data is fatal.
 ## ABI and patch checks
 
 Every selected patch applies once, without fuzz or silent skips. The build
-retains AOSP KMI symbol lists and trimming. After compilation, every frozen
+generates and verifies `.config` before compiling, then checks the final build's
+configuration again. Checks include performance optimization, quiet root logging,
+the mount-only profile, BBR selection, zram, security metadata and runtime defaults.
+The build retains AOSP KMI symbol lists and trimming. After compilation, every frozen
 export and CRC is compared with **Google's matching certified build's
 `vmlinux.symvers`**. A missing export or differing CRC prevents packaging.
 Extra root exports are permitted. This check covers the frozen module KMI;
@@ -84,12 +110,35 @@ upstream defaults. BTF module metadata affects `struct module` and cannot be
 disabled without changing vendor symbol CRCs. Routine root informational
 logging is disabled; CI build output is retained.
 
+## Successful-build evidence
+
+The separate evidence artifact contains:
+
+- `BUILD_INFO.md`: build result, compiler, source revisions and image hash.
+- `sources.json`: exact dependency commits, certified source manifest, builder
+  commit, runner identity, Python version, and hashes of build scripts, workflow,
+  local patches and vendored codec files.
+- `checkouts.json`: verified revisions of the actual kernel, tools and helpers.
+- `.config`: the final configuration used by the completed build.
+- `CONFIG_REPORT.json`: required/actual settings and configuration hashes before
+  compilation and after the build, including runtime command-line checks.
+- `ABI_REPORT.json`, `vmlinux.symvers`, `GKI-reference.symvers`: CRC result and
+  both tables used for the comparison.
+- `SHA256SUMS`: checksums for the evidence files, `boot.img`, `AnyKernel3.zip`,
+  and the uncompressed `Image` inside the zip. To check all entries, extract the
+  evidence and boot artifact into one directory and copy `Image` there from the zip.
+
+Missing or stale evidence makes the build fail. Evidence creation rechecks the
+published CRC tables and verifies the zip contains the matching kernel Image.
+Failure diagnostics retain the resolved source record, available configuration
+reports/symbol tables and patch rejects. Local builds require a fresh workspace;
+existing source trees, outputs and evidence are preserved.
+
 ## Build and temporary boot testing
 
 Run **Kernel Build** in GitHub Actions; choose `stable` or `dev`. The job tests
 the builder, integrates sources, compiles, checks the KMI, and uploads
-`boot.img` and `AnyKernel3.zip`. Exact source revisions, image hash, and ABI
-check result are recorded in `BUILD_INFO.md` in the build workspace.
+`boot.img`, `AnyKernel3.zip`, and the separate evidence artifact.
 
 `boot.img` is a generic **ramdisk-less header-v4** image for devices whose
 generic ramdisk is in `init_boot`. It contains no invented 64 MiB partition
@@ -122,29 +171,23 @@ repair.
 
 ## Device validation
 
-On October 3, 2026, [build 37125240502](https://github.com/mk5566/GKI_KernelSU_SUSFS/actions/runs/37125240502)
-at `d6fec11` passed compilation, the module-order check, the final configuration
-checks and all 8,639 certified export CRCs. Its kernel temporarily booted a
-Xiaomi 13 Ultra (`ishtar`) running HyperOS 3 / Android 16 and reached Android
-with root access, enforcing SELinux and the same 404 vendor modules as the
-working fallback. WALT governors, OEM storage schedulers and FQ remained active.
+Historical baseline: [run 37125240502](https://github.com/mk5566/GKI_KernelSU_SUSFS/actions/runs/37125240502)
+at `d6fec11` passed 8,639 certified CRCs and temporarily booted Xiaomi 13 Ultra
+(`ishtar`), HyperOS 3 / Android 16, with root, enforcing SELinux and 404 vendor
+modules. Functional checks covered both zram codecs, PLB namespace isolation and
+BBRv3 TCP. They did not establish long-term stability or comparative performance.
 
-Both zram codecs round-tripped 8 MiB of mixed pages exactly; only lz4/lz4kd
-were listed, and deflate/lzo/zstd/lz4hc selections were rejected. Sixteen
-disposable network namespaces verified PLB allocation, initialization and
-isolation. Phone TCP sockets using the BBRv3 default echoed 1 MiB exactly.
-Temporary test devices and forwarding were removed; Android's zram0 stayed
-configured at 16 GiB. No partitions were flashed.
+[Run 37288766042](https://github.com/mk5566/GKI_KernelSU_SUSFS/actions/runs/37288766042)
+passed compilation/CRCs but failed temporary boot with forced lazy RCU and
+`rcu_nocbs=all`; those settings remain disabled. New upstream dependency revisions
+need new device validation. No phone operations run as part of project checks.
 
-These are boot and functional checks, not a long-duration stability test or
-a comparative performance benchmark. BBRv1 is available, but its allocation
-failure fallback was not forced during device testing.
+## Repository checks
 
-Run [37288766042](https://github.com/mk5566/GKI_KernelSU_SUSFS/actions/runs/37288766042)
-at `eb59b4c` also passed compilation and the 8,639 CRC check. `fastboot boot`
-of that image did not start Android, and the phone returned to the flashed
-kernel. That image forced lazy RCU on and appended `rcu_nocbs=all`. Those
-settings are no longer applied. That image's version string ended in `-dirty`
-because `setlocalversion` marks a patched tree. The booting kernel above has
-the same suffix. Later builds keep the GKI commit and use the UTC build date
-there instead, such as `-oct6`.
+```sh
+python -X utf8 -m unittest discover -s .github/workflows/scripts/tests -q
+git diff --check
+```
+
+CI additionally enables `GKI_TEST_NETWORK=1` and supplies `GKI_TEST_SOURCES` and
+`SUKISU_TEST_SOURCE` to test the resolved public downloads and real SukiSU source.

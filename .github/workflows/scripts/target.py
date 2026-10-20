@@ -7,6 +7,8 @@ import base64
 import xml.etree.ElementTree as ET
 from abi import artifact_url
 from dataclasses import dataclass
+from config import (SUSFS_REPO_CONFIG, SUKISU_PATCH_REPO_CONFIG, ANYKERNEL_CONFIG,
+                    LZ4_RELEASE, BBR_REVISION)
 
 
 GKI_URL = "https://android.googlesource.com/kernel/common"
@@ -114,30 +116,43 @@ def resolve_gki():
                      manifest_commit, build_id, projects)
 
 
-SUSFS_URL = "https://github.com/ShirkNeko/susfs4ksu.git"
-SUKISU_PATCH_URL = "https://github.com/ShirkNeko/SukiSU_patch.git"
+def resolve_branch(repo):
+    ref = f"refs/heads/{repo['branch']}"
+    output = _git("ls-remote", "--heads", repo["repo_url"], ref)
+    sha = parse_refs(output).get(ref, "")
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise RuntimeError(f"Cannot resolve branch {ref} from {repo['repo_url']}")
+    return sha
 
 
-def resolve_susfs(branch="gki-android13-5.15"):
-    output = _git("ls-remote", "--heads", SUSFS_URL, f"refs/heads/{branch}")
-    for line in output.splitlines():
-        parts = line.split("\t", 1)
-        if len(parts) == 2 and parts[1].strip() == f"refs/heads/{branch}":
-            sha = parts[0].strip()
-            if re.fullmatch(r"[0-9a-f]{40}", sha):
-                return sha
-    raise RuntimeError(f"Cannot resolve SUSFS branch HEAD: {branch}")
+def resolve_susfs():
+    return resolve_branch(SUSFS_REPO_CONFIG)
 
 
-def resolve_sukisu_patch(branch="main"):
-    output = _git("ls-remote", "--heads", SUKISU_PATCH_URL, f"refs/heads/{branch}")
-    for line in output.splitlines():
-        parts = line.split("\t", 1)
-        if len(parts) == 2 and parts[1].strip() == f"refs/heads/{branch}":
-            sha = parts[0].strip()
-            if re.fullmatch(r"[0-9a-f]{40}", sha):
-                return sha
-    raise RuntimeError(f"Cannot resolve SukiSU_patch branch HEAD: {branch}")
+def resolve_sukisu_patch():
+    return resolve_branch(SUKISU_PATCH_REPO_CONFIG)
+
+
+def resolve_anykernel():
+    return resolve_branch(ANYKERNEL_CONFIG)
+
+
+def check_reviewed_upstreams():
+    """Never report a successful latest build with silently outdated ports."""
+    bbr = resolve_branch({"repo_url": "https://github.com/google/bbr.git", "branch": "v3"})
+    request = urllib.request.Request(
+        "https://api.github.com/repos/lz4/lz4/releases/latest",
+        headers={"Accept": "application/vnd.github+json", "User-Agent": "gki-builder"})
+    with urllib.request.urlopen(request, timeout=30) as response:
+        release = json.load(response)
+    tag = release.get("tag_name", "")
+    if (release.get("draft") or release.get("prerelease")
+            or not re.fullmatch(r"v\d+\.\d+\.\d+", tag)):
+        raise RuntimeError("Invalid upstream LZ4 stable release")
+    if bbr != BBR_REVISION or tag != LZ4_RELEASE:
+        raise RuntimeError(
+            f"Reviewed ports need updating: BBR {BBR_REVISION} -> {bbr}; "
+            f"LZ4 {LZ4_RELEASE} -> {tag}. Rebase and validate patches before building.")
 
 
 def resolve_sukisu(channel):

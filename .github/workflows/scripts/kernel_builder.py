@@ -4,18 +4,20 @@ import subprocess
 import logging
 import re
 import sys
+import json
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass, field
 from config import (ANDROID_FAMILY, BuildConfig, KSU_REPO_CONFIG, SUSFS_REPO_CONFIG,
-                   SUKISU_PATCH_REPO_CONFIG, ANYKERNEL_CONFIG,
-                   SUSFS_REVISION, SUKISU_PATCH_REVISION, REPO_ROOT)
+                   SUKISU_PATCH_REPO_CONFIG, ANYKERNEL_CONFIG, REPO_TOOL_CONFIG, REPO_ROOT,
+                   REPO_SYNC_PROJECTS)
 from susfs_integration import select_mount_patch
 from patch_plan import make_patch_plan
 from abi import verify_gki_abi
 from repack_boot import repack_boot
+from evidence import write_sources, collect_evidence, sha256
 
 logger = logging.getLogger(__name__)
 
@@ -87,18 +89,6 @@ def ensure_cmdline_tokens(cmdline, tokens):
 
 
 REQUIRED_TOOLS = ("git", "curl", "python3", "make", "bash", "zip")
-
-# Keep the GitHub-hosted runner's checkout within its available disk. These
-# projects provide build.sh, its hermetic tools, the pinned compiler/NDK, and
-# optional boot-image packaging. Bazel, JDK and virtual-device trees are unused.
-REPO_SYNC_PROJECTS = (
-    "common", "build/kernel", "kernel/configs",
-    "prebuilts/clang/host/linux-x86", "prebuilts/build-tools",
-    "prebuilts/kernel-build-tools",
-    "prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8",
-    "prebuilts/ndk-r23", "tools/mkbootimg",
-)
-
 
 @dataclass
 class BuildResult:
@@ -212,13 +202,13 @@ class KernelBuilder:
         self.susfs_dir = self.workspace / "susfs4ksu"
         self.sukisu_patch_dir = self.workspace / "SukiSU_patch"
         self.anykernel_dir = self.workspace / "AnyKernel3"
-        self.toolchain_dir = self.work_dir / "prebuilts/kernel-build-tools"
         self.mkbootimg_dir = self.work_dir / "tools/mkbootimg"
         self.applied_bbr_patches = []
         self.applied_tweak_patches = []
         self.applied_integration_patches = []
         self.abi_symbol_count = 0
         self.release_suffix = ""
+        self.config_checks = {}
         self._setup_env()
 
     def _setup_env(self):
@@ -234,6 +224,11 @@ class KernelBuilder:
         self.shell.cwd = str(path)
 
     def _preflight(self):
+        self.config.validate()
+        if (self.workspace / "evidence").exists():
+            raise RuntimeError("Use a fresh workspace; previous successful evidence must be preserved")
+        if any(self.work_dir.iterdir()):
+            raise RuntimeError("Use a fresh workspace; existing kernel sources and outputs are preserved")
         missing = [tool for tool in REQUIRED_TOOLS if shutil.which(tool) is None]
         if missing:
             raise RuntimeError(f"Missing required tools: {', '.join(missing)}")
@@ -250,31 +245,12 @@ class KernelBuilder:
             self._run_cmd('git config --global user.name "GKI Builder"', check=True)
         self._run_cmd("git config --global --add safe.directory '*'", check=False)
 
-    def _clone_or_update(self, name: str, dest: Path, url: str, branch: Optional[str] = None):
-        git_dir = dest / ".git"
-        if dest.exists() and not git_dir.exists() and not git_dir.is_file():
-            raise RuntimeError(f"{name} path exists but is not a Git checkout: {dest}")
-        if not dest.exists():
-            cmd = ["git", "clone", "--depth", "1"]
-            if branch:
-                cmd.extend(["-b", branch])
-            cmd.extend([url, str(dest)])
-            logger.info(f"Cloning {name}...")
-            subprocess.run(cmd, cwd=self.workspace, env=self.env, check=True)
-            if not dest.exists():
-                raise RuntimeError(f"Failed to clone {name} from {url}")
-            return
-        logger.info(f"{name} already present at {dest} (HEAD {self._git_head(dest)})")
-        fetch_ref = branch or "HEAD"
-        fetch = subprocess.run(["git", "-C", str(dest), "fetch", "--depth", "1",
-                                "origin", fetch_ref], cwd=self.workspace, env=self.env,
-                               capture_output=True, text=True)
-        if fetch.returncode != 0:
-            output = ((fetch.stderr or "") + (fetch.stdout or "")).strip()
-            raise RuntimeError(f"{name} fetch of {fetch_ref} failed: {output}")
-        subprocess.run(["git", "-C", str(dest), "checkout", "-f", "FETCH_HEAD"],
-                       cwd=self.workspace, env=self.env, check=True)
-        logger.info(f"{name} updated to {self._git_head(dest)}")
+    def _clone_source(self, name, dest, url, commit):
+        if dest.exists():
+            raise RuntimeError(f"Use a fresh workspace; preserving existing {name}: {dest}")
+        subprocess.run(["git", "init", "-q", str(dest)], check=True, env=self.env)
+        subprocess.run(["git", "remote", "add", "origin", url], cwd=dest, check=True, env=self.env)
+        self._checkout_commit(dest, commit, name)
 
     def _require_path(self, path: Path, what: str):
         if not path.exists():
@@ -367,19 +343,14 @@ class KernelBuilder:
         logger.info(f"{name} checked out {actual}")
         self._chdir(self.workspace)
 
-    def _apply_susfs_commit(self):
-        commit = self.config.susfs_commit or SUSFS_REVISION
-        self._checkout_commit(self.susfs_dir, commit, "SUSFS")
-
     def clone_repositories(self):
         logger.info("=== Cloning helper repositories ===")
-        self._clone_or_update("SUSFS", self.susfs_dir, SUSFS_REPO_CONFIG["repo_url"], self.config.kernel_branch)
-        self._clone_or_update("SukiSU Patch", self.sukisu_patch_dir, SUKISU_PATCH_REPO_CONFIG["repo_url"])
-        patch_commit = self.config.sukisu_patch_commit or SUKISU_PATCH_REVISION
-        self._checkout_commit(self.sukisu_patch_dir, patch_commit, "SukiSU Patch")
-        self._clone_or_update("AnyKernel3", self.anykernel_dir, ANYKERNEL_CONFIG["repo_url"], ANYKERNEL_CONFIG["branch"])
-        self._checkout_commit(self.anykernel_dir, ANYKERNEL_CONFIG["revision"], "AnyKernel3")
-        self._apply_susfs_commit()
+        for name, directory, repo, commit in (
+            ("SUSFS", self.susfs_dir, SUSFS_REPO_CONFIG, self.config.susfs_commit),
+            ("SukiSU Patch", self.sukisu_patch_dir, SUKISU_PATCH_REPO_CONFIG, self.config.sukisu_patch_commit),
+            ("AnyKernel3", self.anykernel_dir, ANYKERNEL_CONFIG, self.config.anykernel_commit),
+        ):
+            self._clone_source(name, directory, repo["repo_url"], commit)
         logger.info("=== Helper repositories ready ===")
 
     def configure_boot_tools(self):
@@ -399,10 +370,14 @@ class KernelBuilder:
         repo_dir = self.workspace / "git-repo"
         repo_dir.mkdir(exist_ok=True)
         repo_path = repo_dir / "repo"
-        if not repo_path.exists():
-            subprocess.run(["curl", "-fLSs", "https://storage.googleapis.com/git-repo-downloads/repo",
-                            "-o", str(repo_path)], cwd=self.workspace, env=self.env, check=True)
-            repo_path.chmod(repo_path.stat().st_mode | 0o111)
+        # Bootstrap from the same resolved revision that repo init will use.
+        # A cached launcher must not silently outlive the per-run source lock.
+        launcher_url = (f"{REPO_TOOL_CONFIG['repo_url']}/+/{self.config.repo_commit}/repo?format=TEXT")
+        import base64
+        import urllib.request
+        with urllib.request.urlopen(launcher_url, timeout=30) as response:
+            repo_path.write_bytes(base64.b64decode(b"".join(response.read().split()), validate=True))
+        repo_path.chmod(repo_path.stat().st_mode | 0o111)
         self.env["REPO"] = str(repo_path)
         self.shell.env = self.env
 
@@ -417,7 +392,7 @@ class KernelBuilder:
             raise RuntimeError("Matching manifest must be pinned to a commit")
         self._run_cmd(
             "$REPO init --depth=1 -u https://android.googlesource.com/kernel/manifest "
-            f"-b {self.config.manifest_commit} --repo-rev=v2.16 --no-clone-bundle", check=True)
+            f"-b {self.config.manifest_commit} --repo-rev={self.config.repo_commit} --no-clone-bundle", check=True)
         # Freeze the source AND every required tool to the certified build.
         local_manifests = self.work_dir / ".repo/local_manifests"
         local_manifests.mkdir(parents=True, exist_ok=True)
@@ -449,6 +424,27 @@ class KernelBuilder:
         if actual != self.config.gki_commit:
             raise RuntimeError(f"GKI checkout mismatch: {actual} != {self.config.gki_commit}")
         logger.info("=== Kernel source sync complete ===")
+        self.verify_checkouts(include_helpers=False)
+
+    def verify_checkouts(self, include_helpers=True):
+        projects = {path: revision for _, path, revision in self.config.source_projects}
+        expected = {self.work_dir / path: projects[path] for path in REPO_SYNC_PROJECTS}
+        expected[self.work_dir / ".repo/repo"] = self.config.repo_commit
+        if include_helpers:
+            expected.update({
+                self.work_dir / "KernelSU": self.config.sukisu_commit,
+                self.susfs_dir: self.config.susfs_commit,
+                self.sukisu_patch_dir: self.config.sukisu_patch_commit,
+                self.anykernel_dir: self.config.anykernel_commit,
+            })
+        actual = {}
+        for directory, revision in expected.items():
+            head = subprocess.run(["git", "-C", str(directory), "rev-parse", "HEAD"],
+                                  check=True, capture_output=True, text=True).stdout.strip()
+            if head != revision:
+                raise RuntimeError(f"Source checkout mismatch: {directory.name}: {head} != {revision}")
+            actual[directory.relative_to(self.workspace).as_posix()] = head
+        return actual
 
     def configure_kernel_toolchain(self):
         """Use the exact AOSP compiler selected by this kernel's build config."""
@@ -520,20 +516,16 @@ class KernelBuilder:
         common_dir = self.work_dir / "common"
         susfs_patch = self.susfs_dir / "kernel_patches" / self.config.get_susfs_patch_filename()
         self._require_path(susfs_patch, "SUSFS patch")
-        shutil.copy2(susfs_patch, common_dir / susfs_patch.name)
         for src, dst in [
             (self.susfs_dir / "kernel_patches/fs", common_dir / "fs/"),
             (self.susfs_dir / "kernel_patches/include/linux", common_dir / "include/linux/"),
         ]:
             self._require_path(src, f"SUSFS source {src}")
             shutil.copytree(src, dst, dirs_exist_ok=True)
-        patch_file = common_dir / self.config.get_susfs_patch_filename()
         self._chdir(common_dir)
-        context_patch = REPO_ROOT / "patches/susfs/5.15-context.patch"
-        self._apply_patch_file(context_patch)
         mount_patch = common_dir / "susfs-mount-only.patch"
-        mount_patch.write_text(select_mount_patch(patch_file.read_text(encoding="utf-8")),
-                               encoding="utf-8")
+        mount_patch.write_text(select_mount_patch(susfs_patch.read_text(encoding="utf-8")),
+                               encoding="utf-8", newline="\n")
         self._apply_patch_file(mount_patch)
         reboot_patch = (Path(__file__).resolve().parents[3] / "patches/susfs/"
                         "0002-common-susfs-reboot-dispatch.patch")
@@ -784,7 +776,7 @@ class KernelBuilder:
         subprocess.run(["make", "-C", str(common), f"O={out}", "ARCH=arm64",
                         "LLVM=1", "HOSTCC=gcc", "HOSTCXX=g++", "olddefconfig"],
                        check=True, env=self.env)
-        self._verify_generated_config(out / ".config")
+        self._verify_generated_config(out / ".config", stage="precompile")
 
     def _verify_source_mode(self):
         ipv4 = self.work_dir / "common/net/ipv4"
@@ -810,15 +802,20 @@ class KernelBuilder:
         if "icsk_ca_priv[160" in header or "icsk_ca_priv[104" not in header:
             raise RuntimeError("BBRv3 changed icsk_ca_priv; vendor modules would fail to load")
 
-    def _verify_generated_config(self, path):
+    def _verify_generated_config(self, path, stage=None):
         self._require_path(path, "generated .config")
         values = {}
         for line in path.read_text(encoding="utf-8").splitlines():
             if line.startswith("CONFIG_"):
                 key, value = line.split("=", 1)
+                if key in values:
+                    raise RuntimeError(f"Final .config has duplicate assignment: {key}")
                 values[key] = value
             elif line.startswith("# CONFIG_") and line.endswith(" is not set"):
-                values[line[2:-11]] = "n"
+                key = line[2:-11]
+                if key in values:
+                    raise RuntimeError(f"Final .config has duplicate assignment: {key}")
+                values[key] = "n"
         expected = {
             "CONFIG_KSU": "y", "CONFIG_KSU_SUSFS": "y",
             "CONFIG_KSU_SUSFS_SUS_MOUNT": "y", "CONFIG_NET_SCH_FQ": "y",
@@ -836,6 +833,15 @@ class KernelBuilder:
             "CONFIG_DEBUG_INFO": "y", "CONFIG_DEBUG_INFO_BTF": "y",
             "CONFIG_DEBUG_INFO_BTF_MODULES": "y",
         }
+        # Assert the requested root/logging/performance profile after Kconfig
+        # resolves dependencies, rather than trusting defconfig text alone.
+        expected.update({key: value or "n" for key, value in self.KERNEL_CONFIG_UPDATES.items()})
+        expected.update(self.NETWORK_CONFIG)
+        expected.update(self.RUNTIME_CONFIG)
+        expected.update({"CONFIG_LRU_GEN_STATS": "n", "CONFIG_LTO_CLANG_THIN": "n",
+                         "CONFIG_CFI_PERMISSIVE": "n", "CONFIG_SECURITY_SELINUX": "y",
+                         "CONFIG_DEBUG_INFO_DWARF4": "y", "CONFIG_LZ4_COMPRESS": "y",
+                         "CONFIG_LZ4_DECOMPRESS": "y", "CONFIG_MODULE_SIG_FORCE": "n"})
         for symbol in ("BIC", "HTCP", "WESTWOOD", "VEGAS", "VENO", "HYBLA",
                        "ILLINOIS", "DCTCP", "CDG", "NV", "CUBIC"):
             expected[f"CONFIG_TCP_CONG_{symbol}"] = "n"
@@ -847,6 +853,14 @@ class KernelBuilder:
                 raise RuntimeError(f"Final .config mismatch: {key}={got}, expected {want}")
         self._verify_runtime_config(values)
         self._verify_susfs_config(path)
+        if stage:
+            self.config_checks[stage] = {
+                "status": "passed", "sha256": sha256(path), "expected": expected,
+                "actual": {key: values.get(key, "n") for key in expected},
+                "cmdline": unquote_kconfig_string(values.get("CONFIG_CMDLINE", "")),
+            }
+            (self.workspace / "CONFIG_REPORT.json").write_text(
+                json.dumps(self.config_checks, indent=2) + "\n", encoding="utf-8")
         logger.info("Generated .config verified: BBRv3 default, BBRv1 built in, "
                     "ZRAM lz4kd, KPM off, MGLRU on, lazy RCU off, TEO default")
 
@@ -883,7 +897,7 @@ class KernelBuilder:
             final_config = (self.work_dir / "out" /
                             "android13-5.15" /
                             "common/.config")
-            self._verify_generated_config(final_config)
+            self._verify_generated_config(final_config, stage="final")
             self._verify_kernel_release()
             dist = image_path.parent
             symvers = dist / "vmlinux.symvers"
@@ -919,7 +933,8 @@ class KernelBuilder:
         cmdline = unquote_kconfig_string(values.get("CONFIG_CMDLINE", ""))
         tokens = cmdline.split()
         for token in self.CMDLINE_TOKENS:
-            if tokens.count(token) != 1:
+            prefix = token.split("=", 1)[0] + "="
+            if tokens.count(token) != 1 or any(part.startswith(prefix) and part != token for part in tokens):
                 raise RuntimeError(
                     f"Final .config command line must contain {token} once, got: {cmdline}")
         if any(part.startswith(("rcu_nocbs=", "rcutree.enable_rcu_lazy="))
@@ -932,10 +947,10 @@ class KernelBuilder:
         self._require_path(config_path, "compiled kernel .config")
         config_text = config_path.read_text(encoding="utf-8")
         for symbol in ("CONFIG_KSU", "CONFIG_KPROBES", "CONFIG_KRETPROBES",
-                       "CONFIG_HAVE_SYSCALL_TRACEPOINTS"):
+                       "CONFIG_HAVE_SYSCALL_TRACEPOINTS", "CONFIG_KSU_SUSFS", "CONFIG_KSU_SUSFS_SUS_MOUNT"):
             if not re.search(rf"^{symbol}=y$", config_text, re.M):
                 raise RuntimeError(f"Built-in SukiSU requires {symbol}=y in the compiled config")
-        enabled = set(re.findall(r"^(CONFIG_KSU_SUSFS\w*)=y$",
+        enabled = set(re.findall(r"^(CONFIG_KSU_SUSFS\w*)=(?:y|m)$",
                                  config_text, re.M))
         expected = {key for key, value in self.KERNEL_CONFIG_UPDATES.items()
                     if key.startswith("CONFIG_KSU_SUSFS") and value == "y"}
@@ -1038,17 +1053,21 @@ class KernelBuilder:
             f"- Android family: {ANDROID_FAMILY}",
             f"- GKI tag: `{self.config.gki_tag}`",
             f"- GKI exact commit: `{self.config.gki_commit}`",
+            f"- Certified GKI build ID: `{self.config.official_build_id}`",
             f"- Kernel version: {self.config.kernel_version}",
             f"- Kernel release suffix: {self.release_suffix or 'not set'}",
             f"- Manifest branch: `{self.config.manifest_branch}`",
+            f"- Manifest exact commit: `{self.config.manifest_commit}`",
+            f"- Repo tool exact commit: `{self.config.repo_commit}`",
             f"- Kernel source: `{self._git_head(self.work_dir / 'common')}`",
             f"- SukiSU channel: {self.config.sukisu_channel}",
             f"- SukiSU tag: {self.config.sukisu_tag or 'none (upstream HEAD)'}",
             f"- SukiSU exact commit: `{self.config.sukisu_commit}`",
             f"- SukiSU checkout: `{self._git_head(self.work_dir / 'KernelSU')}`",
             f"- SukiSU kernel UAPI: {self._read_ksu_uapi_version()}",
-            f"- SUSFS exact commit: `{self.config.susfs_commit or SUSFS_REVISION}`",
-            f"- LZ4KD helper source commit: `{self.config.sukisu_patch_commit or SUKISU_PATCH_REVISION}`",
+            f"- SUSFS exact commit: `{self.config.susfs_commit}`",
+            f"- LZ4KD helper source commit: `{self.config.sukisu_patch_commit}`",
+            f"- AnyKernel3 exact commit: `{self.config.anykernel_commit}`",
             "- TCP: BBRv3 default, stock BBRv1 built in, other congestion algorithms off",
             "- Multi-gen LRU: enabled by default; statistics off",
             "- RCU: certified lazy-off default; no CPU is callback-offloaded",
@@ -1064,6 +1083,7 @@ class KernelBuilder:
             f"- Certified GKI symbol CRCs matched: {self.abi_symbol_count}",
             f"- Boot packaging: {'device base image repacked' if self.config.base_boot else 'generic ramdisk-less GKI header v4; device ramdisk must be in init_boot'}",
             f"- Compiler: {compiler_version}",
+            f"- Configuration checks: {', '.join(self.config_checks) or 'not completed'}",
             f"- Kernel Image SHA256: `{image_sha}`",
             "- SUSFS profile: mount-only (core + SUS_MOUNT)",
         ]
@@ -1088,6 +1108,7 @@ class KernelBuilder:
         logger.info("=" * 50)
         try:
             self._preflight()
+            write_sources(self.config, self.workspace)
             (self.workspace / "artifact_stem.txt").write_text(self.config.artifact_stem + "\n", encoding="utf-8")
             self.clone_repositories()
             self.setup_repo_tool()
@@ -1102,12 +1123,14 @@ class KernelBuilder:
             self.show_kernel_config()
             self.configure_build_fragment()
             self._verify_source_mode()
+            (self.workspace / "checkouts.json").write_text(
+                json.dumps(self.verify_checkouts(), indent=2) + "\n", encoding="utf-8")
             logger.info("Patch report: GKI %s %s; SukiSU %s; SUSFS %s; BBR %s; tweaks %s; integration count=%d",
                         self.config.kernel_version, self.config.gki_commit, self.config.sukisu_commit,
-                        SUSFS_REVISION, self.applied_bbr_patches, self.applied_tweak_patches,
+                        self.config.susfs_commit, self.applied_bbr_patches, self.applied_tweak_patches,
                         len(self.applied_integration_patches))
+            self.generate_and_verify_config()
             if preflight_only:
-                self.generate_and_verify_config()
                 info = self.write_build_info(success=True, message="Source and generated config preflight passed")
                 return BuildResult(success=True, config=self.config, message="Preflight passed",
                                    artifacts=[str(info)], build_time=time.time() - start_time)
@@ -1120,6 +1143,8 @@ class KernelBuilder:
             artifacts.extend(self.prepare_boot_images())
             build_time = time.time() - start_time
             self.write_build_info(artifacts=artifacts, build_time=build_time, success=True)
+            evidence = collect_evidence(self.workspace, self.config.config_name, self.abi_symbol_count)
+            artifacts.append(str(evidence))
             logger.info(f"Build succeeded in {build_time:.2f}s, {len(artifacts)} artifact(s)")
             return BuildResult(success=True, config=self.config, message="Build succeeded", artifacts=artifacts, build_time=build_time)
         except Exception as e:
