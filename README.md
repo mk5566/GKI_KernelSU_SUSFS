@@ -97,6 +97,9 @@ Every selected patch applies once, without fuzz or silent skips. The build
 generates and verifies `.config` before compiling, then checks the final build's
 configuration again. Checks include performance optimization, quiet root logging,
 the mount-only profile, BBR selection, zram, security metadata and runtime defaults.
+Both stages run through AOSP's `build/build.sh` with the same build configuration
+and certified tools. Preflight stops at the post-defconfig hook, after resolving
+Kconfig dependencies with the manifest's `pahole`, Clang and host toolchain.
 The build retains AOSP KMI symbol lists and trimming. After compilation, every frozen
 export and CRC is compared with **Google's matching certified build's
 `vmlinux.symvers`**. A missing export or differing CRC prevents packaging.

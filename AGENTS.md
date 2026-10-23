@@ -13,6 +13,11 @@ Android 13 GKI 5.15 release through `.github/workflows/kernel-build.yml`.
   SukiSU channel. Do not dispatch builds or publish releases during project cleanup.
 - Keep required-patch failures, generated-config checks and certified export CRC
   checks fatal. Retain the existing boot packaging behavior.
+- Fix bugs at their cause, reasoning from first principles and established best
+  practice. Trace the failing dependency or invariant, fix the responsible layer,
+  and add regression coverage; do not bypass checks or patch over symptoms.
+  Configuration preflight and compilation must use the same certified AOSP build
+  environment, including host tools and Kconfig capability probes.
 - Validate project changes with
   `python -X utf8 -m unittest discover -s .github/workflows/scripts/tests -q`
   and `git diff --check`. Repository tests do not establish device stability.

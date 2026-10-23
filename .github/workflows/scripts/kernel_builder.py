@@ -766,16 +766,9 @@ class KernelBuilder:
         logger.info("-" * 60)
 
     def generate_and_verify_config(self):
-        """Kconfig resolves dependencies; verify its output before compilation."""
-        common = self.work_dir / "common"
+        """Resolve Kconfig in the same certified environment as compilation."""
+        self._run_kernel_build(config_only=True)
         out = self.work_dir / "out/android13-5.15/common"
-        out.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["make", "-C", str(common), f"O={out}", "ARCH=arm64",
-                        "LLVM=1", "HOSTCC=gcc", "HOSTCXX=g++", "gki_defconfig"],
-                       check=True, env=self.env)
-        subprocess.run(["make", "-C", str(common), f"O={out}", "ARCH=arm64",
-                        "LLVM=1", "HOSTCC=gcc", "HOSTCXX=g++", "olddefconfig"],
-                       check=True, env=self.env)
         self._verify_generated_config(out / ".config", stage="precompile")
 
     def _verify_source_mode(self):
@@ -875,17 +868,32 @@ class KernelBuilder:
         )) + "\n", encoding="utf-8")
         self.env["GKI_BUILD_CONFIG_FRAGMENT"] = str(fragment)
 
+    def _run_kernel_build(self, config_only=False):
+        """Let AOSP select all tools, flags and output paths for both stages."""
+        env = self.env.copy()
+        env.update(BUILD_CONFIG="common/build.config.gki.aarch64", INSTALL_MOD_STRIP="1")
+        if config_only:
+            fragment = Path(env["GKI_BUILD_CONFIG_FRAGMENT"])
+            self._require_path(fragment, "kernel build config fragment")
+            preflight = self.work_dir / "build.config.preflight"
+            # build.sh initializes its hermetic toolchain (including pahole),
+            # generates DEFCONFIG, then evaluates this supported hook. Exit
+            # before compilation without exporting any setup state to Python.
+            preflight.write_text(fragment.read_text(encoding="utf-8") +
+                                 "\nPOST_DEFCONFIG_CMDS='make -C \"${KERNEL_DIR}\" "
+                                 "O=\"${OUT_DIR}\" ${TOOL_ARGS} olddefconfig "
+                                 "|| exit $?; exit 0'\n",
+                                 encoding="utf-8", newline="\n")
+            env["GKI_BUILD_CONFIG_FRAGMENT"] = str(preflight)
+        return subprocess.run(["bash", "build/build.sh"], cwd=self.work_dir,
+                              env=env, check=config_only)
+
     def build_kernel(self) -> bool:
         logger.info("=== Starting kernel compile ===")
         self._chdir(self.work_dir)
         try:
             logger.info("Starting kernel compilation with build.sh...")
-            build_cmd = (
-                "INSTALL_MOD_STRIP=1 "
-                "BUILD_CONFIG=common/build.config.gki.aarch64 "
-                "build/build.sh"
-            )
-            result = self._run_cmd(build_cmd, check=False)
+            result = self._run_kernel_build()
 
             if result.returncode != 0:
                 logger.error(f"Kernel compile failed: {result.stderr if result.stderr else f'exit {result.returncode}'}")
