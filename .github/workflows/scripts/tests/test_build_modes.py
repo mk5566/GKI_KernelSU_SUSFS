@@ -340,6 +340,32 @@ class ModeTests(unittest.TestCase):
             self.assertEqual(run.call_args.args[0], [str(clang_bin / "clang"), "--version"])
             self.assertEqual(builder.env["PATH"].split(os.pathsep)[0], str(clang_bin))
 
+    def test_create_anykernel_zips_copies_image_directly(self):
+        with tempfile.TemporaryDirectory() as root:
+            builder = KernelBuilder(BuildConfig(), root)
+            image_src = builder._kernel_image_path()
+            image_src.parent.mkdir(parents=True, exist_ok=True)
+            image_src.write_bytes(b"dummy kernel image")
+            builder.anykernel_dir.mkdir(parents=True, exist_ok=True)
+            (builder.workspace / "AnyKernel3.zip").touch()
+            with patch.object(builder, "_chdir"), patch.object(builder, "_run_cmd") as run_cmd:
+                builder.create_anykernel_zips()
+                cp_calls = [c.args[0] for c in run_cmd.call_args_list if c.args[0].startswith("cp ")]
+                self.assertEqual(len(cp_calls), 1)
+                self.assertIn(f"cp {image_src} {builder.anykernel_dir}/Image", cp_calls)
+                self.assertFalse((builder.work_dir / "Image").exists())
+
+    def test_write_build_info_reuses_cached_compiler_version(self):
+        with tempfile.TemporaryDirectory() as root:
+            builder = KernelBuilder(BuildConfig(), root)
+            builder.compiler_version = "Android Clang test version"
+            with patch("kernel_builder.subprocess.run") as run:
+                builder.write_build_info(success=True)
+                for call in run.call_args_list:
+                    self.assertNotEqual(call.args[0], ["clang", "--version"])
+            content = (builder.workspace / "BUILD_INFO.md").read_text(encoding="utf-8")
+            self.assertIn("- Compiler: Android Clang test version", content)
+
 
 class ReleaseNameTests(unittest.TestCase):
     FIXTURE = (

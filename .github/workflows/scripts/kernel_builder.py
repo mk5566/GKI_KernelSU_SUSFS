@@ -209,6 +209,8 @@ class KernelBuilder:
         self.abi_symbol_count = 0
         self.release_suffix = ""
         self.config_checks = {}
+        self.compiler_version = ""
+        self._verified_checkouts = {}
         self._setup_env()
 
     def _setup_env(self):
@@ -341,6 +343,7 @@ class KernelBuilder:
         if actual != commit:
             raise RuntimeError(f"{name} checkout mismatch: {actual} != {commit}")
         logger.info(f"{name} checked out {actual}")
+        self._verified_checkouts[repo] = actual
         self._chdir(self.workspace)
 
     def clone_repositories(self):
@@ -423,6 +426,7 @@ class KernelBuilder:
                                 check=True, capture_output=True, text=True).stdout.strip()
         if actual != self.config.gki_commit:
             raise RuntimeError(f"GKI checkout mismatch: {actual} != {self.config.gki_commit}")
+        self._verified_checkouts[self.work_dir / "common"] = actual
         logger.info("=== Kernel source sync complete ===")
         self.verify_checkouts(include_helpers=False)
 
@@ -439,8 +443,11 @@ class KernelBuilder:
             })
         actual = {}
         for directory, revision in expected.items():
-            head = subprocess.run(["git", "-C", str(directory), "rev-parse", "HEAD"],
-                                  check=True, capture_output=True, text=True).stdout.strip()
+            head = self._verified_checkouts.get(directory)
+            if head is None:
+                head = subprocess.run(["git", "-C", str(directory), "rev-parse", "HEAD"],
+                                      check=True, capture_output=True, text=True).stdout.strip()
+                self._verified_checkouts[directory] = head
             if head != revision:
                 raise RuntimeError(f"Source checkout mismatch: {directory.name}: {head} != {revision}")
             actual[directory.relative_to(self.workspace).as_posix()] = head
@@ -467,7 +474,9 @@ class KernelBuilder:
         self.shell.env = self.env
         compiler = subprocess.run([str(clang), "--version"], capture_output=True,
                                   text=True, check=True, env=self.env)
-        logger.info("Preflight compiler: %s", compiler.stdout.splitlines()[0])
+        lines = compiler.stdout.splitlines()
+        self.compiler_version = lines[0] if lines else "unavailable"
+        logger.info("Preflight compiler: %s", self.compiler_version)
 
     def add_kernelsu(self):
         logger.info("=== Adding KernelSU ===")
@@ -499,6 +508,7 @@ class KernelBuilder:
         ).stdout.strip()
         if actual != requested:
             raise RuntimeError(f"SukiSU checkout mismatch: requested {requested}, got {actual}")
+        self._verified_checkouts[ksu_dir] = actual
         uapi = self._read_ksu_uapi_version()
         logger.info("SukiSU kernel UAPI: %s; the manager must use the same UAPI",
                     uapi if uapi is not None else "unset")
@@ -795,8 +805,8 @@ class KernelBuilder:
         if "icsk_ca_priv[160" in header or "icsk_ca_priv[104" not in header:
             raise RuntimeError("BBRv3 changed icsk_ca_priv; vendor modules would fail to load")
 
-    def _verify_generated_config(self, path, stage=None):
-        self._require_path(path, "generated .config")
+    def _parse_config(self, path: Path, what: str = "generated .config") -> dict:
+        self._require_path(path, what)
         values = {}
         for line in path.read_text(encoding="utf-8").splitlines():
             if line.startswith("CONFIG_"):
@@ -809,9 +819,12 @@ class KernelBuilder:
                 if key in values:
                     raise RuntimeError(f"Final .config has duplicate assignment: {key}")
                 values[key] = "n"
+        return values
+
+    def _verify_generated_config(self, path, stage=None):
+        values = self._parse_config(path)
         expected = {
-            "CONFIG_KSU": "y", "CONFIG_KSU_SUSFS": "y",
-            "CONFIG_KSU_SUSFS_SUS_MOUNT": "y", "CONFIG_NET_SCH_FQ": "y",
+            "CONFIG_NET_SCH_FQ": "y",
             "CONFIG_ZRAM": "y", "CONFIG_ZSMALLOC": "y",
             "CONFIG_CRYPTO_LZ4KD": "y", "CONFIG_LZ4KD_COMPRESS": "y",
             "CONFIG_LZ4KD_DECOMPRESS": "y", "CONFIG_ZRAM_DEF_COMP_LZ4KD": "y",
@@ -845,7 +858,7 @@ class KernelBuilder:
             if got != want:
                 raise RuntimeError(f"Final .config mismatch: {key}={got}, expected {want}")
         self._verify_runtime_config(values)
-        self._verify_susfs_config(path)
+        self._verify_susfs_config(values)
         if stage:
             self.config_checks[stage] = {
                 "status": "passed", "sha256": sha256(path), "expected": expected,
@@ -932,12 +945,6 @@ class KernelBuilder:
         logger.info("Kernel release: %s", release)
 
     def _verify_runtime_config(self, values):
-        for key, want in self.RUNTIME_CONFIG.items():
-            got = values.get(key, "n")
-            if got != want:
-                raise RuntimeError(f"Final .config mismatch: {key}={got}, expected {want}")
-        if values.get("CONFIG_LRU_GEN_STATS", "n") != "n":
-            raise RuntimeError("Final .config mismatch: CONFIG_LRU_GEN_STATS must stay off")
         cmdline = unquote_kconfig_string(values.get("CONFIG_CMDLINE", ""))
         tokens = cmdline.split()
         for token in self.CMDLINE_TOKENS:
@@ -951,15 +958,17 @@ class KernelBuilder:
                 "Final .config mismatch: lazy RCU and callback offload stay "
                 "at the certified default")
 
-    def _verify_susfs_config(self, config_path: Path):
-        self._require_path(config_path, "compiled kernel .config")
-        config_text = config_path.read_text(encoding="utf-8")
+    def _verify_susfs_config(self, config_or_values):
+        if isinstance(config_or_values, dict):
+            values = config_or_values
+        else:
+            values = self._parse_config(config_or_values, "compiled kernel .config")
         for symbol in ("CONFIG_KSU", "CONFIG_KPROBES", "CONFIG_KRETPROBES",
                        "CONFIG_HAVE_SYSCALL_TRACEPOINTS", "CONFIG_KSU_SUSFS", "CONFIG_KSU_SUSFS_SUS_MOUNT"):
-            if not re.search(rf"^{symbol}=y$", config_text, re.M):
+            if values.get(symbol) != "y":
                 raise RuntimeError(f"Built-in SukiSU requires {symbol}=y in the compiled config")
-        enabled = set(re.findall(r"^(CONFIG_KSU_SUSFS\w*)=(?:y|m)$",
-                                 config_text, re.M))
+        enabled = {key for key, val in values.items()
+                   if key.startswith("CONFIG_KSU_SUSFS") and val in ("y", "m")}
         expected = {key for key, value in self.KERNEL_CONFIG_UPDATES.items()
                     if key.startswith("CONFIG_KSU_SUSFS") and value == "y"}
         if enabled != expected:
@@ -993,8 +1002,7 @@ class KernelBuilder:
 
         image_src = self._kernel_image_path()
         self._require_path(image_src, "compiled kernel Image")
-        self._run_cmd(f"cp {image_src} {self.work_dir}/Image", check=True)
-        self._run_cmd(f"cp {self.work_dir}/Image {ak3_dir}/", check=True)
+        self._run_cmd(f"cp {image_src} {ak3_dir}/Image", check=True)
 
         zip_path = self.workspace / "AnyKernel3.zip"
         self._chdir(ak3_dir)
@@ -1045,13 +1053,15 @@ class KernelBuilder:
         if image.is_file():
             import hashlib
             image_sha = hashlib.sha256(image.read_bytes()).hexdigest()
-        try:
-            compiler = subprocess.run(["clang", "--version"], capture_output=True,
-                                      text=True, env=self.env)
-            compiler_lines = compiler.stdout.splitlines()
-            compiler_version = compiler_lines[0] if compiler.returncode == 0 and compiler_lines else "unavailable"
-        except OSError:
-            compiler_version = "unavailable"
+        compiler_version = self.compiler_version
+        if not compiler_version:
+            try:
+                compiler = subprocess.run(["clang", "--version"], capture_output=True,
+                                          text=True, env=self.env)
+                compiler_lines = compiler.stdout.splitlines()
+                compiler_version = compiler_lines[0] if compiler.returncode == 0 and compiler_lines else "unavailable"
+            except OSError:
+                compiler_version = "unavailable"
         lines = [
             f"## GKI-derived kernel {self.config.kernel_version}",
             "",

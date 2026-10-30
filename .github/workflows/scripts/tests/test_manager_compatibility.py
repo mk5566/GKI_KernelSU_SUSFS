@@ -81,6 +81,18 @@ class ManagerCompatibilityTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "SUSFS profile mismatch"):
             self.builder._verify_susfs_config(config_file)
 
+    def test_verify_susfs_config_accepts_parsed_dict(self):
+        valid_dict = {
+            "CONFIG_KSU": "y", "CONFIG_KPROBES": "y", "CONFIG_KRETPROBES": "y",
+            "CONFIG_HAVE_SYSCALL_TRACEPOINTS": "y", "CONFIG_KSU_SUSFS": "y",
+            "CONFIG_KSU_SUSFS_SUS_MOUNT": "y",
+        }
+        self.builder._verify_susfs_config(valid_dict)
+        with self.assertRaisesRegex(RuntimeError, "Built-in SukiSU requires"):
+            self.builder._verify_susfs_config({**valid_dict, "CONFIG_KSU": "n"})
+        with self.assertRaisesRegex(RuntimeError, "SUSFS profile mismatch"):
+            self.builder._verify_susfs_config({**valid_dict, "CONFIG_KSU_SUSFS_SUS_PATH": "y"})
+
 
 if __name__ == "__main__":
     unittest.main()
