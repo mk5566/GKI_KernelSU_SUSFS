@@ -191,6 +191,28 @@ class KernelBuilder:
     CMDLINE_TOKENS = (
         "cpuidle.governor=teo",
     )
+    # Human-readable names for the settings this profile is about. The final
+    # .config check is the authoritative assertion; this only makes the log
+    # readable, so it must not become a second place that names a symbol.
+    CONFIG_SUMMARY_LABELS = {
+        "CONFIG_KSU": "KernelSU",
+        "CONFIG_KSU_SUSFS": "SUSFS",
+        "CONFIG_KSU_SUSFS_SUS_MOUNT": "SUSFS mount hiding",
+        "CONFIG_KSU_SUSFS_TRY_UMOUNT": "SUSFS try_umount",
+        "CONFIG_KSU_SUSFS_SUS_SU": "SUSFS sus_su",
+        "CONFIG_TCP_CONG_BBR3": "BBRv3",
+        "CONFIG_TCP_CONG_BBR": "BBRv1",
+        "CONFIG_DEFAULT_TCP_CONG": "Default TCP cong",
+        "CONFIG_ZRAM": "ZRAM",
+        "CONFIG_ZRAM_DEF_COMP_LZ4KD": "ZRAM lz4kd default",
+        "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE": "Optimize for performance",
+        "CONFIG_DEBUG_INFO_BTF": "GKI BTF metadata",
+        "CONFIG_LRU_GEN_ENABLED": "Multi-gen LRU",
+        "CONFIG_RCU_LAZY": "Lazy RCU",
+        "CONFIG_RCU_LAZY_DEFAULT_OFF": "Lazy RCU default off",
+        "CONFIG_CPU_IDLE_GOV_TEO": "TEO cpuidle governor",
+        "CONFIG_CPU_IDLE_GOV_MENU": "Menu cpuidle governor",
+    }
 
     def __init__(self, config: BuildConfig, workspace: str):
         self.config = config
@@ -362,11 +384,7 @@ class KernelBuilder:
         unpack = self.mkbootimg_dir / "unpack_bootimg.py"
         self._require_path(mkbootimg, "mkbootimg.py")
         self._require_path(unpack, "unpack_bootimg.py")
-        self.env["MKBOOTIMG"] = str(mkbootimg)
-        self.env["UNPACK_BOOTIMG"] = str(unpack)
-
-        self.shell.env = self.env
-        logger.info("=== Toolchain ready ===")
+        logger.info("=== Boot tools ready ===")
 
     def setup_repo_tool(self):
         logger.info("=== Installing repo tool ===")
@@ -430,7 +448,15 @@ class KernelBuilder:
         logger.info("=== Kernel source sync complete ===")
         self.verify_checkouts(include_helpers=False)
 
-    def verify_checkouts(self, include_helpers=True):
+    def verify_checkouts(self, include_helpers=True, reuse_verified=True):
+        """Compare every required tree with the revision this run resolved.
+
+        `reuse_verified` skips re-reading revisions this same run already
+        checked out. The final audit before compilation must be
+        authoritative, so it passes reuse_verified=False: a later checkout
+        change must not hide behind an in-memory record that was taken
+        before the source stack was integrated.
+        """
         projects = {path: revision for _, path, revision in self.config.source_projects}
         expected = {self.work_dir / path: projects[path] for path in REPO_SYNC_PROJECTS}
         expected[self.work_dir / ".repo/repo"] = self.config.repo_commit
@@ -443,7 +469,7 @@ class KernelBuilder:
             })
         actual = {}
         for directory, revision in expected.items():
-            head = self._verified_checkouts.get(directory)
+            head = self._verified_checkouts.get(directory) if reuse_verified else None
             if head is None:
                 head = subprocess.run(["git", "-C", str(directory), "rev-parse", "HEAD"],
                                       check=True, capture_output=True, text=True).stdout.strip()
@@ -736,22 +762,7 @@ class KernelBuilder:
             if line.strip().startswith("CONFIG_") or line.strip().startswith("# CONFIG_")
         ]
 
-        key_configs = {
-            "CONFIG_KSU": "KernelSU",
-            "CONFIG_KSU_SUSFS": "SUSFS",
-            "CONFIG_KSU_SUSFS_TRY_UMOUNT": "SUSFS try_umount",
-            "CONFIG_KSU_SUSFS_SUS_SU": "SUSFS sus_su",
-            "CONFIG_TCP_CONG_BBR3": "BBRv3",
-            "CONFIG_DEFAULT_TCP_CONG": "Default TCP cong",
-            "CONFIG_ZRAM": "ZRAM",
-            "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE": "Optimize for performance",
-            "CONFIG_DEBUG_INFO_BTF": "GKI BTF metadata",
-            "CONFIG_LRU_GEN_ENABLED": "Multi-gen LRU",
-            "CONFIG_RCU_LAZY": "Lazy RCU",
-            "CONFIG_RCU_LAZY_DEFAULT_OFF": "Lazy RCU default off",
-            "CONFIG_CPU_IDLE_GOV_TEO": "TEO cpuidle governor",
-            "CONFIG_CPU_IDLE_GOV_MENU": "Menu cpuidle governor",
-        }
+        key_configs = self.CONFIG_SUMMARY_LABELS
 
         logger.info("Key config status:")
         for key, name in key_configs.items():
@@ -823,31 +834,30 @@ class KernelBuilder:
 
     def _verify_generated_config(self, path, stage=None):
         values = self._parse_config(path)
+        # Every expectation below comes from one of the profile dicts, except
+        # the zram settings (which live with the zram defconfig edits) and the
+        # certified metadata/integrity settings guarded by the project rules.
         expected = {
-            "CONFIG_NET_SCH_FQ": "y",
             "CONFIG_ZRAM": "y", "CONFIG_ZSMALLOC": "y",
             "CONFIG_CRYPTO_LZ4KD": "y", "CONFIG_LZ4KD_COMPRESS": "y",
             "CONFIG_LZ4KD_DECOMPRESS": "y", "CONFIG_ZRAM_DEF_COMP_LZ4KD": "y",
             "CONFIG_ZRAM_DEF_COMP": '"lz4kd"', "CONFIG_ZRAM_WRITEBACK": "y",
-            "CONFIG_TCP_CONG_BBR": "y",
-            "CONFIG_TCP_CONG_BBR3": "y",
-            "CONFIG_DEFAULT_TCP_CONG": '"bbr3"',
-            "CONFIG_KPM": "n",
             "CONFIG_CRYPTO_LZ4": "y",
+            "CONFIG_LZ4_COMPRESS": "y", "CONFIG_LZ4_DECOMPRESS": "y",
             "CONFIG_MODVERSIONS": "y", "CONFIG_CFI_CLANG": "y",
             "CONFIG_LTO_CLANG_FULL": "y",
             "CONFIG_DEBUG_INFO": "y", "CONFIG_DEBUG_INFO_BTF": "y",
             "CONFIG_DEBUG_INFO_BTF_MODULES": "y",
+            "CONFIG_DEBUG_INFO_DWARF4": "y", "CONFIG_SECURITY_SELINUX": "y",
+            "CONFIG_MODULE_SIG_FORCE": "n",
+            "CONFIG_LRU_GEN_STATS": "n", "CONFIG_LTO_CLANG_THIN": "n",
+            "CONFIG_CFI_PERMISSIVE": "n",
         }
-        # Assert the requested root/logging/performance profile after Kconfig
-        # resolves dependencies, rather than trusting defconfig text alone.
+        # The root/logging/performance, network and runtime profiles are
+        # asserted after Kconfig resolves dependencies, not from defconfig text.
         expected.update({key: value or "n" for key, value in self.KERNEL_CONFIG_UPDATES.items()})
         expected.update(self.NETWORK_CONFIG)
         expected.update(self.RUNTIME_CONFIG)
-        expected.update({"CONFIG_LRU_GEN_STATS": "n", "CONFIG_LTO_CLANG_THIN": "n",
-                         "CONFIG_CFI_PERMISSIVE": "n", "CONFIG_SECURITY_SELINUX": "y",
-                         "CONFIG_DEBUG_INFO_DWARF4": "y", "CONFIG_LZ4_COMPRESS": "y",
-                         "CONFIG_LZ4_DECOMPRESS": "y", "CONFIG_MODULE_SIG_FORCE": "n"})
         for symbol in ("BIC", "HTCP", "WESTWOOD", "VEGAS", "VENO", "HYBLA",
                        "ILLINOIS", "DCTCP", "CDG", "NV", "CUBIC"):
             expected[f"CONFIG_TCP_CONG_{symbol}"] = "n"
@@ -978,8 +988,6 @@ class KernelBuilder:
         logger.info("=== Preparing boot image ===")
         self.configure_boot_tools()
         self._chdir(self.work_dir)
-        bootimgs_dir = self.work_dir / "bootimgs"
-        bootimgs_dir.mkdir(exist_ok=True)
 
         image_src = self._kernel_image_path()
         self._require_path(image_src, "compiled kernel Image")
@@ -1051,8 +1059,7 @@ class KernelBuilder:
         image = self._kernel_image_path()
         image_sha = "unavailable"
         if image.is_file():
-            import hashlib
-            image_sha = hashlib.sha256(image.read_bytes()).hexdigest()
+            image_sha = sha256(image)
         compiler_version = self.compiler_version
         if not compiler_version:
             try:
@@ -1142,7 +1149,8 @@ class KernelBuilder:
             self.configure_build_fragment()
             self._verify_source_mode()
             (self.workspace / "checkouts.json").write_text(
-                json.dumps(self.verify_checkouts(), indent=2) + "\n", encoding="utf-8")
+                json.dumps(self.verify_checkouts(reuse_verified=False), indent=2) + "\n",
+                encoding="utf-8")
             logger.info("Patch report: GKI %s %s; SukiSU %s; SUSFS %s; BBR %s; tweaks %s; integration count=%d",
                         self.config.kernel_version, self.config.gki_commit, self.config.sukisu_commit,
                         self.config.susfs_commit, self.applied_bbr_patches, self.applied_tweak_patches,

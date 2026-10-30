@@ -85,6 +85,80 @@ class DependencyTests(unittest.TestCase):
                 run.assert_not_called()
                 self.assertEqual(len(actual), len(projects) + 5)
 
+    def test_final_audit_never_reuses_a_cached_checkout_revision(self):
+        projects = (("common", "common", "1" * 40),
+                    ("build/kernel", "build/kernel", "2" * 40),
+                    ("kernel/configs", "kernel/configs", "3" * 40),
+                    ("prebuilts/clang/host/linux-x86", "prebuilts/clang/host/linux-x86", "4" * 40),
+                    ("prebuilts/build-tools", "prebuilts/build-tools", "5" * 40),
+                    ("prebuilts/kernel-build-tools", "prebuilts/kernel-build-tools", "6" * 40),
+                    ("prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8", "prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8", "7" * 40),
+                    ("prebuilts/ndk-r23", "prebuilts/ndk-r23", "8" * 40),
+                    ("tools/mkbootimg", "tools/mkbootimg", "9" * 40))
+        config = BuildConfig(gki_commit="1" * 40, manifest_commit="a" * 40, sukisu_commit="b" * 40,
+                             susfs_commit="c" * 40, sukisu_patch_commit="d" * 40,
+                             anykernel_commit="e" * 40, repo_commit="f" * 40,
+                             gki_tag="android13-5.15-2026-10_r1",
+                             manifest_branch="common-android13-5.15-2026-10",
+                             kernel_version="5.15.200", official_build_id="12345",
+                             source_projects=projects)
+        # One live query per required tree: the sync projects, repo and helpers.
+        trees = len(projects) + 5
+
+        def heads(**changed):
+            def head(command, **kwargs):
+                directory = command[2].replace("\\", "/")
+                mutated = changed.get(directory.rsplit("/", 1)[-1])
+                if mutated is None:
+                    for _, path, revision in reversed(projects):
+                        if directory.endswith(path):
+                            mutated = revision
+                            break
+                if mutated is None and directory.endswith("/.repo/repo"):
+                    mutated = config.repo_commit
+                elif mutated is None and directory.endswith("/KernelSU"):
+                    mutated = config.sukisu_commit
+                elif mutated is None:
+                    mutated = {"susfs4ksu": config.susfs_commit,
+                               "SukiSU_patch": config.sukisu_patch_commit,
+                               "AnyKernel3": config.anykernel_commit}.get(
+                                   directory.rsplit("/", 1)[-1])
+                return subprocess.CompletedProcess(command, 0,
+                                                   stdout=mutated if mutated else "0" * 40)
+            return head
+
+        with tempfile.TemporaryDirectory() as temp:
+            def prepared():
+                builder = KernelBuilder(config, temp)
+                for _, path, revision in projects:
+                    builder._verified_checkouts[builder.work_dir / path] = revision
+                builder._verified_checkouts.update({
+                    builder.work_dir / ".repo/repo": config.repo_commit,
+                    builder.work_dir / "KernelSU": config.sukisu_commit,
+                    builder.susfs_dir: config.susfs_commit,
+                    builder.sukisu_patch_dir: config.sukisu_patch_commit,
+                    builder.anykernel_dir: config.anykernel_commit,
+                })
+                return builder
+
+            # A tree moved after the checkout pass must fail the final audit.
+            for moved in ("common", "KernelSU", "SukiSU_patch", "repo"):
+                with self.subTest(moved=moved), patch("kernel_builder.subprocess.run",
+                                                       side_effect=heads(**{moved: "0" * 40})):
+                    with self.assertRaisesRegex(RuntimeError, "Source checkout mismatch"):
+                        prepared().verify_checkouts(reuse_verified=False)
+
+            # A clean final audit still queries every tree, cached record or not.
+            with patch("kernel_builder.subprocess.run", side_effect=heads()) as run:
+                actual = prepared().verify_checkouts(reuse_verified=False)
+                self.assertGreaterEqual(run.call_count, trees)
+                self.assertEqual(len(actual), trees)
+
+            # The earlier audit after sync may still reuse the resolved record.
+            with patch("kernel_builder.subprocess.run") as run:
+                prepared().verify_checkouts()
+                run.assert_not_called()
+
     def test_repo_launcher_comes_from_the_recorded_commit_even_with_a_cached_launcher(self):
         import base64
         config = BuildConfig(repo_commit="f" * 40)

@@ -100,19 +100,21 @@ jobs:
       - name: Summarize verified build
         run: cat "$GKI_WORKSPACE/evidence/BUILD_INFO.md" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload failure diagnostics
+        # Paths follow GKI_WORKSPACE; the build subdirectory is the builder's
+        # configured family name (scripts/config.py ANDROID_FAMILY).
         if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: kernel-failed-${{ github.run_id }}
           include-hidden-files: true
           path: |
-            /tmp/gki-build/BUILD_INFO.md
-            /tmp/gki-build/sources.json
-            /tmp/gki-build/GKI-reference.symvers
-            /tmp/gki-build/CONFIG_REPORT.json
-            /tmp/gki-build/checkouts.json
-            /tmp/gki-build/android13-5.15/out/android13-5.15/common/.config
-            /tmp/gki-build/android13-5.15/out/android13-5.15/common/Module.symvers
-            /tmp/gki-build/android13-5.15/out/android13-5.15/dist/vmlinux.symvers
-            /tmp/gki-build/**/*.rej
+            ${{ env.GKI_WORKSPACE }}/BUILD_INFO.md
+            ${{ env.GKI_WORKSPACE }}/sources.json
+            ${{ env.GKI_WORKSPACE }}/GKI-reference.symvers
+            ${{ env.GKI_WORKSPACE }}/CONFIG_REPORT.json
+            ${{ env.GKI_WORKSPACE }}/checkouts.json
+            ${{ env.GKI_WORKSPACE }}/android13-5.15/out/android13-5.15/common/.config
+            ${{ env.GKI_WORKSPACE }}/android13-5.15/out/android13-5.15/common/Module.symvers
+            ${{ env.GKI_WORKSPACE }}/android13-5.15/out/android13-5.15/dist/vmlinux.symvers
+            ${{ env.GKI_WORKSPACE }}/**/*.rej
           if-no-files-found: warn
