@@ -1,8 +1,20 @@
 From: GKI maintainers <gki-builder@localhost>
 Subject: [PATCH] kernelsu: integrate mount-only SUSFS with upstream main
 
-Application checked: SukiSU-Ultra 0bca5d15 (UAPI 5), decfaa5b (UAPI 6).
-Anchor build/include additions to core entries, not optional feature lists.
+Application checked: SukiSU-Ultra 0bca5d15 (UAPI 5), decfaa5b (UAPI 6),
+7e4784ee (UAPI 6).
+Each hunk anchors on a minimal contiguous pair of contract lines: the
+line the insertion depends on (core object entry, KSU config entry,
+manager branch start, umount handler, escape commit, is_zygote
+definition, forced-feature call) plus its immediate structural
+neighbour (blank separator, next statement, closing brace). Include
+hunks insert before the blank line that separates upstream's kernel
+includes from the policy includes, so upstream include churn anywhere
+in either group cannot fail the build. git apply requires one trailing
+context line mid-file; no log lines, comments or unrelated statements
+are context. A changed contract line still fails closed. commit_creds
+is paired with disable_seccomp because app_profile.c has two call sites
+and only escape_with_root_profile clears SUSFS task flags.
 Keep upstream module blacklist, mount hiding and forced-feature handling intact.
 SUSFS uses its own reboot protocol; it does not change the driver UAPI.
 
@@ -10,19 +22,15 @@ diff --git a/kernel/Kbuild b/kernel/Kbuild
 index a9dd635..13c1c99 100644
 --- a/kernel/Kbuild
 +++ b/kernel/Kbuild
-@@ -1,3 +1,4 @@
+@@ -1,2 +1,3 @@
  kernelsu-objs := core/init.o
 +kernelsu-$(CONFIG_KSU_SUSFS) += feature/susfs.o
  
- kernelsu-objs += feature/kernel_umount.o
 diff --git a/kernel/Kconfig b/kernel/Kconfig
 index e84cffc..ebf4cac 100644
 --- a/kernel/Kconfig
 +++ b/kernel/Kconfig
-@@ -18,6 +18,21 @@ config KSU_DEBUG
- 	help
- 	  Enable KernelSU debug mode.
- 
+@@ -21 +21,16 @@
 +config KSU_SUSFS
 +	bool "SUSFS mount-only integration"
 +	depends on KSU=y && ARM64
@@ -39,33 +47,22 @@ index e84cffc..ebf4cac 100644
 +	  Track KernelSU mounts and apply the app profile's unmount policy.
 +
  config KSU_MANUAL_SU
-     bool "Use manual su"
-     depends on KSU
 diff --git a/kernel/core/init.c b/kernel/core/init.c
 index 8b5d7a8..8bdc686 100644
 --- a/kernel/core/init.c
 +++ b/kernel/core/init.c
-@@ -6,6 +6,9 @@
- #include <linux/sched.h>
- #include <linux/workqueue.h>
- #include <linux/moduleparam.h>
+@@ -9,2 +9,5 @@
 +#ifdef CONFIG_KSU_SUSFS
 +#include <linux/susfs.h>
 +#endif
  
  #include "policy/allowlist.h"
- #include "policy/app_profile.h"
-@@ -143,6 +146,10 @@ int __init kernelsu_init(void)
- 
+@@ -150,2 +153,5 @@ int __init kernelsu_init(void)
      ksu_init_symbol_resolver();
- 
 +#ifdef CONFIG_KSU_SUSFS
 +    susfs_init();
 +#endif
-+
-     if (spoof_release || spoof_version) {
-         ksu_spoof_version(spoof_release, spoof_version);
-     }
+ 
 diff --git a/kernel/feature/susfs.c b/kernel/feature/susfs.c
 new file mode 100644
 index 0000000..fcf4f3c
@@ -165,41 +162,27 @@ diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
 index d3f3ac4..70a1d5a 100644
 --- a/kernel/hook/setuid_hook.c
 +++ b/kernel/hook/setuid_hook.c
-@@ -20,3 +20,4 @@
- #include "supercall/supercall.h"
+@@ -21,2 +21,3 @@
  #include "hook/tp_marker.h"
 +#include "feature/susfs.h"
  #include "feature/kernel_umount.h"
-@@ -28,6 +29,7 @@ int ksu_handle_setresuid(uid_t old_uid, uid_t new_uid)
-     pr_info("handle_setresuid from %d to %d\n", old_uid, new_uid);
- 
+@@ -29,2 +30,3 @@ int ksu_handle_setresuid(uid_t old_uid, uid_t new_uid)
      if (unlikely(is_uid_manager(new_uid))) {
 +        ksu_susfs_clear_task();
          spin_lock_irq(&current->sighand->siglock);
-         ksu_seccomp_allow_cache(current->seccomp.filter, __NR_reboot);
-         ksu_set_task_tracepoint_flag(current);
-@@ -51,6 +53,7 @@ int ksu_handle_setresuid(uid_t old_uid, uid_t new_uid)
- 
-     // Handle kernel umount
+@@ -51,2 +53,3 @@ int ksu_handle_setresuid(uid_t old_uid, uid_t new_uid)
      ksu_handle_umount(old_uid, new_uid);
 +    ksu_susfs_setuid(new_uid);
  
-     return 0;
- }
 diff --git a/kernel/policy/app_profile.c b/kernel/policy/app_profile.c
 index 01f13a2..ce6140c 100644
 --- a/kernel/policy/app_profile.c
 +++ b/kernel/policy/app_profile.c
-@@ -20,6 +20,7 @@
- #include "selinux/selinux.h"
- #include "infra/su_mount_ns.h"
+@@ -22,2 +22,3 @@
  #include "hook/tp_marker.h"
 +#include "feature/susfs.h"
  
- #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 7, 0)
- static struct group_info root_groups = { .usage = REFCOUNT_INIT(2) };
-@@ -206,6 +207,7 @@ int escape_with_root_profile(void)
- 
+@@ -207,3 +207,4 @@ int escape_with_root_profile(void)
      commit_creds(cred);
  
 +    ksu_susfs_clear_task();
@@ -210,34 +193,23 @@ diff --git a/kernel/runtime/boot_event.c b/kernel/runtime/boot_event.c
 index 91848e6..dcdec0e 100644
 --- a/kernel/runtime/boot_event.c
 +++ b/kernel/runtime/boot_event.c
-@@ -3,6 +3,9 @@
- #include <linux/fs.h>
- #include <linux/namei.h>
- #include <linux/printk.h>
+@@ -7,2 +7,5 @@
 +#ifdef CONFIG_KSU_SUSFS
 +#include <linux/susfs.h>
 +#endif
  
  #include "policy/allowlist.h"
- #include "policy/feature.h"
-@@ -34,6 +37,9 @@ void on_post_fs_data(void)
-     ksu_selinux_hide_handle_post_fs_data();
-     // retry forced features which failed at second stage
+@@ -39,2 +42,5 @@ void on_post_fs_data(void)
      ksu_feature_apply_forced();
 +#ifdef CONFIG_KSU_SUSFS
 +    susfs_start_sdcard_monitor_fn();
 +#endif
  }
- 
- extern void ext4_unregister_sysfs(struct super_block *sb);
 diff --git a/kernel/selinux/selinux.c b/kernel/selinux/selinux.c
 index e5dcc4d..40e9bff 100644
 --- a/kernel/selinux/selinux.c
 +++ b/kernel/selinux/selinux.c
-@@ -204,6 +204,23 @@ bool is_ksu_domain(void)
-     return is_task_ksu_domain(current_cred());
- }
- 
+@@ -207 +207,18 @@ bool is_ksu_domain(void)
 +#ifdef CONFIG_KSU_SUSFS
 +/* Called in filesystem allocation paths; never take the string-lookup
 + * fallback while a mount spinlock might be held. SID caching happens
@@ -256,5 +228,3 @@ index e5dcc4d..40e9bff 100644
 +#endif
 +
  bool is_zygote(const struct cred *cred)
- {
-     return is_sid_match(cred, cached_zygote_sid, ZYGOTE_CONTEXT);

@@ -16,17 +16,19 @@ QUIET_PATCH = REPO_ROOT / "patches/susfs/0003-sukisu-quiet-production.patch"
 
 
 class UpstreamPatchTests(unittest.TestCase):
-    def test_optional_features_survive_mount_integration(self):
-        # Relevant source excerpts from upstream 0bca5d15. The setuid excerpt
+    def _upstream_excerpts(self):
+        # Relevant source excerpts from upstream 7e4784ee. The setuid excerpt
         # omits unrelated allowlist handling between the manager and umount.
         kbuild = """kernelsu-objs := core/init.o
 
 kernelsu-objs += feature/kernel_umount.o
 kernelsu-objs += feature/module_blacklist.o
+kernelsu-objs += feature/mount_hide.o
 kernelsu-objs += feature/sulog.o
 kernelsu-objs += feature/sucompat.o
 """
         boot = """#include "feature/selinux_hide.h"
+#include "feature/avc_spoof.h"
 #include <linux/err.h>
 #include <linux/fs.h>
 #include <linux/namei.h>
@@ -38,6 +40,7 @@ kernelsu-objs += feature/sucompat.o
 #include "runtime/ksud_boot.h"
 #include "runtime/ksud.h"
 #include "manager/manager_observer.h"
+#include "extension/dynamic_manager.h"
 #include "manager/throne_tracker.h"
 
 bool ksu_module_mounted __read_mostly = false;
@@ -56,6 +59,7 @@ void on_post_fs_data(void)
     pr_info("on_post_fs_data!\\n");
 
     ksu_load_allow_list();
+    ksu_dynamic_manager_load();
     ksu_observer_init();
     // Sanity check for safe mode only needs early-boot input samples.
     ksu_stop_input_hook_runtime();
@@ -69,12 +73,11 @@ extern void ext4_unregister_sysfs(struct super_block *sb);
         setuid = """#include "supercall/supercall.h"
 #include "hook/tp_marker.h"
 #include "feature/kernel_umount.h"
+#include "feature/mount_hide.h"
 
 int ksu_handle_setresuid(uid_t old_uid, uid_t new_uid)
 {
     // we rely on the fact that zygote always call setresuid(3) with same uids
-
-    pr_info("handle_setresuid from %d to %d\\n", old_uid, new_uid);
 
     if (unlikely(is_uid_manager(new_uid))) {
         spin_lock_irq(&current->sighand->siglock);
@@ -82,7 +85,6 @@ int ksu_handle_setresuid(uid_t old_uid, uid_t new_uid)
         ksu_set_task_tracepoint_flag(current);
         spin_unlock_irq(&current->sighand->siglock);
 
-        pr_info("install fd for manager: %d\\n", new_uid);
         ksu_install_fd();
         return 0;
     }
@@ -93,19 +95,92 @@ int ksu_handle_setresuid(uid_t old_uid, uid_t new_uid)
     return 0;
 }
 """
+        return kbuild, boot, setuid
+
+    def test_optional_features_survive_mount_integration(self):
         # Old layout, the real October 18 additions, and further unrelated
         # neighbours. Never fix this by enumerating optional upstream features.
         for extras in ((), ("mount_hide",), ("mount_hide", "future_feature")):
             with self.subTest(extras=extras):
-                self._check_optional_features(kbuild, boot, setuid, extras)
+                kbuild, boot, setuid = self._upstream_excerpts()
+                kbuild = kbuild.replace("kernelsu-objs += feature/sulog.o",
+                                        "".join(f"kernelsu-objs += feature/{name}.o\n" for name in extras)
+                                        + "kernelsu-objs += feature/sulog.o")
+                setuid = setuid.replace('#include "feature/kernel_umount.h"',
+                                        '#include "feature/kernel_umount.h"' +
+                                        "".join(f'\n#include "feature/{name}.h"' for name in extras))
+                with tempfile.TemporaryDirectory() as temp:
+                    root = Path(temp)
+                    subprocess.run(["git", "init", "-q", str(root)], check=True)
+                    self._apply_and_verify(root, kbuild, boot, setuid)
 
-    def _check_optional_features(self, kbuild, boot, setuid, extras):
-        kbuild = kbuild.replace("kernelsu-objs += feature/sulog.o",
-                               "".join(f"kernelsu-objs += feature/{name}.o\n" for name in extras)
-                               + "kernelsu-objs += feature/sulog.o")
-        setuid = setuid.replace('#include "feature/kernel_umount.h"',
-                                '#include "feature/kernel_umount.h"' +
-                                "".join(f'\n#include "feature/{name}.h"' for name in extras))
+    def test_incidental_upstream_churn_cannot_fail_the_mount_patches(self):
+        # The churn class SukiSU ships between releases: 7e4784ee deleted
+        # log and comment lines and inserted unrelated statements and
+        # includes around our anchors. Hunks anchor only on contract lines
+        # plus their immediate structural neighbour, so this must keep
+        # applying; only a changed contract line may fail the build.
+        kbuild, boot, setuid = self._upstream_excerpts()
+        kbuild = kbuild.replace("kernelsu-objs += feature/sucompat.o\n",
+                                "kernelsu-objs += feature/sucompat.o\n"
+                                "kernelsu-objs += future_neighbour.o\n", 1)
+        boot = boot.replace('    pr_info("on_post_fs_data!\\n");\n', "")
+        boot = boot.replace("#include <linux/printk.h>\n",
+                            "#include <linux/printk.h>\n"
+                            "#include <linux/future_header.h>\n", 1)
+        setuid = setuid.replace(
+            "    // we rely on the fact that zygote always call setresuid(3) with same uids\n\n", "")
+        setuid = setuid.replace(
+            "        spin_unlock_irq(&current->sighand->siglock);\n",
+            "        spin_unlock_irq(&current->sighand->siglock);\n"
+            "        ksu_unrelated_neighbour();\n", 1)
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            self._apply_and_verify(root, kbuild, boot, setuid)
+
+    def _select_patch(self, root):
+        sections = MOUNT_PATCH.read_text(encoding="utf-8").split("diff --git ")
+        selected = "".join("diff --git " + section for section in sections[1:]
+                           if section.startswith(("a/kernel/Kbuild ",
+                                                  "a/kernel/hook/setuid_hook.c ",
+                                                  "a/kernel/runtime/boot_event.c ")))
+        patch_file = root / "layout.patch"
+        patch_file.write_text(selected, encoding="utf-8")
+        builder = KernelBuilder(BuildConfig(), str(root))
+        builder.shell.cwd = str(root)
+        return builder, patch_file
+
+    def _apply_and_verify(self, root, kbuild, boot, setuid):
+        (root / "kernel/runtime").mkdir(parents=True)
+        (root / "kernel/hook").mkdir(parents=True)
+        (root / "kernel/Kbuild").write_text(kbuild, encoding="utf-8")
+        (root / "kernel/runtime/boot_event.c").write_text(boot, encoding="utf-8")
+        (root / "kernel/hook/setuid_hook.c").write_text(setuid, encoding="utf-8")
+        builder, patch_file = self._select_patch(root)
+        builder._apply_patch_file(patch_file)
+        result = (root / "kernel/Kbuild").read_text(encoding="utf-8")
+        self.assertIn("kernelsu-$(CONFIG_KSU_SUSFS) += feature/susfs.o", result)
+        self.assertIn("kernelsu-objs += feature/module_blacklist.o", result)
+        self.assertEqual(result.replace("kernelsu-$(CONFIG_KSU_SUSFS) += feature/susfs.o\n", ""),
+                         kbuild)
+        result = (root / "kernel/hook/setuid_hook.c").read_text(encoding="utf-8")
+        for addition in ('#include "feature/susfs.h"\n',
+                         "        ksu_susfs_clear_task();\n",
+                         "    ksu_susfs_setuid(new_uid);\n"):
+            self.assertEqual(result.count(addition), 1)
+            result = result.replace(addition, "")
+        self.assertEqual(result, setuid)
+        result = (root / "kernel/runtime/boot_event.c").read_text(encoding="utf-8")
+        self.assertIn('#include "policy/feature.h"', result)
+        self.assertIn("#include <linux/susfs.h>", result)
+        self.assertIn("susfs_start_sdcard_monitor_fn();", result)
+        self.assertLess(result.index("ksu_feature_apply_forced();"),
+                        result.index("susfs_start_sdcard_monitor_fn();"))
+        return builder, patch_file
+
+    def test_contract_change_fails_closed_without_partial_insertion(self):
+        kbuild, boot, setuid = self._upstream_excerpts()
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             subprocess.run(["git", "init", "-q", str(root)], check=True)
@@ -114,35 +189,8 @@ int ksu_handle_setresuid(uid_t old_uid, uid_t new_uid)
             (root / "kernel/Kbuild").write_text(kbuild, encoding="utf-8")
             (root / "kernel/runtime/boot_event.c").write_text(boot, encoding="utf-8")
             (root / "kernel/hook/setuid_hook.c").write_text(setuid, encoding="utf-8")
-            sections = MOUNT_PATCH.read_text(encoding="utf-8").split("diff --git ")
-            selected = "".join("diff --git " + section for section in sections[1:]
-                               if section.startswith(("a/kernel/Kbuild ",
-                                                      "a/kernel/hook/setuid_hook.c ",
-                                                      "a/kernel/runtime/boot_event.c ")))
-            patch_file = root / "layout.patch"
-            patch_file.write_text(selected, encoding="utf-8")
-            builder = KernelBuilder(BuildConfig(), temp)
-            builder.shell.cwd = str(root)
+            builder, patch_file = self._select_patch(root)
             builder._apply_patch_file(patch_file)
-            result = (root / "kernel/Kbuild").read_text(encoding="utf-8")
-            self.assertIn("kernelsu-$(CONFIG_KSU_SUSFS) += feature/susfs.o", result)
-            self.assertIn("kernelsu-objs += feature/module_blacklist.o", result)
-            self.assertEqual(result.replace("kernelsu-$(CONFIG_KSU_SUSFS) += feature/susfs.o\n", ""),
-                             kbuild)
-            result = (root / "kernel/hook/setuid_hook.c").read_text(encoding="utf-8")
-            for addition in ('#include "feature/susfs.h"\n',
-                             "        ksu_susfs_clear_task();\n",
-                             "    ksu_susfs_setuid(new_uid);\n"):
-                self.assertEqual(result.count(addition), 1)
-                result = result.replace(addition, "")
-            self.assertEqual(result, setuid)
-            result = (root / "kernel/runtime/boot_event.c").read_text(encoding="utf-8")
-            self.assertIn('#include "policy/feature.h"', result)
-            self.assertIn("#include <linux/susfs.h>", result)
-            self.assertIn("susfs_start_sdcard_monitor_fn();", result)
-            self.assertLess(result.index("ksu_feature_apply_forced();"),
-                            result.index("susfs_start_sdcard_monitor_fn();"))
-
             # An actual contract change must fail without partially inserting
             # the build object or boot hook. Benign neighbouring churn is OK.
             for relative, original in (("kernel/Kbuild", kbuild),
