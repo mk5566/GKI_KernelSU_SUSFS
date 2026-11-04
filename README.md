@@ -62,7 +62,8 @@ configuration drift and vendor CRC mismatches also stop the build.
   checkout, recorded in `BUILD_INFO.md`. The kernel uses that source's UAPI
   where the source declares one; the manager must use the same UAPI.
   Regression tests cover the quiet patch against the `builtin` Makefile
-  layout; required hook changes remain fatal. Failed compilations retain the
+  layout and the fail-closed glue around the disabled priority uid filter;
+  required hook changes remain fatal. Failed compilations retain the
   full `build.log` with an error excerpt in the build message.
 - SUSFS mount hiding only, preserving the filesystem/root integration's scope.
   Helper revisions resolve independently of the certified GKI release.

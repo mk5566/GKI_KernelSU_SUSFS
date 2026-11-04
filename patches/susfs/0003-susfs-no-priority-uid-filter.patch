@@ -1,0 +1,30 @@
+From: GKI maintainers <gki-builder@localhost>
+Subject: [PATCH] susfs: mark helpers maybe-unused when the uid filter is off
+
+susfs_switch_to_ksu_domain() and susfs_restore_creds() are unconditional
+static definitions in fs/susfs.c, but every call site lives in
+susfs_set_priority_uid_filter() and susfs_parse_priority_app_strings(),
+which SUSFS compiles only under CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER. With
+the mount-only profile that symbol is unset, so the definitions have no
+callers and -Werror -Wunused-function fails the build. Mark both
+definitions __maybe_unused: the attribute is a no-op once the feature is
+enabled, and any upstream rename, guard change, or removal of these helpers
+fails this patch closed instead of silently diverging.
+
+diff --git a/fs/susfs.c b/fs/susfs.c
+--- a/fs/susfs.c
++++ b/fs/susfs.c
+@@ -180,5 +180,5 @@
+  * susfs_restore_creds() afterwards.
+  * Returns the original credentials on success, NULL on failure.
+  */
+-static struct cred *susfs_switch_to_ksu_domain(void) {
++static struct cred *__maybe_unused susfs_switch_to_ksu_domain(void) {
+ 	struct cred *orig_cred = NULL;
+@@ -214,5 +214,5 @@
+  * Restores the original credentials that were saved by
+  * susfs_switch_to_ksu_domain().
+  */
+-static void susfs_restore_creds(struct cred *orig_cred) {
++static void __maybe_unused susfs_restore_creds(struct cred *orig_cred) {
+ 	if (!orig_cred)

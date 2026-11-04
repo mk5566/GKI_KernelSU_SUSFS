@@ -6,17 +6,18 @@ setuid and syscall hooks. Type-check these calls without evaluating their
 arguments or emitting messages; retain warning and error diagnostics.
 Scope the override to KernelSU translation units, leaving GKI untouched.
 Anchor to the errno include flags in the upstream `builtin` branch
-kernel/Makefile; the -include resolves KSU_KERNEL_DIR lazily through
-kbuild's recursive ccflags expansion, so the definition below the anchor
-is already visible when flags are used.
+kernel/Makefile. The -include uses $(srctree)/drivers/kernelsu, which is
+always defined by kbuild and is the exact symlink setup.sh creates;
+$(KSU_KERNEL_DIR) must not be used here because its expansion is empty
+when these flags are evaluated, breaking every KernelSU object.
 
 diff --git a/kernel/Makefile b/kernel/Makefile
 --- a/kernel/Makefile
 +++ b/kernel/Makefile
-@@ -4,3 +4,4 @@
+@@ -4,4 +4,5 @@
  ccflags-y += -I$(srctree)/security/selinux -I$(srctree)/security/selinux/include
  ccflags-y += -I$(objtree)/security/selinux -include $(srctree)/include/uapi/asm-generic/errno.h
-+ccflags-y += -include $(KSU_KERNEL_DIR)/include/quiet.h
++ccflags-y += -include $(srctree)/drivers/kernelsu/include/quiet.h
  
  ifeq ($(filter /%,$(src)),)
 diff --git a/kernel/include/quiet.h b/kernel/include/quiet.h
