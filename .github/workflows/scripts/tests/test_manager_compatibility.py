@@ -49,7 +49,7 @@ class ManagerCompatibilityTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "SukiSU checkout mismatch"):
                 self.builder.add_kernelsu()
 
-    def test_any_uapi_reaches_the_mount_patches(self):
+    def test_any_uapi_reaches_the_quiet_patch(self):
         requested = "a" * 40
         self.builder.config.sukisu_commit = requested
         for uapi in (None, 1, 2, 4, 5, 6):
@@ -61,7 +61,7 @@ class ManagerCompatibilityTests(unittest.TestCase):
                  patch("kernel_builder.subprocess.run", return_value=
                        subprocess.CompletedProcess([], 0, stdout=requested + "\n")):
                 self.builder.add_kernelsu()
-                self.assertEqual(apply_patch.call_count, 2)
+                self.assertEqual(apply_patch.call_count, 1)
 
     def test_compiled_config_requires_builtin_and_hooks(self):
         symbols = ("CONFIG_KSU", "CONFIG_KPROBES", "CONFIG_KRETPROBES",

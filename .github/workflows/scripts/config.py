@@ -11,7 +11,11 @@ class KSUChannel(str, Enum):
 
 
 ANDROID_FAMILY = "android13-5.15"
-KSU_REPO_CONFIG = {"repo_url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra.git"}
+KSU_REPO_CONFIG = {"repo_url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra.git",
+                   # GKI integration lives on the upstream `builtin` branch, which
+                   # carries the KernelSU-side SUSFS support natively. The `main`
+                   # branch has no SUSFS and would need a hand-rolled shim.
+                   "branch": "builtin"}
 SUSFS_REPO_CONFIG = {
     "repo_url": "https://github.com/ShirkNeko/susfs4ksu.git", "branch": "gki-android13-5.15",
 }

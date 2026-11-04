@@ -109,6 +109,7 @@ jobs:
           include-hidden-files: true
           path: |
             ${{ env.GKI_WORKSPACE }}/BUILD_INFO.md
+            ${{ env.GKI_WORKSPACE }}/build.log
             ${{ env.GKI_WORKSPACE }}/sources.json
             ${{ env.GKI_WORKSPACE }}/GKI-reference.symvers
             ${{ env.GKI_WORKSPACE }}/CONFIG_REPORT.json

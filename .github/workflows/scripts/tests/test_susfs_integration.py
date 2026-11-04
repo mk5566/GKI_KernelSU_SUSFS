@@ -1,32 +1,91 @@
+"""The full upstream SUSFS filesystem patch applies atomically."""
+import contextlib
+import os
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from susfs_integration import MOUNT_PATCH_FILES, select_mount_patch
+from config import BuildConfig
+from kernel_builder import KernelBuilder
 
 
-def section(path, addition="mount_change();"):
-    return (f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n"
-            f"@@ -1 +1,2 @@\n context\n+{addition}\n")
+PATCH_NAME = "50_add_susfs_in_gki-android13-5.15.patch"
 
 
-class MountIntegrationTests(unittest.TestCase):
-    def test_selects_filesystem_changes_without_legacy_root_hooks(self):
-        mount_sections = "".join(section(p) for p in sorted(MOUNT_PATCH_FILES))
-        original = (section("fs/exec.c", "ksu_handle_execveat();") + mount_sections +
-                    section("kernel/sys.c", "ksu_handle_setresuid();"))
-        self.assertEqual(select_mount_patch(original), mount_sections)
+@contextlib.contextmanager
+def restored_cwd():
+    previous = Path.cwd()
+    try:
+        yield
+    finally:
+        os.chdir(previous)
 
-    def test_missing_mount_file_fails_closed(self):
-        with self.assertRaisesRegex(ValueError, "Missing SUSFS"):
-            select_mount_patch(section("fs/Makefile"))
 
-    def test_legacy_hook_inside_selected_file_fails_closed(self):
-        original = "".join(section(p) for p in sorted(MOUNT_PATCH_FILES))
-        original = original.replace("+mount_change();", "+ksu_handle_setresuid();", 1)
-        with self.assertRaisesRegex(ValueError, "Legacy KernelSU hook"):
-            select_mount_patch(original)
+def make_susfs_source(root: Path) -> None:
+    fs = root / "susfs4ksu/kernel_patches/fs"
+    include = root / "susfs4ksu/kernel_patches/include/linux"
+    fs.mkdir(parents=True)
+    include.mkdir(parents=True)
+    (fs / "susfs.c").write_text("/* susfs */\n", encoding="utf-8")
+    (include / "susfs.h").write_text("/* susfs.h */\n", encoding="utf-8")
+    (root / "susfs4ksu/kernel_patches" / PATCH_NAME).write_text(
+        "diff --git a/fs/Makefile b/fs/Makefile\n"
+        "--- a/fs/Makefile\n"
+        "+++ b/fs/Makefile\n"
+        "@@ -1 +1,2 @@\n"
+        " obj-y += main.o\n"
+        "+obj-y += susfs.o\n",
+        encoding="utf-8")
+
+
+def make_common(root: Path) -> Path:
+    common = root / "android13-5.15/common"
+    (common / "fs").mkdir(parents=True)
+    (common / "include/linux").mkdir(parents=True)
+    (common / "fs/Makefile").write_text("obj-y += main.o\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(common)], check=True)
+    return common
+
+
+class SusfsPatchTests(unittest.TestCase):
+    def test_full_patch_applies_and_sources_are_copied(self):
+        with tempfile.TemporaryDirectory() as temp, restored_cwd():
+            root = Path(temp)
+            make_susfs_source(root)
+            common = make_common(root)
+            builder = KernelBuilder(BuildConfig(), str(root))
+            builder.apply_susfs_patches()
+            self.assertEqual(builder.applied_integration_patches, [PATCH_NAME])
+            self.assertTrue((common / "fs/susfs.c").is_file())
+            self.assertTrue((common / "include/linux/susfs.h").is_file())
+            self.assertIn("obj-y += susfs.o",
+                          (common / "fs/Makefile").read_text(encoding="utf-8"))
+
+    def test_missing_patch_is_fatal(self):
+        with tempfile.TemporaryDirectory() as temp, restored_cwd():
+            root = Path(temp)
+            builder = KernelBuilder(BuildConfig(), str(root))
+            (root / "android13-5.15/common/fs").mkdir(parents=True)
+            with self.assertRaisesRegex(RuntimeError, "SUSFS patch not found"):
+                builder.apply_susfs_patches()
+            self.assertEqual(builder.applied_integration_patches, [])
+
+    def test_conflicting_patch_fails_closed_without_partial_state(self):
+        with tempfile.TemporaryDirectory() as temp, restored_cwd():
+            root = Path(temp)
+            make_susfs_source(root)
+            common = make_common(root)
+            builder = KernelBuilder(BuildConfig(), str(root))
+            builder.apply_susfs_patches()
+            before = (common / "fs/Makefile").read_text(encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "Selected patch failed"):
+                builder.apply_susfs_patches()
+            self.assertEqual((common / "fs/Makefile").read_text(encoding="utf-8"), before)
+            self.assertEqual(builder.applied_integration_patches, [PATCH_NAME])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -17,7 +17,9 @@ from kernel_builder import (KernelBuilder, apply_release_date_suffix,
                             ensure_cmdline_tokens, release_date_suffix,
                             unquote_kconfig_string)
 from patch_plan import make_patch_plan
-from target import GKITarget, choose_gki_tag, choose_manifest_branch, peeled_commit, resolve_sukisu, resolve_susfs, resolve_sukisu_patch, certified_releases
+from target import (GKITarget, KSU_URL, choose_gki_tag, choose_manifest_branch,
+                  peeled_commit, resolve_sukisu, resolve_susfs, resolve_sukisu_patch,
+                  certified_releases)
 from abi import compare_symvers, read_symvers
 
 
@@ -113,18 +115,17 @@ class ResolverTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             read_symvers('<html>artifact unavailable</html>')
 
-    def test_all_sukisu_channels_resolve_latest_to_an_exact_commit(self):
+    def test_all_sukisu_channels_resolve_builtin_to_an_exact_commit(self):
         for channel in ("stable", "dev"):
             with self.subTest(channel=channel), \
-                 patch("target._git", return_value="ref: refs/heads/main\tHEAD\n" +
-                       "c" * 40 + "\tHEAD\n") as git:
+                 patch("target._git", return_value="c" * 40 + "\trefs/heads/builtin\n") as git:
                 self.assertEqual(resolve_sukisu(channel), ("", "c" * 40))
                 self.assertEqual(git.call_count, 1)
-                self.assertEqual(git.call_args.args[:2], ("ls-remote", "--symref"))
+                self.assertEqual(git.call_args.args,
+                                 ("ls-remote", "--heads", KSU_URL, "refs/heads/builtin"))
 
     def test_sukisu_resolution_fails_instead_of_falling_back_to_an_old_pin(self):
-        for output in ("", "ref: refs/heads/main\tHEAD\n", "c" * 40 + "\tHEAD\n",
-                       "ref: refs/heads/main\tHEAD\ninvalid\tHEAD\n"):
+        for output in ("", "bad\trefs/heads/builtin\n", "c" * 40 + "\trefs/heads/main\n"):
             with self.subTest(output=output), patch("target._git", return_value=output):
                 with self.assertRaisesRegex(RuntimeError, "Cannot resolve SukiSU"):
                     resolve_sukisu("stable")
@@ -563,7 +564,6 @@ class RuntimeConfigTests(unittest.TestCase):
             "performance disabled": {"CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE": "n"},
             "size optimization": {"CONFIG_CC_OPTIMIZE_FOR_SIZE": "y"},
             "root debug logging": {"CONFIG_KSU_DEBUG": "y"},
-            "susfs logging": {"CONFIG_KSU_SUSFS_ENABLE_LOG": "y"},
             "wrong default selection": {"CONFIG_DEFAULT_BBR3": "n"},
             "missing tmpfs attributes": {"CONFIG_TMPFS_XATTR": "n"},
             "SELinux disabled": {"CONFIG_SECURITY_SELINUX": "n"},
@@ -584,6 +584,12 @@ class RuntimeConfigTests(unittest.TestCase):
                     path.write_text(self._valid_config(**overrides), encoding="utf-8")
                     with self.assertRaisesRegex(RuntimeError, "Final .config"):
                         builder._verify_generated_config(path)
+            # A stray SUSFS sub-option is a profile violation, caught by the
+            # dedicated SUSFS check rather than the generic config comparison.
+            path.write_text(self._valid_config(CONFIG_KSU_SUSFS_ENABLE_LOG="y"),
+                            encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "SUSFS profile mismatch"):
+                builder._verify_generated_config(path)
 
 
 if __name__ == "__main__":

@@ -36,8 +36,8 @@ There is no fallback to an old source when resolution or integration fails.
 | --- | --- |
 | GKI | Newest published certified monthly branch release |
 | Compiler, kernel build tools, boot tools | Exact revisions in that certified build's manifest |
-| SukiSU | Latest default-branch HEAD; CI tests the exact commit compiled |
-| SUSFS | Latest `gki-android13-5.15` HEAD, mount-only integration |
+| SukiSU | Latest `builtin` branch HEAD; CI tests the exact commit compiled |
+| SUSFS | Latest `gki-android13-5.15` HEAD, full filesystem patch, mount-only Kconfig |
 | LZ4KD sources | Latest `SukiSU_patch/main` HEAD; only the three codec components are copied |
 | AnyKernel3 | Latest `gki-2.0` HEAD |
 | Repo source-sync tool | Latest `stable` branch, resolved to an exact commit |
@@ -52,13 +52,18 @@ configuration drift and vendor CRC mismatches also stop the build.
 
 ## Kernel profile
 
-- Built-in SukiSU follows the latest upstream default-branch HEAD for both
-  channel choices. Each run resolves it once to an exact commit for setup and
-  checkout, recorded in `BUILD_INFO.md`. The kernel uses that source's UAPI;
-  the manager must use the same UAPI. The mount integration anchors additions
-  to core build entries and hook includes, so unrelated upstream feature entries
-  can change without requiring a rebase. Regression tests cover the previous
-  layout and the October 18 mount-hide additions; required hook changes remain fatal.
+- Built-in SukiSU follows the latest upstream `builtin` branch HEAD for both
+  channel choices. The `builtin` branch carries the KernelSU-side SUSFS
+  integration natively (Kconfig menu, reboot dispatch, setuid/selinux hooks),
+  so the builder applies the complete upstream SUSFS filesystem patch instead
+  of a hand-rolled file slice; mount-only remains a Kconfig selection
+  (`CONFIG_KSU_SUSFS_SUS_MOUNT=y`, every other SUSFS sub-option off).
+  Each run resolves the branch once to an exact commit for setup and
+  checkout, recorded in `BUILD_INFO.md`. The kernel uses that source's UAPI
+  where the source declares one; the manager must use the same UAPI.
+  Regression tests cover the quiet patch against the `builtin` Makefile
+  layout; required hook changes remain fatal. Failed compilations retain the
+  full `build.log` with an error excerpt in the build message.
 - SUSFS mount hiding only, preserving the filesystem/root integration's scope.
   Helper revisions resolve independently of the certified GKI release.
   KPM, SukiSU debug, and SUSFS logging are disabled. KernelSU's unconditional

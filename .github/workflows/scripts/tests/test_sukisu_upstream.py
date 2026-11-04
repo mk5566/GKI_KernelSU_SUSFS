@@ -1,4 +1,4 @@
-"""Keep unrelated upstream features out of required integration context."""
+"""The upstream `builtin` branch carries SUSFS; no custom shim may replace it."""
 import os
 import subprocess
 import sys
@@ -11,242 +11,107 @@ from config import BuildConfig, REPO_ROOT
 from kernel_builder import KernelBuilder
 
 
-MOUNT_PATCH = REPO_ROOT / "patches/susfs/0001-sukisu-main-mount-support.patch"
-QUIET_PATCH = REPO_ROOT / "patches/susfs/0003-sukisu-quiet-production.patch"
+QUIET_PATCH = REPO_ROOT / "patches/susfs/0001-sukisu-quiet-production.patch"
 
+# Minimal reconstruction of the upstream `builtin` branch kernel/Makefile head.
+BUILTIN_MAKEFILE = """obj-$(CONFIG_KSU) := ksu.o
+ksu-y := ksu_main.o
 
-class UpstreamPatchTests(unittest.TestCase):
-    def _upstream_excerpts(self):
-        # Relevant source excerpts from upstream 7e4784ee. The setuid excerpt
-        # omits unrelated allowlist handling between the manager and umount.
-        kbuild = """kernelsu-objs := core/init.o
+ccflags-y += -I$(srctree)/security/selinux -I$(srctree)/security/selinux/include
+ccflags-y += -I$(objtree)/security/selinux -include $(srctree)/include/uapi/asm-generic/errno.h
 
-kernelsu-objs += feature/kernel_umount.o
-kernelsu-objs += feature/module_blacklist.o
-kernelsu-objs += feature/mount_hide.o
-kernelsu-objs += feature/sulog.o
-kernelsu-objs += feature/sucompat.o
+ifeq ($(filter /%,$(src)),)
+KSU_KERNEL_DIR := $(srctree)/$(src)
+else
+KSU_KERNEL_DIR := $(src)
+endif
 """
-        boot = """#include "feature/selinux_hide.h"
-#include "feature/avc_spoof.h"
-#include <linux/err.h>
-#include <linux/fs.h>
-#include <linux/namei.h>
-#include <linux/printk.h>
 
-#include "policy/allowlist.h"
-#include "policy/feature.h"
-#include "klog.h" // IWYU pragma: keep
-#include "runtime/ksud_boot.h"
-#include "runtime/ksud.h"
-#include "manager/manager_observer.h"
-#include "extension/dynamic_manager.h"
-#include "manager/throne_tracker.h"
 
-bool ksu_module_mounted __read_mostly = false;
-bool ksu_boot_completed __read_mostly = false;
+class BuiltinIntegrationTests(unittest.TestCase):
+    def test_no_custom_kernelsu_shim_may_reappear(self):
+        # A hand-rolled KernelSU-side SUSFS shim rotted on every upstream move
+        # and hid the real failure behind a generic link error. The `builtin`
+        # branch owns that integration now; only the quiet patch remains.
+        self.assertFalse(
+            (REPO_ROOT / "patches/susfs/0001-sukisu-main-mount-support.patch").exists())
+        self.assertFalse(
+            (REPO_ROOT / "patches/susfs/0002-common-susfs-reboot-dispatch.patch").exists())
+        self.assertFalse(
+            (REPO_ROOT / ".github/workflows/scripts/susfs_integration.py").exists())
+        self.assertTrue(QUIET_PATCH.is_file())
 
-void on_post_fs_data(void)
-{
-    static bool done = false;
-
-    if (done) {
-        pr_info("on_post_fs_data already done\\n");
-        return;
-    }
-
-    done = true;
-    pr_info("on_post_fs_data!\\n");
-
-    ksu_load_allow_list();
-    ksu_dynamic_manager_load();
-    ksu_observer_init();
-    // Sanity check for safe mode only needs early-boot input samples.
-    ksu_stop_input_hook_runtime();
-    ksu_selinux_hide_handle_post_fs_data();
-    // retry forced features which failed at second stage
-    ksu_feature_apply_forced();
-}
-
-extern void ext4_unregister_sysfs(struct super_block *sb);
-"""
-        setuid = """#include "supercall/supercall.h"
-#include "hook/tp_marker.h"
-#include "feature/kernel_umount.h"
-#include "feature/mount_hide.h"
-
-int ksu_handle_setresuid(uid_t old_uid, uid_t new_uid)
-{
-    // we rely on the fact that zygote always call setresuid(3) with same uids
-
-    if (unlikely(is_uid_manager(new_uid))) {
-        spin_lock_irq(&current->sighand->siglock);
-        ksu_seccomp_allow_cache(current->seccomp.filter, __NR_reboot);
-        ksu_set_task_tracepoint_flag(current);
-        spin_unlock_irq(&current->sighand->siglock);
-
-        ksu_install_fd();
-        return 0;
-    }
-
-    // Handle kernel umount
-    ksu_handle_umount(old_uid, new_uid);
-
-    return 0;
-}
-"""
-        return kbuild, boot, setuid
-
-    def test_optional_features_survive_mount_integration(self):
-        # Old layout, the real October 18 additions, and further unrelated
-        # neighbours. Never fix this by enumerating optional upstream features.
-        for extras in ((), ("mount_hide",), ("mount_hide", "future_feature")):
-            with self.subTest(extras=extras):
-                kbuild, boot, setuid = self._upstream_excerpts()
-                kbuild = kbuild.replace("kernelsu-objs += feature/sulog.o",
-                                        "".join(f"kernelsu-objs += feature/{name}.o\n" for name in extras)
-                                        + "kernelsu-objs += feature/sulog.o")
-                setuid = setuid.replace('#include "feature/kernel_umount.h"',
-                                        '#include "feature/kernel_umount.h"' +
-                                        "".join(f'\n#include "feature/{name}.h"' for name in extras))
-                with tempfile.TemporaryDirectory() as temp:
-                    root = Path(temp)
-                    subprocess.run(["git", "init", "-q", str(root)], check=True)
-                    self._apply_and_verify(root, kbuild, boot, setuid)
-
-    def test_incidental_upstream_churn_cannot_fail_the_mount_patches(self):
-        # The churn class SukiSU ships between releases: 7e4784ee deleted
-        # log and comment lines and inserted unrelated statements and
-        # includes around our anchors. Hunks anchor only on contract lines
-        # plus their immediate structural neighbour, so this must keep
-        # applying; only a changed contract line may fail the build.
-        kbuild, boot, setuid = self._upstream_excerpts()
-        kbuild = kbuild.replace("kernelsu-objs += feature/sucompat.o\n",
-                                "kernelsu-objs += feature/sucompat.o\n"
-                                "kernelsu-objs += future_neighbour.o\n", 1)
-        boot = boot.replace('    pr_info("on_post_fs_data!\\n");\n', "")
-        boot = boot.replace("#include <linux/printk.h>\n",
-                            "#include <linux/printk.h>\n"
-                            "#include <linux/future_header.h>\n", 1)
-        setuid = setuid.replace(
-            "    // we rely on the fact that zygote always call setresuid(3) with same uids\n\n", "")
-        setuid = setuid.replace(
-            "        spin_unlock_irq(&current->sighand->siglock);\n",
-            "        spin_unlock_irq(&current->sighand->siglock);\n"
-            "        ksu_unrelated_neighbour();\n", 1)
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            subprocess.run(["git", "init", "-q", str(root)], check=True)
-            self._apply_and_verify(root, kbuild, boot, setuid)
-
-    def _select_patch(self, root):
-        sections = MOUNT_PATCH.read_text(encoding="utf-8").split("diff --git ")
-        selected = "".join("diff --git " + section for section in sections[1:]
-                           if section.startswith(("a/kernel/Kbuild ",
-                                                  "a/kernel/hook/setuid_hook.c ",
-                                                  "a/kernel/runtime/boot_event.c ")))
-        patch_file = root / "layout.patch"
-        patch_file.write_text(selected, encoding="utf-8")
+    def _apply_to_tree(self, root: Path, makefile: str) -> Path:
+        kernel = root / "kernel"
+        kernel.mkdir(parents=True)
+        (kernel / "Makefile").write_text(makefile, encoding="utf-8")
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
         builder = KernelBuilder(BuildConfig(), str(root))
         builder.shell.cwd = str(root)
-        return builder, patch_file
+        builder._apply_patch_file(QUIET_PATCH)
+        return kernel / "Makefile"
 
-    def _apply_and_verify(self, root, kbuild, boot, setuid):
-        (root / "kernel/runtime").mkdir(parents=True)
-        (root / "kernel/hook").mkdir(parents=True)
-        (root / "kernel/Kbuild").write_text(kbuild, encoding="utf-8")
-        (root / "kernel/runtime/boot_event.c").write_text(boot, encoding="utf-8")
-        (root / "kernel/hook/setuid_hook.c").write_text(setuid, encoding="utf-8")
-        builder, patch_file = self._select_patch(root)
-        builder._apply_patch_file(patch_file)
-        result = (root / "kernel/Kbuild").read_text(encoding="utf-8")
-        self.assertIn("kernelsu-$(CONFIG_KSU_SUSFS) += feature/susfs.o", result)
-        self.assertIn("kernelsu-objs += feature/module_blacklist.o", result)
-        self.assertEqual(result.replace("kernelsu-$(CONFIG_KSU_SUSFS) += feature/susfs.o\n", ""),
-                         kbuild)
-        result = (root / "kernel/hook/setuid_hook.c").read_text(encoding="utf-8")
-        for addition in ('#include "feature/susfs.h"\n',
-                         "        ksu_susfs_clear_task();\n",
-                         "    ksu_susfs_setuid(new_uid);\n"):
-            self.assertEqual(result.count(addition), 1)
-            result = result.replace(addition, "")
-        self.assertEqual(result, setuid)
-        result = (root / "kernel/runtime/boot_event.c").read_text(encoding="utf-8")
-        self.assertIn('#include "policy/feature.h"', result)
-        self.assertIn("#include <linux/susfs.h>", result)
-        self.assertIn("susfs_start_sdcard_monitor_fn();", result)
-        self.assertLess(result.index("ksu_feature_apply_forced();"),
-                        result.index("susfs_start_sdcard_monitor_fn();"))
-        return builder, patch_file
+    def test_quiet_patch_inserts_one_include_flag(self):
+        # Unrelated upstream neighbours around the anchor (extra object rules,
+        # future conditionals, trailing content) must not fail the build.
+        for extra in ("", "\nksu-y += future.o\n", "\nifeq ($(CONFIG_FUTURE),y)\n"
+                                                 "ccflags-y += -DFUTURE\nendif\n"):
+            with self.subTest(extra=extra):
+                with tempfile.TemporaryDirectory() as temp:
+                    result = self._apply_to_tree(
+                        Path(temp), BUILTIN_MAKEFILE + extra)
+                    text = result.read_text(encoding="utf-8")
+                    flag = "ccflags-y += -include $(KSU_KERNEL_DIR)/include/quiet.h\n"
+                    self.assertEqual(text.count(flag), 1)
+                    self.assertEqual(
+                        text.replace(flag, ""), BUILTIN_MAKEFILE + extra)
+                    self.assertTrue((result.parent / "include/quiet.h").is_file())
 
-    def test_contract_change_fails_closed_without_partial_insertion(self):
-        kbuild, boot, setuid = self._upstream_excerpts()
+    def test_quiet_patch_contract_change_fails_closed(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            subprocess.run(["git", "init", "-q", str(root)], check=True)
-            (root / "kernel/runtime").mkdir(parents=True)
-            (root / "kernel/hook").mkdir(parents=True)
-            (root / "kernel/Kbuild").write_text(kbuild, encoding="utf-8")
-            (root / "kernel/runtime/boot_event.c").write_text(boot, encoding="utf-8")
-            (root / "kernel/hook/setuid_hook.c").write_text(setuid, encoding="utf-8")
-            builder, patch_file = self._select_patch(root)
-            builder._apply_patch_file(patch_file)
-            # An actual contract change must fail without partially inserting
-            # the build object or boot hook. Benign neighbouring churn is OK.
-            for relative, original in (("kernel/Kbuild", kbuild),
-                                       ("kernel/runtime/boot_event.c", boot),
-                                       ("kernel/hook/setuid_hook.c", setuid)):
-                (root / relative).write_text(original, encoding="utf-8")
-            hook = root / "kernel/hook/setuid_hook.c"
-            broken = setuid.replace("ksu_handle_umount(old_uid, new_uid);",
-                                    "ksu_changed_umount(old_uid, new_uid);")
-            hook.write_text(broken, encoding="utf-8")
+            broken = BUILTIN_MAKEFILE.replace(
+                "-include $(srctree)/include/uapi/asm-generic/errno.h",
+                "-include $(srctree)/include/uapi/asm-generic/future_errno.h")
+            kernel_makefile = self._apply_to_tree(root, BUILTIN_MAKEFILE)
+            kernel_makefile.write_text(broken, encoding="utf-8")
+            builder = KernelBuilder(BuildConfig(), str(root))
+            builder.shell.cwd = str(root)
             with self.assertRaisesRegex(RuntimeError, "Selected patch failed"):
-                builder._apply_patch_file(patch_file)
-            self.assertEqual(hook.read_text(encoding="utf-8"), broken)
-            self.assertEqual((root / "kernel/Kbuild").read_text(encoding="utf-8"), kbuild)
-            self.assertEqual((root / "kernel/runtime/boot_event.c").read_text(encoding="utf-8"), boot)
-
-    def test_quiet_patch_preserves_adjacent_build_rules(self):
-        flags = "ccflags-y += -I$(KSU_KERNEL_DIR) -I$(KSU_KERNEL_DIR)/include\n"
-        for rules in ("", "# preinit runner\nkernelsu-objs += preinit/preinit.o\n\n",
-                      "# future independent rules\nkernelsu-objs += future.o\n\n"):
-            with self.subTest(rules=rules), tempfile.TemporaryDirectory() as temp:
-                root = Path(temp)
-                subprocess.run(["git", "init", "-q", str(root)], check=True)
-                (root / "kernel/include").mkdir(parents=True)
-                original = "endif\n\n" + flags + "\n" + rules + "obj-$(CONFIG_KSU) += kernelsu.o\n\n"
-                kbuild = root / "kernel/Kbuild"
-                kbuild.write_text(original, encoding="utf-8")
-                builder = KernelBuilder(BuildConfig(), temp)
-                builder.shell.cwd = str(root)
                 builder._apply_patch_file(QUIET_PATCH)
-                self.assertEqual(kbuild.read_text(encoding="utf-8").replace(
-                    "ccflags-y += -include $(KSU_KERNEL_DIR)/include/quiet.h\n", ""), original)
-                self.assertTrue((root / "kernel/include/quiet.h").is_file())
+            # No partial insertion: the contract change blocks the whole patch.
+            self.assertEqual(kernel_makefile.read_text(encoding="utf-8"), broken)
+
+    def test_reapplying_quiet_patch_is_fatal(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self._apply_to_tree(root, BUILTIN_MAKEFILE)
+            builder = KernelBuilder(BuildConfig(), str(root))
+            builder.shell.cwd = str(root)
+            with self.assertRaisesRegex(RuntimeError, "Selected patch failed"):
+                builder._apply_patch_file(QUIET_PATCH)
 
     @unittest.skipUnless(os.environ.get("SUKISU_TEST_SOURCE"),
                          "set SUKISU_TEST_SOURCE to check the complete upstream source")
-    def test_complete_patch_stack_applies_to_upstream_checkout(self):
+    def test_quiet_patch_applies_to_upstream_builtin_checkout(self):
         with tempfile.TemporaryDirectory() as temp:
             builder = KernelBuilder(BuildConfig(), temp)
             checkout = builder.work_dir / "KernelSU"
             # Clone HEAD so an existing source's working changes cannot mask
-            # incompatibilities. No network or mutations of that source.
+            # incompatibilities. No network access to mutate that source.
             subprocess.run(["git", "clone", "--shared", "--quiet",
                             os.environ["SUKISU_TEST_SOURCE"], str(checkout)], check=True)
-            uapi = (checkout / "uapi/supercall.h").read_bytes()
+            makefile = checkout / "kernel/Makefile"
+            self.assertTrue(makefile.is_file())
+            before = makefile.read_text(encoding="utf-8")
             builder.shell.cwd = str(checkout)
-            builder._apply_patch_file(MOUNT_PATCH)
             builder._apply_patch_file(QUIET_PATCH)
-            self.assertEqual((checkout / "uapi/supercall.h").read_bytes(), uapi)
-            self.assertTrue((checkout / "kernel/feature/susfs.c").is_file())
             self.assertIn("include/quiet.h",
-                          (checkout / "kernel/Kbuild").read_text(encoding="utf-8"))
-            self.assertEqual(builder.applied_integration_patches,
-                             [MOUNT_PATCH.name, QUIET_PATCH.name])
+                          makefile.read_text(encoding="utf-8"))
+            self.assertEqual(builder.applied_integration_patches, [QUIET_PATCH.name])
             with self.assertRaisesRegex(RuntimeError, "Selected patch failed"):
-                builder._apply_patch_file(MOUNT_PATCH)
+                builder._apply_patch_file(QUIET_PATCH)
+            self.assertNotEqual(makefile.read_text(encoding="utf-8"), before)
 
 
 if __name__ == "__main__":

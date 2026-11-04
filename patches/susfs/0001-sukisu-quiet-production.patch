@@ -5,19 +5,23 @@ KSU_DEBUG=n does not suppress upstream's unconditional pr_info calls in
 setuid and syscall hooks. Type-check these calls without evaluating their
 arguments or emitting messages; retain warning and error diagnostics.
 Scope the override to KernelSU translation units, leaving GKI untouched.
-Anchor to the compiler include flags; allow upstream preinit rules after them.
+Anchor to the errno include flags in the upstream `builtin` branch
+kernel/Makefile; the -include resolves KSU_KERNEL_DIR lazily through
+kbuild's recursive ccflags expansion, so the definition below the anchor
+is already visible when flags are used.
 
-diff --git a/kernel/Kbuild b/kernel/Kbuild
---- a/kernel/Kbuild
-+++ b/kernel/Kbuild
-@@ -105,4 +105,5 @@
- endif
- 
- ccflags-y += -I$(KSU_KERNEL_DIR) -I$(KSU_KERNEL_DIR)/include
+diff --git a/kernel/Makefile b/kernel/Makefile
+--- a/kernel/Makefile
++++ b/kernel/Makefile
+@@ -4,3 +4,4 @@
+ ccflags-y += -I$(srctree)/security/selinux -I$(srctree)/security/selinux/include
+ ccflags-y += -I$(objtree)/security/selinux -include $(srctree)/include/uapi/asm-generic/errno.h
 +ccflags-y += -include $(KSU_KERNEL_DIR)/include/quiet.h
  
+ ifeq ($(filter /%,$(src)),)
 diff --git a/kernel/include/quiet.h b/kernel/include/quiet.h
 new file mode 100644
+index 0000000..13c1c99
 --- /dev/null
 +++ b/kernel/include/quiet.h
 @@ -0,0 +1,13 @@

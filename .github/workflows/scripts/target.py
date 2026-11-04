@@ -7,7 +7,7 @@ import base64
 import xml.etree.ElementTree as ET
 from abi import artifact_url
 from dataclasses import dataclass
-from config import (SUSFS_REPO_CONFIG, SUKISU_PATCH_REPO_CONFIG, ANYKERNEL_CONFIG,
+from config import (KSU_REPO_CONFIG, SUSFS_REPO_CONFIG, SUKISU_PATCH_REPO_CONFIG, ANYKERNEL_CONFIG,
                     LZ4_RELEASE, BBR_REVISION)
 
 
@@ -158,11 +158,13 @@ def check_reviewed_upstreams():
 def resolve_sukisu(channel):
     if channel not in ("stable", "dev"):
         raise ValueError(f"Unknown SukiSU channel: {channel}")
-    # Both existing workflow choices follow upstream. Resolve once so setup.sh
-    # and the kernel checkout use the same exact commit throughout this build.
-    output = _git("ls-remote", "--symref", KSU_URL, "HEAD")
-    branch = re.search(r"^ref: refs/heads/(\S+)\s+HEAD$", output, re.M)
-    sha = re.search(r"^([0-9a-f]{40})\s+HEAD$", output, re.M)
-    if not branch or not sha:
-        raise RuntimeError("Cannot resolve SukiSU default branch")
-    return "", sha[1]
+    # Both existing workflow choices follow the upstream `builtin` branch,
+    # which carries the KernelSU-side SUSFS integration natively. The default
+    # `main` branch has no SUSFS support. Resolve once so setup.sh and the
+    # kernel checkout use the same exact commit throughout this build.
+    ref = f"refs/heads/{KSU_REPO_CONFIG['branch']}"
+    output = _git("ls-remote", "--heads", KSU_URL, ref)
+    sha = parse_refs(output).get(ref, "")
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise RuntimeError("Cannot resolve SukiSU builtin branch")
+    return "", sha

@@ -13,7 +13,6 @@ from dataclasses import dataclass, field
 from config import (ANDROID_FAMILY, BuildConfig, KSU_REPO_CONFIG, SUSFS_REPO_CONFIG,
                    SUKISU_PATCH_REPO_CONFIG, ANYKERNEL_CONFIG, REPO_TOOL_CONFIG, REPO_ROOT,
                    REPO_SYNC_PROJECTS)
-from susfs_integration import select_mount_patch
 from patch_plan import make_patch_plan
 from abi import verify_gki_abi
 from repack_boot import repack_boot
@@ -126,20 +125,12 @@ class KernelBuilder:
         "CONFIG_KRETPROBES": "y",
         "CONFIG_HAVE_SYSCALL_TRACEPOINTS": "y",
         "CONFIG_KSU_DEBUG": "n",
-        # Device audit: no path/stat/map/spoof rules; retain mount hiding only.
+        # Mount-only SUSFS on the upstream `builtin` branch, which carries the
+        # KernelSU-side integration natively. Only mount hiding is enabled;
+        # every other declared SUSFS sub-option is forced off in
+        # configure_kernel (see the declared-symbol scan below).
         "CONFIG_KSU_SUSFS": "y",
-        "CONFIG_KSU_SUSFS_SUS_PATH": "n",
         "CONFIG_KSU_SUSFS_SUS_MOUNT": "y",
-        "CONFIG_KSU_SUSFS_SUS_KSTAT": "n",
-        "CONFIG_KSU_SUSFS_SUS_MAP": "n",
-        "CONFIG_KSU_SUSFS_SPOOF_UNAME": "n",
-        "CONFIG_KSU_SUSFS_ENABLE_LOG": "n",
-        "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS": "n",
-        "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG": "n",
-        "CONFIG_KSU_SUSFS_OPEN_REDIRECT": "n",
-        # Legacy options are explicitly off; SUSFS 2.3 uses KernelSU umount.
-        "CONFIG_KSU_SUSFS_TRY_UMOUNT": "n",
-        "CONFIG_KSU_SUSFS_SUS_SU": "n",
         "CONFIG_KPM": "n",
         "CONFIG_TMPFS_XATTR": "y",
         "CONFIG_TMPFS_POSIX_ACL": "y",
@@ -232,6 +223,7 @@ class KernelBuilder:
         self.release_suffix = ""
         self.config_checks = {}
         self.compiler_version = ""
+        self.build_error_excerpt = ""
         self._verified_checkouts = {}
         self._setup_env()
 
@@ -517,6 +509,10 @@ class KernelBuilder:
         logger.info(f"SukiSU setup.sh from exact commit {script_ref}")
         subprocess.run(["curl", "-fLSs", setup_url, "-o", str(setup_script)],
                        cwd=self.work_dir, env=self.env, check=True)
+        # The GKI integration lives on the upstream `builtin` branch, which
+        # carries the KernelSU-side SUSFS support natively (Kconfig menu,
+        # reboot dispatch, setuid/selinux hooks). Passing the resolved builtin
+        # commit checks out that branch at the pinned revision.
         subprocess.run(["bash", str(setup_script), setup_ref], cwd=self.work_dir,
                        env=self.env, check=True)
         self._require_path(self.work_dir / "common/drivers/kernelsu", "KernelSU driver symlink")
@@ -539,11 +535,12 @@ class KernelBuilder:
         logger.info("SukiSU kernel UAPI: %s; the manager must use the same UAPI",
                     uapi if uapi is not None else "unset")
 
+        # The `builtin` branch already integrates SUSFS on the KernelSU side,
+        # so only the production quiet patch is applied here. Filesystem
+        # support comes from the full upstream SUSFS kernel patch applied in
+        # apply_susfs_patches.
         self._chdir(ksu_dir)
-        integration_patch = (Path(__file__).resolve().parents[3] / "patches/susfs/"
-                             "0001-sukisu-main-mount-support.patch")
-        self._apply_patch_file(integration_patch)
-        self._apply_patch_file(REPO_ROOT / "patches/susfs/0003-sukisu-quiet-production.patch")
+        self._apply_patch_file(REPO_ROOT / "patches/susfs/0001-sukisu-quiet-production.patch")
         self._chdir(self.work_dir)
 
     def apply_susfs_patches(self):
@@ -558,14 +555,12 @@ class KernelBuilder:
         ]:
             self._require_path(src, f"SUSFS source {src}")
             shutil.copytree(src, dst, dirs_exist_ok=True)
+        # Apply the complete upstream filesystem patch. Slicing it down to a
+        # file subset breaks cross-file consistency with the KernelSU-side
+        # integration and with future SUSFS revisions; mount-only remains a
+        # Kconfig selection (CONFIG_KSU_SUSFS_SUS_MOUNT=y, others off).
         self._chdir(common_dir)
-        mount_patch = common_dir / "susfs-mount-only.patch"
-        mount_patch.write_text(select_mount_patch(susfs_patch.read_text(encoding="utf-8")),
-                               encoding="utf-8", newline="\n")
-        self._apply_patch_file(mount_patch)
-        reboot_patch = (Path(__file__).resolve().parents[3] / "patches/susfs/"
-                        "0002-common-susfs-reboot-dispatch.patch")
-        self._apply_patch_file(reboot_patch)
+        self._apply_patch_file(susfs_patch)
         self._chdir(self.work_dir)
 
     def apply_zram_patches(self):
@@ -891,6 +886,31 @@ class KernelBuilder:
         )) + "\n", encoding="utf-8")
         self.env["GKI_BUILD_CONFIG_FRAGMENT"] = str(fragment)
 
+    # Error patterns that identify the failing translation unit or link step.
+    # The full build output always goes to build.log; the excerpt below is
+    # what surfaces in the step summary and BUILD_INFO so the next failure
+    # is attributable without re-running the job.
+    BUILD_ERROR_PATTERNS = (
+        "error:", "Error ", "ERROR", "undefined", "FAILED", "failed",
+        "ld.lld", "No such file", "*** ",
+    )
+    BUILD_LOG_NAME = "build.log"
+
+    def _build_log_path(self) -> Path:
+        return self.workspace / self.BUILD_LOG_NAME
+
+    @staticmethod
+    def _error_excerpt(output: str, limit: int = 60) -> str:
+        lines = output.splitlines()
+        flagged = [line for line in lines
+                   if any(token in line for token in KernelBuilder.BUILD_ERROR_PATTERNS)]
+        tail = lines[-limit:]
+        excerpt = [line for line in flagged if line not in tail] + tail
+        seen = set()
+        unique = [line for line in excerpt if not (line in seen or seen.add(line))]
+        text = "\n".join(unique[-limit:])
+        return text[:6000]
+
     def _run_kernel_build(self, config_only=False):
         """Let AOSP select all tools, flags and output paths for both stages."""
         env = self.env.copy()
@@ -908,18 +928,34 @@ class KernelBuilder:
                                  "|| exit $?; exit 0'\n",
                                  encoding="utf-8", newline="\n")
             env["GKI_BUILD_CONFIG_FRAGMENT"] = str(preflight)
-        return subprocess.run(["bash", "build/build.sh"], cwd=self.work_dir,
-                              env=env, check=config_only)
+        # Capture the full build output so a failure is attributable: GitHub
+        # only shows the tail, which hides the actual error. The log file is
+        # uploaded with the failure diagnostics.
+        result = subprocess.run(["bash", "build/build.sh"], cwd=self.work_dir,
+                                env=env, check=False, capture_output=True, text=True)
+        output = (result.stdout or "") + (result.stderr or "")
+        self._build_log_path().write_text(output, encoding="utf-8")
+        for line in output.splitlines():
+            logger.info("[build.sh] %s", line)
+        if config_only and result.returncode != 0:
+            raise subprocess.CalledProcessError(result.returncode, result.args,
+                                                output=result.stdout, stderr=result.stderr)
+        completed = subprocess.CompletedProcess(result.args, result.returncode,
+                                                result.stdout, result.stderr)
+        return completed
 
     def build_kernel(self) -> bool:
         logger.info("=== Starting kernel compile ===")
         self._chdir(self.work_dir)
+        self.build_error_excerpt = ""
         try:
             logger.info("Starting kernel compilation with build.sh...")
             result = self._run_kernel_build()
 
             if result.returncode != 0:
-                logger.error(f"Kernel compile failed: {result.stderr if result.stderr else f'exit {result.returncode}'}")
+                self.build_error_excerpt = self._error_excerpt(result.stdout or "")
+                logger.error("Kernel compile failed: exit %d\n%s",
+                             result.returncode, self.build_error_excerpt)
                 return False
             image_path = self._kernel_image_path()
             if not image_path.exists():
@@ -1022,7 +1058,9 @@ class KernelBuilder:
         return [str(zip_path)]
 
     def _read_ksu_uapi_version(self) -> Optional[int]:
-        # builtin uses DECLARE() in kernel/include; main uses a C constant in uapi/.
+        # Older layouts declare the version with DECLARE() in kernel/include
+        # or as a C constant in uapi/; the current `builtin` branch carries no
+        # versioned UAPI header, in which case None is reported as "unset".
         for relative in ("kernel/include/uapi/supercall.h", "uapi/supercall.h"):
             header = self.work_dir / "KernelSU" / relative
             if not header.is_file():
@@ -1162,8 +1200,11 @@ class KernelBuilder:
                                    artifacts=[str(info)], build_time=time.time() - start_time)
             if not self.build_kernel():
                 build_time = time.time() - start_time
-                self.write_build_info(build_time=build_time, success=False, message="Kernel compile failed")
-                return BuildResult(success=False, config=self.config, message="Kernel compile failed", build_time=build_time)
+                message = "Kernel compile failed"
+                if self.build_error_excerpt:
+                    message += "\n" + self.build_error_excerpt
+                self.write_build_info(build_time=build_time, success=False, message=message)
+                return BuildResult(success=False, config=self.config, message=message, build_time=build_time)
             artifacts = []
             artifacts.extend(self.create_anykernel_zips())
             artifacts.extend(self.prepare_boot_images())
