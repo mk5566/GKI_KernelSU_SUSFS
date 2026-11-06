@@ -6,7 +6,7 @@ Keep include/linux/lz4.h and lib/lz4 unchanged for vendor modules.
 diff --git a/crypto/lz4.c b/crypto/lz4.c
 --- a/crypto/lz4.c
 +++ b/crypto/lz4.c
-@@ -9,7 +9,15 @@
+@@ -9,7 +9,17 @@
  #include <linux/module.h>
  #include <linux/crypto.h>
  #include <linux/vmalloc.h>
@@ -19,6 +19,8 @@ diff --git a/crypto/lz4.c b/crypto/lz4.c
 +#define LZ4_memset memset
 +#define LZ4LIB_VISIBILITY static __maybe_unused
 +#define LZ4_PUBLISH_STATIC_FUNCTIONS
++#define LZ4_FORCE_INLINE static __always_inline
++#define LZ4_FORCE_NOINLINE static noinline
 +#include "lz4_111/lz4.c"
  #include <crypto/internal/scompress.h>
  

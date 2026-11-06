@@ -124,7 +124,7 @@
 #  else
 #    if defined (__cplusplus) || defined (__STDC_VERSION__) && __STDC_VERSION__ >= 199901L   /* C99 */
 #      if defined (__GNUC__) || defined (__clang__)
-#        define LZ4_FORCE_INLINE static inline __attribute__((always_inline))
+#        define LZ4_FORCE_INLINE static inline __attribute__((__always_inline__))
 #      else
 #        define LZ4_FORCE_INLINE static inline
 #      endif
@@ -139,7 +139,7 @@
 #  if defined(_MSC_VER)
 #    define LZ4_FORCE_NOINLINE static __declspec(noinline)
 #  elif defined(__GNUC__) || defined(__clang__)
-#    define LZ4_FORCE_NOINLINE static __attribute__((noinline))
+#    define LZ4_FORCE_NOINLINE static __attribute__((__noinline__))
 #  else
 #    define LZ4_FORCE_NOINLINE static
 #  endif
@@ -162,7 +162,7 @@
 #if defined(__PPC64__) && defined(__LITTLE_ENDIAN__) && defined(__GNUC__) && !defined(__clang__)
 #  define LZ4_FORCE_O2  __attribute__((optimize("O2")))
 #  undef LZ4_FORCE_INLINE
-#  define LZ4_FORCE_INLINE  static __inline __attribute__((optimize("O2"),always_inline))
+#  define LZ4_FORCE_INLINE  static __inline __attribute__((optimize("O2"),__always_inline__))
 #else
 #  define LZ4_FORCE_O2
 #endif

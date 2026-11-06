@@ -4,9 +4,12 @@ Sources: [official v1.11.0](https://github.com/lz4/lz4/tree/v1.11.0/lib).
 The source retains upstream's BSD-2-Clause license and copyright notices.
 Standard C type/header includes are adapted to Linux types/limits. The
 integer-width assertion uses the compiler's `__SIZEOF_INT__`; local `current`
-variables are renamed to avoid Linux's task macro. Internal dictionary-test
-helpers and state APIs use local linkage so they cannot collide with GKI's
-existing library symbols. Compression logic is unchanged.
+variables are renamed to avoid Linux's task macro. Compiler attributes use
+canonical `__<attr>__` forms and kernel inlining macros (`noinline`,
+`__always_inline`) to prevent macro collisions with Linux's
+`compiler_attributes.h`. Internal dictionary-test helpers and state APIs use
+local linkage so they cannot collide with GKI's existing library symbols.
+Compression logic is unchanged.
 Upstream source SHA256 before these header adaptations:
 
 - `lz4.c`: `45061782ff932eb8cf71c3aea9495cec0d392f012395272e0550e30c8593c740`
