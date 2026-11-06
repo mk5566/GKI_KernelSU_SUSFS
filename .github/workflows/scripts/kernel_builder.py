@@ -195,7 +195,7 @@ class KernelBuilder:
         "CONFIG_TCP_CONG_BBR": "BBRv1",
         "CONFIG_DEFAULT_TCP_CONG": "Default TCP cong",
         "CONFIG_ZRAM": "ZRAM",
-        "CONFIG_ZRAM_DEF_COMP_LZ4KD": "ZRAM lz4kd default",
+        "CONFIG_ZRAM_DEF_COMP_LZ4": "ZRAM lz4 default",
         "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE": "Optimize for performance",
         "CONFIG_DEBUG_INFO_BTF": "GKI BTF metadata",
         "CONFIG_LRU_GEN_ENABLED": "Multi-gen LRU",
@@ -648,7 +648,7 @@ class KernelBuilder:
             raise RuntimeError(f"kernel common/ directory missing: {common_dir}")
         self._chdir(common_dir)
         plan = make_patch_plan()
-        shutil.copytree(REPO_ROOT / "patches/lz4/source", common_dir / "crypto/lz4_110",
+        shutil.copytree(REPO_ROOT / "patches/lz4/source", common_dir / "crypto/lz4_111",
                         dirs_exist_ok=True)
         for patch in plan.lz4:
             self._apply_patch_file(patch)
@@ -710,8 +710,8 @@ class KernelBuilder:
             "CONFIG_LZ4KD_COMPRESS": "y",
             "CONFIG_LZ4KD_DECOMPRESS": "y",
             "CONFIG_ZRAM_WRITEBACK": "y",
-            "CONFIG_ZRAM_DEF_COMP_LZ4KD": "y",
-            "CONFIG_ZRAM_DEF_COMP_LZ4": "n",
+            "CONFIG_ZRAM_DEF_COMP_LZ4": "y",
+            "CONFIG_ZRAM_DEF_COMP_LZ4KD": "n",
             # Not offered to ZRAM. Leave them unset even if another option
             # later selects the crypto library for a filesystem.
             "CONFIG_CRYPTO_LZO": "n",
@@ -842,8 +842,8 @@ class KernelBuilder:
         expected = {
             "CONFIG_ZRAM": "y", "CONFIG_ZSMALLOC": "y",
             "CONFIG_CRYPTO_LZ4KD": "y", "CONFIG_LZ4KD_COMPRESS": "y",
-            "CONFIG_LZ4KD_DECOMPRESS": "y", "CONFIG_ZRAM_DEF_COMP_LZ4KD": "y",
-            "CONFIG_ZRAM_DEF_COMP": '"lz4kd"', "CONFIG_ZRAM_WRITEBACK": "y",
+            "CONFIG_LZ4KD_DECOMPRESS": "y", "CONFIG_ZRAM_DEF_COMP_LZ4": "y",
+            "CONFIG_ZRAM_DEF_COMP": '"lz4"', "CONFIG_ZRAM_WRITEBACK": "y",
             "CONFIG_CRYPTO_LZ4": "y",
             "CONFIG_LZ4_COMPRESS": "y", "CONFIG_LZ4_DECOMPRESS": "y",
             "CONFIG_MODVERSIONS": "y", "CONFIG_CFI_CLANG": "y",
@@ -863,7 +863,7 @@ class KernelBuilder:
         for symbol in ("BIC", "HTCP", "WESTWOOD", "VEGAS", "VENO", "HYBLA",
                        "ILLINOIS", "DCTCP", "CDG", "NV", "CUBIC"):
             expected[f"CONFIG_TCP_CONG_{symbol}"] = "n"
-        for symbol in ("LZO", "LZORLE", "LZ4", "LZ4HC", "ZSTD", "DEFLATE", "842"):
+        for symbol in ("LZO", "LZORLE", "LZ4KD", "LZ4HC", "ZSTD", "DEFLATE", "842"):
             expected[f"CONFIG_ZRAM_DEF_COMP_{symbol}"] = "n"
         for key, want in expected.items():
             got = values.get(key, "n")
@@ -880,7 +880,7 @@ class KernelBuilder:
             (self.workspace / "CONFIG_REPORT.json").write_text(
                 json.dumps(self.config_checks, indent=2) + "\n", encoding="utf-8")
         logger.info("Generated .config verified: BBRv3 default, BBRv1 built in, "
-                    "ZRAM lz4kd, KPM off, MGLRU on, lazy RCU off, TEO default")
+                    "ZRAM lz4 default, KPM off, MGLRU on, lazy RCU off, TEO default")
 
     def configure_build_fragment(self):
         # Extra root symbols preclude an exact export-set check. Frozen GKI
@@ -1145,8 +1145,8 @@ class KernelBuilder:
             f"- Applied BBR patches: {', '.join(self.applied_bbr_patches) or 'none'}",
             f"- Applied tweak patches: {', '.join(self.applied_tweak_patches) or 'none'}",
             f"- Other integration patches: {', '.join(self.applied_integration_patches)}",
-            "- ZRAM: lz4kd default, lz4 available, other backends removed",
-            "- ZRAM crypto LZ4: official 1.10.0, private freestanding implementation",
+            "- ZRAM: lz4 default, lz4kd available, other backends removed",
+            "- ZRAM crypto LZ4: official 1.11.0, private freestanding implementation",
             "- Exported GKI LZ4 library/header: unchanged",
             "- KPM: disabled",
             "- cpufreq governors and I/O schedulers: certified GKI defaults preserved",

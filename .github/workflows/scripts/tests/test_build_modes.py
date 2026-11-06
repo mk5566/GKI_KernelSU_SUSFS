@@ -177,7 +177,7 @@ class ModeTests(unittest.TestCase):
         self.assertTrue(plan.lz4 and plan.zram and plan.bbr and plan.tweaks)
         self.assertEqual(len(plan.all), len(plan.lz4) + len(plan.zram) + len(plan.bbr) + len(plan.tweaks))
         names = [path.name for path in plan.all]
-        self.assertIn("0002-crypto-lz4-1.10.0.patch", names)
+        self.assertIn("0002-crypto-lz4-1.11.0.patch", names)
         self.assertIn("lz4kd-integration.patch", names)
         self.assertIn("0001-bbrv3-android-kabi.patch", names)
         self.assertNotIn("silence_irq_cpu_logspam.patch", names)
@@ -226,7 +226,7 @@ class ModeTests(unittest.TestCase):
         self.assertIn('GKI_TEST_NETWORK=1', tests)
         self.assertIn('--sources "$GKI_WORKSPACE/sources.json"', compile_step)
 
-    def test_defconfig_is_bbrv3_lz4kd_and_no_kpm(self):
+    def test_defconfig_is_bbrv3_lz4_and_no_kpm(self):
         with tempfile.TemporaryDirectory() as d:
             builder = KernelBuilder(BuildConfig(), d)
             path = builder._defconfig_path()
@@ -250,8 +250,8 @@ class ModeTests(unittest.TestCase):
             self.assertIn("CONFIG_TCP_CONG_BBR=y", result)
             self.assertIn("CONFIG_TCP_CONG_BBR3=y", result)
             self.assertIn("CONFIG_TCP_CONG_CUBIC=n", result)
-            self.assertIn("CONFIG_ZRAM_DEF_COMP_LZ4KD=y", result)
-            self.assertIn("CONFIG_ZRAM_DEF_COMP_LZ4=n", result)
+            self.assertIn("CONFIG_ZRAM_DEF_COMP_LZ4=y", result)
+            self.assertIn("CONFIG_ZRAM_DEF_COMP_LZ4KD=n", result)
             self.assertIn("CONFIG_IOSCHED_BFQ=y", result)
             self.assertIn("CONFIG_CPU_FREQ_GOV_CONSERVATIVE=y", result)
             self.assertIn("CONFIG_KPM=n", result)
@@ -507,8 +507,8 @@ class RuntimeConfigTests(unittest.TestCase):
             "CONFIG_KRETPROBES": "y", "CONFIG_HAVE_SYSCALL_TRACEPOINTS": "y",
             "CONFIG_NET_SCH_FQ": "y", "CONFIG_ZRAM": "y", "CONFIG_ZSMALLOC": "y",
             "CONFIG_CRYPTO_LZ4KD": "y", "CONFIG_LZ4KD_COMPRESS": "y",
-            "CONFIG_LZ4KD_DECOMPRESS": "y", "CONFIG_ZRAM_DEF_COMP_LZ4KD": "y",
-            "CONFIG_ZRAM_DEF_COMP": '"lz4kd"', "CONFIG_ZRAM_WRITEBACK": "y",
+            "CONFIG_LZ4KD_DECOMPRESS": "y", "CONFIG_ZRAM_DEF_COMP_LZ4": "y",
+            "CONFIG_ZRAM_DEF_COMP": '"lz4"', "CONFIG_ZRAM_WRITEBACK": "y",
             "CONFIG_TCP_CONG_BBR": "y", "CONFIG_TCP_CONG_BBR3": "y",
             "CONFIG_DEFAULT_TCP_CONG": '"bbr3"', "CONFIG_CRYPTO_LZ4": "y",
             "CONFIG_MODVERSIONS": "y", "CONFIG_CFI_CLANG": "y",

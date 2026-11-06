@@ -1,10 +1,10 @@
 From: GKI build maintainers <gki-builder@localhost>
-Subject: [PATCH] zram: offer lz4kd and lz4 only
+Subject: [PATCH] zram: offer lz4 and lz4kd (lz4 default)
 
 Source: https://github.com/ShirkNeko/SukiSU_patch
 Reference: 547ae94bcaec53d030398f857950c64662043a5d
 Base: android13-5.15.211 (dc9467e8f9bf)
-ZRAM advertises lz4 and lz4kd. lz4kd is the default. This patch does not
+ZRAM advertises lz4 and lz4kd. lz4 is the default. This patch does not
 touch kernel/module.c and does not add LZ4K.
 
 ---
@@ -52,7 +52,7 @@ index 668c6bf..c1b29ad 100644
  	help
  	  Creates virtual block devices called /dev/zramX (X = 0, 1, ...).
  	  Pages written to these disks are compressed and stored in memory
-@@ -14,45 +14,14 @@ config ZRAM
+@@ -14,45 +14,25 @@ config ZRAM
  
  	  See Documentation/admin-guide/blockdev/zram.rst for more information.
  
@@ -86,10 +86,20 @@ index 668c6bf..c1b29ad 100644
 -	depends on CRYPTO_842
 -
 -endchoice
++choice
++	prompt "Default zram compressor"
++	default ZRAM_DEF_COMP_LZ4
++	depends on ZRAM
++
++config ZRAM_DEF_COMP_LZ4
++	bool "lz4"
++	depends on CRYPTO_LZ4
++
 +config ZRAM_DEF_COMP_LZ4KD
 +	bool "lz4kd"
-+	depends on ZRAM && CRYPTO_LZ4KD
-+	default y
++	depends on CRYPTO_LZ4KD
++
++endchoice
  
  config ZRAM_DEF_COMP
  	string
@@ -99,7 +109,8 @@ index 668c6bf..c1b29ad 100644
 -	default "lzo" if ZRAM_DEF_COMP_LZO
 -	default "lz4hc" if ZRAM_DEF_COMP_LZ4HC
 -	default "842" if ZRAM_DEF_COMP_842
-+	default "lz4kd"
++	default "lz4" if ZRAM_DEF_COMP_LZ4
++	default "lz4kd" if ZRAM_DEF_COMP_LZ4KD
  
  config ZRAM_WRITEBACK
         bool "Write back incompressible or idle page to backing device"

@@ -1,5 +1,5 @@
 From: GKI maintainers <gki-builder@localhost>
-Subject: [PATCH] crypto: use private freestanding LZ4 1.10.0
+Subject: [PATCH] crypto: use private freestanding LZ4 1.11.0
 
 Keep include/linux/lz4.h and lib/lz4 unchanged for vendor modules.
 
@@ -11,7 +11,7 @@ diff --git a/crypto/lz4.c b/crypto/lz4.c
  #include <linux/crypto.h>
  #include <linux/vmalloc.h>
 -#include <linux/lz4.h>
-+/* Private freestanding LZ4 1.10.0: no changes to the exported GKI LZ4 ABI. */
++/* Private freestanding LZ4 1.11.0: no changes to the exported GKI LZ4 ABI. */
 +#include <linux/string.h>
 +#define LZ4_FREESTANDING 1
 +#define LZ4_memcpy memcpy
@@ -19,11 +19,11 @@ diff --git a/crypto/lz4.c b/crypto/lz4.c
 +#define LZ4_memset memset
 +#define LZ4LIB_VISIBILITY static __maybe_unused
 +#define LZ4_PUBLISH_STATIC_FUNCTIONS
-+#include "lz4_110/lz4.c"
++#include "lz4_111/lz4.c"
  #include <crypto/internal/scompress.h>
  
  struct lz4_ctx {
-@@ -20,7 +28,7 @@
+@@ -20,10 +28,11 @@
  {
  	void *ctx;
  
@@ -32,7 +32,11 @@ diff --git a/crypto/lz4.c b/crypto/lz4.c
  	if (!ctx)
  		return ERR_PTR(-ENOMEM);
  
-@@ -53,8 +61,13 @@
++	LZ4_initStream(ctx, sizeof(LZ4_stream_t));
+ 	return ctx;
+ }
+ 
+@@ -53,8 +62,13 @@
  static int __lz4_compress_crypto(const u8 *src, unsigned int slen,
  				 u8 *dst, unsigned int *dlen, void *ctx)
  {
@@ -43,12 +47,12 @@ diff --git a/crypto/lz4.c b/crypto/lz4.c
 +	if (slen > INT_MAX || *dlen > INT_MAX)
 +		return -EINVAL;
 +
-+	out_len = LZ4_compress_fast_extState(ctx, src, dst,
++	out_len = LZ4_compress_fast_extState_fastReset(ctx, (const char *)src, (char *)dst,
 +		slen, *dlen, 1);
  
  	if (!out_len)
  		return -EINVAL;
-@@ -81,7 +94,12 @@
+@@ -81,7 +95,12 @@
  static int __lz4_decompress_crypto(const u8 *src, unsigned int slen,
  				   u8 *dst, unsigned int *dlen, void *ctx)
  {
@@ -58,7 +62,7 @@ diff --git a/crypto/lz4.c b/crypto/lz4.c
 +	if (slen > INT_MAX || *dlen > INT_MAX)
 +		return -EINVAL;
 +
-+	out_len = LZ4_decompress_safe(src, dst, slen, *dlen);
++	out_len = LZ4_decompress_safe((const char *)src, (char *)dst, slen, *dlen);
  
  	if (out_len < 0)
  		return -EINVAL;
