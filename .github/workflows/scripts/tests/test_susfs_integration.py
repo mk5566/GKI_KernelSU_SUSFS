@@ -13,11 +13,22 @@ from kernel_builder import KernelBuilder
 
 
 PATCH_NAME = "50_add_susfs_in_gki-android13-5.15.patch"
+LOG_PATCH = "0002-susfs-ratelimit-log-fallback.patch"
 FS_GUARD = "0003-susfs-no-priority-uid-filter.patch"
 
-# Byte-identical excerpt of upstream susfs4ksu fs/susfs.c around both helper
-# definitions. Any upstream change here must fail the glue patch closed.
+# Byte-identical excerpt of upstream susfs4ksu fs/susfs.c around log macros
+# and helper definitions. Any upstream change here must fail the glue patches closed.
 SUSFS_C_EXCERPT = (
+    "#ifdef CONFIG_KSU_SUSFS_ENABLE_LOG\n"
+    "DEFINE_STATIC_KEY_TRUE(susfs_is_log_enabled);\n"
+    "#define SUSFS_LOGI(fmt, ...) if (static_branch_likely(&susfs_is_log_enabled)) pr_info(\"susfs:[%u][%d][%s] \" fmt, current_uid().val, current->pid, __func__, ##__VA_ARGS__)\n"
+    "#define SUSFS_LOGE(fmt, ...) if (static_branch_likely(&susfs_is_log_enabled)) pr_err(\"susfs:[%u][%d][%s]\" fmt, current_uid().val, current->pid, __func__, ##__VA_ARGS__)\n"
+    "#define SUSFS_LOGI_RL(fmt, ...) if (static_branch_likely(&susfs_is_log_enabled)) pr_info_ratelimited(\"susfs:[%u][%d][%s] \" fmt, current_uid().val, current->pid, __func__, ##__VA_ARGS__)\n"
+    "#define SUSFS_LOGE_RL(fmt, ...) if (static_branch_likely(&susfs_is_log_enabled)) pr_err_ratelimited(\"susfs:[%u][%d][%s]\" fmt, current_uid().val, current->pid, __func__, ##__VA_ARGS__)\n"
+    "#else\n"
+    "#define SUSFS_LOGI(fmt, ...) \n"
+    "#define SUSFS_LOGE(fmt, ...) \n"
+    "#endif\n"
     "\n"
     "/*\n"
     " * Switches the selinux domain of the current process to the KernelSU one, so\n"
@@ -115,12 +126,14 @@ class SusfsPatchTests(unittest.TestCase):
             builder = KernelBuilder(BuildConfig(), str(root))
             builder.apply_susfs_patches()
             self.assertEqual(builder.applied_integration_patches,
-                             [PATCH_NAME, FS_GUARD])
+                             [PATCH_NAME, LOG_PATCH, FS_GUARD])
             self.assertTrue((common / "fs/susfs.c").is_file())
             self.assertTrue((common / "include/linux/susfs.h").is_file())
             self.assertIn("obj-y += susfs.o",
                           (common / "fs/Makefile").read_text(encoding="utf-8"))
             susfs_c = (common / "fs/susfs.c").read_text(encoding="utf-8")
+            self.assertIn("#define SUSFS_LOGI_RL(fmt, ...)", susfs_c)
+            self.assertIn("#define SUSFS_LOGE_RL(fmt, ...)", susfs_c)
             self.assertEqual(susfs_c.count("__maybe_unused susfs_"), 2)
 
     def test_missing_patch_is_fatal(self):
@@ -165,7 +178,7 @@ class SusfsPatchTests(unittest.TestCase):
                 builder.apply_susfs_patches()
             self.assertEqual((common / "fs/Makefile").read_text(encoding="utf-8"), before)
             self.assertEqual(builder.applied_integration_patches,
-                             [PATCH_NAME, FS_GUARD])
+                             [PATCH_NAME, LOG_PATCH, FS_GUARD])
 
 
 if __name__ == "__main__":

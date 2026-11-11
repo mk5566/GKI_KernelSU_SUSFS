@@ -1,0 +1,22 @@
+From: GKI maintainers <gki-builder@localhost>
+Subject: [PATCH] susfs: define ratelimited log macros when logging is disabled
+
+Upstream commit 41da83f3 ("kernel: ratelimit on logging sus selinux type and
+rule") introduced SUSFS_LOGI_RL and SUSFS_LOGE_RL inside the
+CONFIG_KSU_SUSFS_ENABLE_LOG branch, but omitted empty macro fallbacks in the
+#else branch. When CONFIG_KSU_SUSFS_ENABLE_LOG is unset (production build),
+calls to SUSFS_LOGI_RL in susfs_add_sus_type() and
+susfs_add_sus_avd_allowed_by_type() fail with
+-Werror,-Wimplicit-function-declaration. Define both as empty macros in the
+#else branch.
+
+diff --git a/fs/susfs.c b/fs/susfs.c
+--- a/fs/susfs.c
++++ b/fs/susfs.c
+@@ -45,4 +45,6 @@
+ #else
+ #define SUSFS_LOGI(fmt, ...) 
+ #define SUSFS_LOGE(fmt, ...) 
++#define SUSFS_LOGI_RL(fmt, ...) 
++#define SUSFS_LOGE_RL(fmt, ...) 
+ #endif

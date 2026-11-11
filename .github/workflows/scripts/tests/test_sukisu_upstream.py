@@ -62,6 +62,7 @@ class BuiltinIntegrationTests(unittest.TestCase):
             self.assertFalse(
                 (REPO_ROOT / "patches/susfs" / missing).exists(), missing)
         for present in ("0001-sukisu-quiet-production.patch",
+                        "0002-susfs-ratelimit-log-fallback.patch",
                         "0003-susfs-no-priority-uid-filter.patch"):
             self.assertTrue(
                 (REPO_ROOT / "patches/susfs" / present).is_file(), present)

@@ -561,11 +561,12 @@ class KernelBuilder:
         # file subset breaks cross-file consistency with the KernelSU-side
         # integration and with future SUSFS revisions; mount-only remains a
         # Kconfig selection (CONFIG_KSU_SUSFS_SUS_MOUNT=y, others off).
-        # The trailing glue patch keeps the mount-only build warning-free
-        # where upstream gates callers but not helpers on the disabled
-        # priority uid filter option.
+        # The trailing glue patches keep the mount-only build warning-free:
+        # 1. Provide empty fallback macros for SUSFS_LOGI_RL/SUSFS_LOGE_RL when logging is off
+        # 2. Mark helpers maybe-unused when priority uid filter is off
         self._chdir(common_dir)
         self._apply_patch_file(susfs_patch)
+        self._apply_patch_file(REPO_ROOT / "patches/susfs/0002-susfs-ratelimit-log-fallback.patch")
         self._apply_patch_file(REPO_ROOT / "patches/susfs/0003-susfs-no-priority-uid-filter.patch")
         self._chdir(self.work_dir)
 
