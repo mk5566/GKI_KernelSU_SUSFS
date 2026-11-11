@@ -536,14 +536,13 @@ class KernelBuilder:
                     uapi if uapi is not None else "unset")
 
         # The `builtin` branch already integrates SUSFS on the KernelSU side,
-        # so only production glue is applied here: the quiet log patch and
-        # the guard that compiles the priority uid filter calls out with the
-        # feature (see the patch headers for the upstream sync gap).
+        # so only production glue is applied here: the quiet log patch.
+        # Upstream natively carries the priority uid filter Kconfig option and
+        # guards (issue #1045, commit de9bc7e).
         # Filesystem support comes from the full upstream SUSFS kernel patch
         # applied in apply_susfs_patches.
         self._chdir(ksu_dir)
         self._apply_patch_file(REPO_ROOT / "patches/susfs/0001-sukisu-quiet-production.patch")
-        self._apply_patch_file(REPO_ROOT / "patches/susfs/0002-sukisu-no-priority-uid-filter.patch")
         self._chdir(self.work_dir)
 
     def apply_susfs_patches(self):

@@ -62,8 +62,7 @@ class ManagerCompatibilityTests(unittest.TestCase):
                        subprocess.CompletedProcess([], 0, stdout=requested + "\n")):
                 self.builder.add_kernelsu()
                 applied = [call.args[0].name for call in apply_patch.call_args_list]
-                self.assertEqual(applied, ["0001-sukisu-quiet-production.patch",
-                                           "0002-sukisu-no-priority-uid-filter.patch"])
+                self.assertEqual(applied, ["0001-sukisu-quiet-production.patch"])
 
     def test_compiled_config_requires_builtin_and_hooks(self):
         symbols = ("CONFIG_KSU", "CONFIG_KPROBES", "CONFIG_KRETPROBES",

@@ -12,11 +12,10 @@ from kernel_builder import KernelBuilder
 
 
 QUIET_PATCH = REPO_ROOT / "patches/susfs/0001-sukisu-quiet-production.patch"
-GUARD_PATCH = REPO_ROOT / "patches/susfs/0002-sukisu-no-priority-uid-filter.patch"
 
 # Minimal reconstructions of the upstream `builtin` branch sources around
 # each glue anchor. The context lines are byte-identical to upstream
-# 1cfa5734; any upstream change to them must fail the patch closed.
+# de9bc7e6; any upstream change to them must fail the patch closed.
 BUILTIN_MAKEFILE = """obj-$(CONFIG_KSU) := ksu.o
 ksu-y := ksu_main.o
 
@@ -40,36 +39,14 @@ BUILTIN_DISPATCH = """#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
             susfs_add_sus_map(arg);
             return 0;
 #endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
+#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
         case CMD_SUSFS_SET_PRIORITY_UID_FILTER:
             susfs_set_priority_uid_filter(arg);
             return 0;
+#endif // #ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
         case CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING:
             susfs_set_avc_log_spoofing(arg);
             return 0;
-"""
-
-BUILTIN_PKG_OBSERVER = """static void ksu_track_throne_tw_func(struct callback_head *cb)
-{
-    kfree(cb);
-    // Runs after exit_fs() if the task is exiting; path lookups would oops
-    if (current->flags & PF_EXITING)
-        return;
-    track_throne(false);
-    // Renew the priority uid bitmap filter
-    susfs_parse_priority_app_strings();
-}
-
-static void ksu_defer_track_throne(void)
-{
-    struct callback_head *cb;
-
-    // Renew the getpriority uid bitmap filter
-    susfs_parse_priority_app_strings();
-
-    if (!(current->flags & PF_KTHREAD)) {
-        return;
-    }
-}
 """
 
 
@@ -80,11 +57,11 @@ class BuiltinIntegrationTests(unittest.TestCase):
         # fail-closed glue patches remain.
         for missing in ("0001-sukisu-main-mount-support.patch",
                         "0002-common-susfs-reboot-dispatch.patch",
-                        "0003-sukisu-quiet-production.patch"):
+                        "0003-sukisu-quiet-production.patch",
+                        "0002-sukisu-no-priority-uid-filter.patch"):
             self.assertFalse(
                 (REPO_ROOT / "patches/susfs" / missing).exists(), missing)
         for present in ("0001-sukisu-quiet-production.patch",
-                        "0002-sukisu-no-priority-uid-filter.patch",
                         "0003-susfs-no-priority-uid-filter.patch"):
             self.assertTrue(
                 (REPO_ROOT / "patches/susfs" / present).is_file(), present)
@@ -120,69 +97,16 @@ class BuiltinIntegrationTests(unittest.TestCase):
                     text.replace(flag, ""), BUILTIN_MAKEFILE + extra)
                 self.assertTrue((root / "kernel/include/quiet.h").is_file())
 
-    def test_priority_guard_wraps_dispatch_case(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            self._apply_to_tree(
-                root, {"kernel/supercall/dispatch.c": BUILTIN_DISPATCH,
-                       "kernel/manager/pkg_observer.c": BUILTIN_PKG_OBSERVER},
-                GUARD_PATCH)
-            text = (root / "kernel/supercall/dispatch.c").read_text(
-                encoding="utf-8")
-            guarded = ("#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER\n"
-                       "        case CMD_SUSFS_SET_PRIORITY_UID_FILTER:\n"
-                       "            susfs_set_priority_uid_filter(arg);\n"
-                       "            return 0;\n"
-                       "#endif\n")
-            self.assertIn(guarded, text)
-            # Neighbouring feature cases stay untouched.
-            self.assertIn("case CMD_SUSFS_ADD_SUS_MAP:", text)
-            self.assertIn("case CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING:", text)
-
-    def test_priority_guard_wraps_both_observer_calls(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            self._apply_to_tree(
-                root, {"kernel/supercall/dispatch.c": BUILTIN_DISPATCH,
-                       "kernel/manager/pkg_observer.c": BUILTIN_PKG_OBSERVER},
-                GUARD_PATCH)
-            text = (root / "kernel/manager/pkg_observer.c").read_text(
-                encoding="utf-8")
-            self.assertEqual(
-                text.count("#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER\n"), 2)
-            self.assertEqual(
-                text.count("susfs_parse_priority_app_strings();"), 2)
-
-    def test_guard_contract_change_fails_closed(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            broken = BUILTIN_DISPATCH.replace(
-                "case CMD_SUSFS_SET_PRIORITY_UID_FILTER:",
-                "case CMD_SUSFS_SET_PRIORITY_UID_FILTER_V2:")
-            self._apply_to_tree(
-                root, {"kernel/supercall/dispatch.c": BUILTIN_DISPATCH,
-                       "kernel/manager/pkg_observer.c": BUILTIN_PKG_OBSERVER},
-                GUARD_PATCH)
-            dispatch = root / "kernel/supercall/dispatch.c"
-            observer = root / "kernel/manager/pkg_observer.c"
-            before_dispatch = dispatch.read_text(encoding="utf-8")
-            before_observer = observer.read_text(encoding="utf-8")
-            dispatch.write_text(broken, encoding="utf-8", newline="\n")
-            builder = KernelBuilder(BuildConfig(), str(temp))
-            builder.shell.cwd = str(temp)
-            with self.assertRaisesRegex(RuntimeError, "Selected patch failed"):
-                builder._apply_patch_file(GUARD_PATCH)
-            # No partial insertion: the whole multi-file patch is atomic.
-            self.assertEqual(dispatch.read_text(encoding="utf-8"), broken)
-            self.assertEqual(observer.read_text(encoding="utf-8"),
-                             before_observer)
+    def test_upstream_builtin_natively_guards_priority_uid_filter(self):
+        # SukiSU-Ultra builtin commit de9bc7e (issue #1045) natively adds
+        # CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER to Kconfig and guards dispatch.c
+        # so mount-only compiles warning-free without custom glue patches.
+        self.assertIn("CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER", BUILTIN_DISPATCH)
 
     def test_reapplying_glue_patches_is_fatal(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            files = {"kernel/Makefile": BUILTIN_MAKEFILE,
-                     "kernel/supercall/dispatch.c": BUILTIN_DISPATCH,
-                     "kernel/manager/pkg_observer.c": BUILTIN_PKG_OBSERVER}
+            files = {"kernel/Makefile": BUILTIN_MAKEFILE}
             for relative, text in files.items():
                 path = root / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -191,11 +115,8 @@ class BuiltinIntegrationTests(unittest.TestCase):
             builder = KernelBuilder(BuildConfig(), str(temp))
             builder.shell.cwd = str(temp)
             builder._apply_patch_file(QUIET_PATCH)
-            builder._apply_patch_file(GUARD_PATCH)
-            for patch in (QUIET_PATCH, GUARD_PATCH):
-                with self.subTest(patch=patch.name), \
-                     self.assertRaisesRegex(RuntimeError, "Selected patch failed"):
-                    builder._apply_patch_file(patch)
+            with self.assertRaisesRegex(RuntimeError, "Selected patch failed"):
+                builder._apply_patch_file(QUIET_PATCH)
 
     @unittest.skipUnless(os.environ.get("SUKISU_TEST_SOURCE"),
                          "set SUKISU_TEST_SOURCE to check the complete upstream source")
@@ -209,13 +130,18 @@ class BuiltinIntegrationTests(unittest.TestCase):
                             os.environ["SUKISU_TEST_SOURCE"], str(checkout)], check=True)
             self.assertTrue((checkout / "kernel/Makefile").is_file())
             self.assertTrue((checkout / "kernel/supercall/dispatch.c").is_file())
+            # Upstream builtin branch natively carries the priority uid filter guard
+            dispatch = (checkout / "kernel/supercall/dispatch.c").read_text(encoding="utf-8")
+            self.assertIn("CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER", dispatch)
+            kconfig = (checkout / "kernel/Kconfig").read_text(encoding="utf-8")
+            self.assertIn("config KSU_SUSFS_PRIORITY_UID_FILTER", kconfig)
+
             builder.shell.cwd = str(checkout)
             builder._apply_patch_file(QUIET_PATCH)
-            builder._apply_patch_file(GUARD_PATCH)
             self.assertEqual(builder.applied_integration_patches,
-                             [QUIET_PATCH.name, GUARD_PATCH.name])
+                             [QUIET_PATCH.name])
             with self.assertRaisesRegex(RuntimeError, "Selected patch failed"):
-                builder._apply_patch_file(GUARD_PATCH)
+                builder._apply_patch_file(QUIET_PATCH)
 
 
 if __name__ == "__main__":
