@@ -28,7 +28,7 @@ ANYKERNEL_CONFIG = {
 REPO_TOOL_CONFIG = {"repo_url": "https://gerrit.googlesource.com/git-repo", "branch": "stable"}
 # Reviewed code embedded in patches/. New upstream code needs a reviewed port,
 # not a blind replacement of the frozen Android interfaces.
-LZ4_RELEASE = "v1.11.0"
+LZ4_RELEASE = "v1.11.1"
 BBR_REVISION = "90210de4b779d40496dee0b89081780eeddf2a60"
 REPO_ROOT = Path(__file__).resolve().parents[3]
 # Only projects used by build.sh and boot packaging; omit Bazel/JDK/device trees.

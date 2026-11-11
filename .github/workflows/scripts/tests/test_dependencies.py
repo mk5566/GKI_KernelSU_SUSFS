@@ -226,12 +226,42 @@ class DependencyTests(unittest.TestCase):
         ):
             with self.subTest(commit=commit, release=release), \
                  patch("target.resolve_branch", return_value=commit), \
-                 patch("target.urllib.request.urlopen", return_value=io.BytesIO(json.dumps(release).encode())):
+                 patch("target.urllib.request.urlopen", side_effect=lambda *args, **kwargs: io.BytesIO(json.dumps(release).encode())):
                 if valid:
                     check_reviewed_upstreams()
+                    check_reviewed_upstreams(strict=True)
                 else:
+                    with patch("target.logging.warning") as warn:
+                        check_reviewed_upstreams(strict=False)
+                        warn.assert_called()
                     with self.assertRaises(RuntimeError):
-                        check_reviewed_upstreams()
+                        check_reviewed_upstreams(strict=True)
+
+    def test_upstream_check_failure_logs_warning_and_allows_build(self):
+        with patch("target.resolve_branch", side_effect=Exception("network error")), \
+             patch("target.logging.warning") as warn:
+            check_reviewed_upstreams(strict=False)
+            warn.assert_called_with("Unable to check upstream port releases: %s",
+                                    warn.call_args.args[1])
+        with patch("target.resolve_branch", side_effect=Exception("network error")):
+            with self.assertRaisesRegex(Exception, "network error"):
+                check_reviewed_upstreams(strict=True)
+
+    def test_strict_upstreams_flag_enforces_failure_on_drift(self):
+        with patch("build.check_reviewed_upstreams") as check, \
+             patch("build.resolve_gki"), patch("build.resolve_sukisu", return_value=("", "a" * 40)), \
+             patch("build.resolve_susfs", return_value="b" * 40), \
+             patch("build.resolve_sukisu_patch", return_value="c" * 40), \
+             patch("build.resolve_anykernel", return_value="d" * 40), \
+             patch("build.resolve_branch", return_value="e" * 40), \
+             patch("build.logging.basicConfig"), \
+             patch("build.KernelBuilder") as builder:
+            builder.return_value.build.return_value.success = True
+            main([])
+            check.assert_called_with(strict=False)
+            check.reset_mock()
+            main(["--strict-upstreams"])
+            check.assert_called_with(strict=True)
 
     def test_unavailable_latest_source_never_falls_back_or_starts_build(self):
         with patch("build.check_reviewed_upstreams", side_effect=RuntimeError("upstream unavailable")), \

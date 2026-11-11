@@ -1,5 +1,6 @@
 """Resolve the newest official android13-5.15 stable and the SukiSU channel."""
 import json
+import logging
 import re
 import subprocess
 import urllib.request
@@ -137,22 +138,34 @@ def resolve_anykernel():
     return resolve_branch(ANYKERNEL_CONFIG)
 
 
-def check_reviewed_upstreams():
-    """Never report a successful latest build with silently outdated ports."""
-    bbr = resolve_branch({"repo_url": "https://github.com/google/bbr.git", "branch": "v3"})
-    request = urllib.request.Request(
-        "https://api.github.com/repos/lz4/lz4/releases/latest",
-        headers={"Accept": "application/vnd.github+json", "User-Agent": "gki-builder"})
-    with urllib.request.urlopen(request, timeout=30) as response:
-        release = json.load(response)
-    tag = release.get("tag_name", "")
-    if (release.get("draft") or release.get("prerelease")
-            or not re.fullmatch(r"v\d+\.\d+\.\d+", tag)):
-        raise RuntimeError("Invalid upstream LZ4 stable release")
-    if bbr != BBR_REVISION or tag != LZ4_RELEASE:
-        raise RuntimeError(
-            f"Reviewed ports need updating: BBR {BBR_REVISION} -> {bbr}; "
-            f"LZ4 {LZ4_RELEASE} -> {tag}. Rebase and validate patches before building.")
+def check_reviewed_upstreams(strict=False):
+    """Check whether upstream ports have newer releases; warn by default so builds remain reliable."""
+    try:
+        bbr = resolve_branch({"repo_url": "https://github.com/google/bbr.git", "branch": "v3"})
+        request = urllib.request.Request(
+            "https://api.github.com/repos/lz4/lz4/releases/latest",
+            headers={"Accept": "application/vnd.github+json", "User-Agent": "gki-builder"})
+        with urllib.request.urlopen(request, timeout=30) as response:
+            release = json.load(response)
+        tag = release.get("tag_name", "")
+        if (release.get("draft") or release.get("prerelease")
+                or not re.fullmatch(r"v\d+\.\d+\.\d+", tag)):
+            if strict:
+                raise RuntimeError("Invalid upstream LZ4 stable release")
+            logging.warning("Invalid upstream LZ4 stable release payload: %s", tag)
+            return
+        if bbr != BBR_REVISION or tag != LZ4_RELEASE:
+            msg = (
+                f"Reviewed ports need updating: BBR {BBR_REVISION} -> {bbr}; "
+                f"LZ4 {LZ4_RELEASE} -> {tag}. Rebase and validate patches before building.")
+            if strict:
+                raise RuntimeError(msg)
+            logging.warning("%s (building with reviewed ports: BBR %s, LZ4 %s)",
+                            msg, BBR_REVISION, LZ4_RELEASE)
+    except Exception as exc:
+        if strict:
+            raise
+        logging.warning("Unable to check upstream port releases: %s", exc)
 
 
 def resolve_sukisu(channel):

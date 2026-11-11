@@ -32,6 +32,8 @@ def parse_args(argv=None):
     parser.add_argument("--resolve-only", action="store_true",
                         help="Resolve current dependencies and save workspace/sources.json, then stop")
     parser.add_argument("--sources", help="Build using the sources.json already resolved and tested in this run")
+    parser.add_argument("--strict-upstreams", action="store_true",
+                        help="Fail if reviewed ports differ from upstream releases")
     parser.add_argument("--preflight-only", action="store_true",
                         help="Apply the source stack and generate/verify .config, then stop")
     parser.add_argument("--output-json")
@@ -50,7 +52,7 @@ def main(argv=None):
         config = load_sources(args.sources)
         config.base_boot = str(Path(args.base_boot).resolve()) if args.base_boot else ""
     else:
-        check_reviewed_upstreams()
+        check_reviewed_upstreams(strict=args.strict_upstreams)
         gki = resolve_gki()
         config.gki_tag = gki.tag
         config.gki_commit = gki.commit

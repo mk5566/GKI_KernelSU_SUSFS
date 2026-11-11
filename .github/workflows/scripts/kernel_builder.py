@@ -1146,7 +1146,7 @@ class KernelBuilder:
             f"- Applied tweak patches: {', '.join(self.applied_tweak_patches) or 'none'}",
             f"- Other integration patches: {', '.join(self.applied_integration_patches)}",
             "- ZRAM: lz4 default, lz4kd available, other backends removed",
-            "- ZRAM crypto LZ4: official 1.11.0, private freestanding implementation",
+            "- ZRAM crypto LZ4: official 1.11.1, private freestanding implementation",
             "- Exported GKI LZ4 library/header: unchanged",
             "- KPM: disabled",
             "- cpufreq governors and I/O schedulers: certified GKI defaults preserved",

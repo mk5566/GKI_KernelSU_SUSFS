@@ -1,5 +1,5 @@
 From: GKI maintainers <gki-builder@localhost>
-Subject: [PATCH] crypto: use private freestanding LZ4 1.11.0
+Subject: [PATCH] crypto: use private freestanding LZ4 1.11.1
 
 Keep include/linux/lz4.h and lib/lz4 unchanged for vendor modules.
 
@@ -11,7 +11,7 @@ diff --git a/crypto/lz4.c b/crypto/lz4.c
  #include <linux/crypto.h>
  #include <linux/vmalloc.h>
 -#include <linux/lz4.h>
-+/* Private freestanding LZ4 1.11.0: no changes to the exported GKI LZ4 ABI. */
++/* Private freestanding LZ4 1.11.1: no changes to the exported GKI LZ4 ABI. */
 +#include <linux/string.h>
 +#define LZ4_FREESTANDING 1
 +#define LZ4_memcpy memcpy

@@ -177,7 +177,7 @@ class ModeTests(unittest.TestCase):
         self.assertTrue(plan.lz4 and plan.zram and plan.bbr and plan.tweaks)
         self.assertEqual(len(plan.all), len(plan.lz4) + len(plan.zram) + len(plan.bbr) + len(plan.tweaks))
         names = [path.name for path in plan.all]
-        self.assertIn("0002-crypto-lz4-1.11.0.patch", names)
+        self.assertIn("0002-crypto-lz4-1.11.1.patch", names)
         self.assertIn("lz4kd-integration.patch", names)
         self.assertIn("0001-bbrv3-android-kabi.patch", names)
         self.assertNotIn("silence_irq_cpu_logspam.patch", names)

@@ -30,7 +30,7 @@ Builds are triggered manually via GitHub Actions:
 - **Certified GKI 5.15 Base**: Builds against official certified AOSP Android 13 5.15 manifests. Preserves full Clang LTO, CFI, module versioning, SELinux, preemption, and Google-certified vendor symbol CRCs.
 - **Root & Hiding**: SukiSU `builtin` integration with mount-only SUSFS (`CONFIG_KSU_SUSFS_SUS_MOUNT=y`). KPM, debug hooks, and verbose root informational logging are compiled out.
 - **ZRAM Compression**:
-  - **`lz4` (Default)**: Official upstream **LZ4 v1.11.0** private freestanding implementation with Qualcomm Snapdragon 8 Gen 2 (ARMv9 Cortex-X3 / A715 / A710) optimizations (64-byte wildcopy, fast dec loop, and context-reuse avoiding full table clears on 4KB pages).
+  - **`lz4` (Default)**: Official upstream **LZ4 v1.11.1** private freestanding implementation with Qualcomm Snapdragon 8 Gen 2 (ARMv9 Cortex-X3 / A715 / A710) optimizations (64-byte wildcopy, fast dec loop, and context-reuse avoiding full table clears on 4KB pages).
   - **`lz4kd` (Optional)**: Available as an alternate backend via sysfs (`echo lz4kd > /sys/block/zram0/comp_algorithm`). Other unused backends are removed.
   - Exported GKI LZ4 library and header remain untouched to guarantee vendor module compatibility.
 - **TCP Congestion Control**: Google **BBRv3** as default (adapted for Linux 5.15 with 104-byte KMI-safe socket area), stock **BBRv1** built-in as per-socket fallback, and FQ pacing enabled.

@@ -1,6 +1,6 @@
-# Private LZ4 1.11.0 for zram's crypto backend
+# Private LZ4 1.11.1 for zram's crypto backend
 
-Sources: [official v1.11.0](https://github.com/lz4/lz4/tree/v1.11.0/lib).
+Sources: [official v1.11.1](https://github.com/lz4/lz4/tree/v1.11.1/lib).
 The source retains upstream's BSD-2-Clause license and copyright notices.
 Standard C type/header includes are adapted to Linux types/limits. The
 integer-width assertion uses the compiler's `__SIZEOF_INT__`; local `current`
@@ -12,8 +12,8 @@ local linkage so they cannot collide with GKI's existing library symbols.
 Compression logic is unchanged.
 Upstream source SHA256 before these header adaptations:
 
-- `lz4.c`: `45061782ff932eb8cf71c3aea9495cec0d392f012395272e0550e30c8593c740`
-- `lz4.h`: `6fee8f913ce3bc65bf716060f65ce890d83bea905445256c7a56da5bf4824d73`
+- `lz4.c`: `2e58f124f1032f15aecc99772b7de624c4289245729fa5403506f00b06a54937`
+- `lz4.h`: `c204caad0638a12c9ce80831094ec8fffb34aa57e74307067b08fc9452fc2611`
 
 `crypto/lz4.c` includes the private source with static visibility and the
 upstream freestanding interface. Kernel memcpy/memmove/memset supply memory
