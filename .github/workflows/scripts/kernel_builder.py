@@ -935,21 +935,26 @@ class KernelBuilder:
                                  "|| exit $?; exit 0'\n",
                                  encoding="utf-8", newline="\n")
             env["GKI_BUILD_CONFIG_FRAGMENT"] = str(preflight)
-        # Capture the full build output so a failure is attributable: GitHub
-        # only shows the tail, which hides the actual error. The log file is
-        # uploaded with the failure diagnostics.
-        result = subprocess.run(["bash", "build/build.sh"], cwd=self.work_dir,
-                                env=env, check=False, capture_output=True, text=True)
-        output = (result.stdout or "") + (result.stderr or "")
-        self._build_log_path().write_text(output, encoding="utf-8")
-        for line in output.splitlines():
-            logger.info("[build.sh] %s", line)
-        if config_only and result.returncode != 0:
-            raise subprocess.CalledProcessError(result.returncode, result.args,
-                                                output=result.stdout, stderr=result.stderr)
-        completed = subprocess.CompletedProcess(result.args, result.returncode,
-                                                result.stdout, result.stderr)
-        return completed
+        # Stream build output line-by-line to build.log and the logger so the
+        # compile log is never buffered in RAM during full LTO and progress is
+        # visible in real time.
+        cmd = ["bash", "build/build.sh"]
+        with self._build_log_path().open("w", encoding="utf-8", buffering=1) as log_file, \
+                subprocess.Popen(
+                    cmd, cwd=self.work_dir, env=env,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, encoding="utf-8", errors="replace", bufsize=1,
+                ) as proc:
+            assert proc.stdout is not None
+            for raw_line in proc.stdout:
+                line = raw_line.rstrip("\r\n")
+                log_file.write(line + "\n")
+                logger.info("[build.sh] %s", line)
+            returncode = proc.wait()
+        if config_only and returncode != 0:
+            log_text = self._build_log_path().read_text(encoding="utf-8", errors="replace")
+            raise subprocess.CalledProcessError(returncode, cmd, output=log_text, stderr="")
+        return subprocess.CompletedProcess(cmd, returncode, "", "")
 
     def build_kernel(self) -> bool:
         logger.info("=== Starting kernel compile ===")
@@ -960,8 +965,8 @@ class KernelBuilder:
             result = self._run_kernel_build()
 
             if result.returncode != 0:
-                combined = "\n".join(part for part in (result.stdout, result.stderr) if part)
-                self.build_error_excerpt = self._error_excerpt(combined)
+                log_text = self._build_log_path().read_text(encoding="utf-8", errors="replace")
+                self.build_error_excerpt = self._error_excerpt(log_text)
                 logger.error("Kernel compile failed: exit %d\n%s",
                              result.returncode, self.build_error_excerpt)
                 return False

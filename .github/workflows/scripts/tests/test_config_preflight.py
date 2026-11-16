@@ -78,9 +78,9 @@ touch compiled
         self.fragment = Path(self.builder.env["GKI_BUILD_CONFIG_FRAGMENT"])
         self.original_fragment = self.fragment.read_bytes()
         self.original_env = self.builder.env.copy()
-        run = subprocess.run
+        popen = subprocess.Popen
 
-        def run_bash(args, **kwargs):
+        def popen_bash(args, **kwargs):
             # Execute the production invocation; adapt only Windows path syntax.
             self.assertEqual(args, ["bash", "build/build.sh"])
             if os.name == "nt":
@@ -93,9 +93,9 @@ touch compiled
                 kwargs["env"] = env
             else:
                 args = [find_bash(), *args[1:]]
-            return run(args, **kwargs)
+            return popen(args, **kwargs)
 
-        mock = patch("kernel_builder.subprocess.run", side_effect=run_bash)
+        mock = patch("kernel_builder.subprocess.Popen", side_effect=popen_bash)
         mock.start()
         self.addCleanup(mock.stop)
 
