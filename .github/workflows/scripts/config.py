@@ -17,7 +17,7 @@ KSU_REPO_CONFIG = {"repo_url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra.git
                    # branch has no SUSFS and would need a hand-rolled shim.
                    "branch": "builtin"}
 SUSFS_REPO_CONFIG = {
-    "repo_url": "https://github.com/ShirkNeko/susfs4ksu.git", "branch": "gki-android13-5.15",
+    "repo_url": "https://gitlab.com/simonpunk/susfs4ksu.git", "branch": "gki-android13-5.15",
 }
 SUKISU_PATCH_REPO_CONFIG = {
     "repo_url": "https://github.com/ShirkNeko/SukiSU_patch.git", "branch": "main",

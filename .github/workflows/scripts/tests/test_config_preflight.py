@@ -16,11 +16,11 @@ import test_build_modes as build_modes
 
 def find_bash():
     bash = shutil.which("bash")
-    if not bash and os.name == "nt":
+    if os.name == "nt" and (not bash or "WindowsApps" in Path(bash).parts):
         git = shutil.which("git")
         candidate = Path(git).parent.parent / "bin/bash.exe" if git else None
         if candidate and candidate.is_file():
-            bash = str(candidate)
+            return str(candidate)
     return bash
 
 

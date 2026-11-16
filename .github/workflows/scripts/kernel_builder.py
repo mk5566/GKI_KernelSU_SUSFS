@@ -960,7 +960,8 @@ class KernelBuilder:
             result = self._run_kernel_build()
 
             if result.returncode != 0:
-                self.build_error_excerpt = self._error_excerpt(result.stdout or "")
+                combined = "\n".join(part for part in (result.stdout, result.stderr) if part)
+                self.build_error_excerpt = self._error_excerpt(combined)
                 logger.error("Kernel compile failed: exit %d\n%s",
                              result.returncode, self.build_error_excerpt)
                 return False

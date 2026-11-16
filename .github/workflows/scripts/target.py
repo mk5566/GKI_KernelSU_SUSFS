@@ -1,6 +1,7 @@
 """Resolve the newest official android13-5.15 stable and the SukiSU channel."""
 import json
 import logging
+import os
 import re
 import subprocess
 import urllib.request
@@ -21,8 +22,9 @@ GKI_RELEASES_URL = "https://source.android.com/docs/core/architecture/kernel/gki
 
 
 def _git(*args):
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
     return subprocess.run(["git", *args], check=True, capture_output=True,
-                          text=True, timeout=120).stdout
+                          text=True, timeout=120, env=env).stdout
 
 
 def parse_refs(output):
