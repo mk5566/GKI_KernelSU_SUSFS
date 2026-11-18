@@ -1,3 +1,4 @@
+import os
 import subprocess
 import sys
 import tempfile
@@ -6,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from config import BuildConfig
+from config import BuildConfig, KSU_REPO_CONFIG
 from kernel_builder import KernelBuilder
 
 
@@ -39,15 +40,45 @@ class ManagerCompatibilityTests(unittest.TestCase):
         requested = "b" * 40
         self.builder.config.sukisu_commit = requested
         with patch.object(self.builder, "_chdir"), \
-             patch.object(self.builder, "_require_path"), \
              patch("kernel_builder.subprocess.run", side_effect=[
                  subprocess.CompletedProcess([], 0),
                  subprocess.CompletedProcess([], 0),
-                 subprocess.CompletedProcess([], 0, stdout=requested + "\n"),
+                 subprocess.CompletedProcess([], 0),
+                 subprocess.CompletedProcess([], 0),
                  subprocess.CompletedProcess([], 0, stdout="a" * 40 + "\n"),
              ]):
             with self.assertRaisesRegex(RuntimeError, "SukiSU checkout mismatch"):
                 self.builder.add_kernelsu()
+
+    def test_wire_kernelsu_driver_links_makefile_and_kconfig(self):
+        ksu_dir = self.builder.work_dir / "KernelSU"
+        (ksu_dir / "kernel").mkdir(parents=True)
+        drivers_dir = self.builder.work_dir / "common/drivers"
+        drivers_dir.mkdir(parents=True)
+        (drivers_dir / "Makefile").write_text("obj-y += base/\n", encoding="utf-8")
+        (drivers_dir / "Kconfig").write_text('menu "Device Drivers"\nendmenu\n', encoding="utf-8")
+
+        recorded_links = []
+
+        def fake_symlink(src, dst, target_is_directory=False):
+            recorded_links.append((src, Path(dst)))
+
+        ctx = patch("kernel_builder.os.symlink", side_effect=fake_symlink) if os.name == "nt" else patch.object(self.builder, "_chdir")
+        with ctx:
+            self.builder._wire_kernelsu_driver(ksu_dir)
+
+        if os.name == "nt":
+            self.assertEqual(recorded_links, [("../../KernelSU/kernel", drivers_dir / "kernelsu")])
+        else:
+            self.assertEqual(os.readlink(drivers_dir / "kernelsu"), "../../KernelSU/kernel")
+        self.assertIn("obj-$(CONFIG_KSU) += kernelsu/\n",
+                      (drivers_dir / "Makefile").read_text(encoding="utf-8"))
+        kconfig_lines = (drivers_dir / "Kconfig").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(kconfig_lines, [
+            'menu "Device Drivers"',
+            'source "drivers/kernelsu/Kconfig"',
+            "endmenu",
+        ])
 
     def test_any_uapi_reaches_the_quiet_patch(self):
         requested = "a" * 40
@@ -55,12 +86,16 @@ class ManagerCompatibilityTests(unittest.TestCase):
         for uapi in (None, 1, 2, 4, 5, 6):
             with self.subTest(uapi=uapi), \
                  patch.object(self.builder, "_chdir"), \
+                 patch.object(self.builder, "_clone_source") as clone_source, \
+                 patch.object(self.builder, "_wire_kernelsu_driver") as wire_driver, \
                  patch.object(self.builder, "_require_path"), \
                  patch.object(self.builder, "_read_ksu_uapi_version", return_value=uapi), \
-                 patch.object(self.builder, "_apply_patch_file") as apply_patch, \
-                 patch("kernel_builder.subprocess.run", return_value=
-                       subprocess.CompletedProcess([], 0, stdout=requested + "\n")):
+                 patch.object(self.builder, "_apply_patch_file") as apply_patch:
                 self.builder.add_kernelsu()
+                clone_source.assert_called_once_with(
+                    "SukiSU", self.builder.work_dir / "KernelSU",
+                    KSU_REPO_CONFIG["repo_url"], requested)
+                wire_driver.assert_called_once_with(self.builder.work_dir / "KernelSU")
                 applied = [call.args[0].name for call in apply_patch.call_args_list]
                 self.assertEqual(applied, ["0001-sukisu-quiet-production.patch"])
 

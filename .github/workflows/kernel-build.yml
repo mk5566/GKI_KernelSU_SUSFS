@@ -135,7 +135,7 @@ jobs:
           set -euo pipefail
           commit="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sukisu_commit"])' "$GKI_WORKSPACE/sources.json")"
           git init "$RUNNER_TEMP/sukisu-upstream"
-          git -C "$RUNNER_TEMP/sukisu-upstream" fetch --depth=1 https://github.com/SukiSU-Ultra/SukiSU-Ultra.git "$commit"
+          git -C "$RUNNER_TEMP/sukisu-upstream" fetch --depth=1 https://git.zako.shirkneko.top:20004/shirkneko/SukiSU.git "$commit"
           git -C "$RUNNER_TEMP/sukisu-upstream" checkout --detach FETCH_HEAD
           GKI_TEST_NETWORK=1 GKI_TEST_SOURCES="$GKI_WORKSPACE/sources.json" \
             SUKISU_TEST_SOURCE="$RUNNER_TEMP/sukisu-upstream" \

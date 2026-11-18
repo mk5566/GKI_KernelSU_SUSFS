@@ -15,7 +15,7 @@ from config import (KSU_REPO_CONFIG, SUSFS_REPO_CONFIG, SUKISU_PATCH_REPO_CONFIG
 
 GKI_URL = "https://android.googlesource.com/kernel/common"
 MANIFEST_URL = "https://android.googlesource.com/kernel/manifest"
-KSU_URL = "https://github.com/SukiSU-Ultra/SukiSU-Ultra.git"
+KSU_URL = KSU_REPO_CONFIG["repo_url"]
 GKI_RE = re.compile(r"^android13-5\.15-(\d{4})-(\d{2})_r(\d+)$")
 MANIFEST_RE = re.compile(r"^common-android13-5\.15-\d{4}-\d{2}$")
 GKI_RELEASES_URL = "https://source.android.com/docs/core/architecture/kernel/gki-android13-5_15-release-builds"

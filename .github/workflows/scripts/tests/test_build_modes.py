@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from build import main as build_main, parse_args
-from config import ANDROID_FAMILY, BuildConfig, REPO_ROOT
+from config import ANDROID_FAMILY, BuildConfig, KSU_REPO_CONFIG, REPO_ROOT
 from kernel_builder import (KernelBuilder, apply_release_date_suffix,
                             ensure_cmdline_tokens, release_date_suffix,
                             unquote_kconfig_string)
@@ -219,8 +219,9 @@ class ModeTests(unittest.TestCase):
     def test_workflow_passes_the_tested_checkout_to_compilation(self):
         text = (REPO_ROOT / ".github/workflows/kernel-build.yml").read_text(encoding="utf-8")
         tests, compile_step = text.split("- name: Integrate the resolved source stack and compile", 1)
+        self.assertEqual(KSU_URL, KSU_REPO_CONFIG["repo_url"])
         self.assertIn('--resolve-only', tests)
-        self.assertIn('fetch --depth=1 https://github.com/SukiSU-Ultra/SukiSU-Ultra.git "$commit"', tests)
+        self.assertIn(f'fetch --depth=1 {KSU_REPO_CONFIG["repo_url"]} "$commit"', tests)
         self.assertIn('GKI_TEST_SOURCES="$GKI_WORKSPACE/sources.json"', tests)
         self.assertIn('SUKISU_TEST_SOURCE="$RUNNER_TEMP/sukisu-upstream"', tests)
         self.assertIn('GKI_TEST_NETWORK=1', tests)

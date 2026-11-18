@@ -496,41 +496,51 @@ class KernelBuilder:
         self.compiler_version = lines[0] if lines else "unavailable"
         logger.info("Preflight compiler: %s", self.compiler_version)
 
+    def _wire_kernelsu_driver(self, ksu_dir: Path):
+        """Link KernelSU/kernel into common/drivers and register it in Kbuild/Kconfig."""
+        ksu_kernel = ksu_dir / "kernel"
+        if not ksu_kernel.is_dir():
+            raise RuntimeError(f"KernelSU kernel directory not found: {ksu_kernel}")
+        drivers_dir = self.work_dir / "common/drivers"
+        drivers_makefile = drivers_dir / "Makefile"
+        drivers_kconfig = drivers_dir / "Kconfig"
+        self._require_path(drivers_dir, "kernel drivers directory")
+        self._require_path(drivers_makefile, "kernel drivers/Makefile")
+        self._require_path(drivers_kconfig, "kernel drivers/Kconfig")
+
+        symlink_path = drivers_dir / "kernelsu"
+        if symlink_path.is_symlink():
+            symlink_path.unlink()
+        rel_target = os.path.relpath(ksu_kernel, drivers_dir).replace("\\", "/")
+        os.symlink(rel_target, symlink_path, target_is_directory=True)
+
+        makefile_text = drivers_makefile.read_text(encoding="utf-8")
+        if "kernelsu" not in makefile_text:
+            suffix = "\nobj-$(CONFIG_KSU) += kernelsu/\n"
+            drivers_makefile.write_text(makefile_text.rstrip("\n") + "\n" + suffix,
+                                        encoding="utf-8", newline="\n")
+
+        kconfig_text = drivers_kconfig.read_text(encoding="utf-8")
+        kconfig_entry = 'source "drivers/kernelsu/Kconfig"'
+        if kconfig_entry not in kconfig_text:
+            lines = kconfig_text.splitlines()
+            end_indices = [idx for idx, line in enumerate(lines) if line.strip() == "endmenu"]
+            if not end_indices:
+                raise RuntimeError(f"Cannot insert KernelSU Kconfig: missing endmenu in {drivers_kconfig}")
+            lines.insert(end_indices[-1], kconfig_entry)
+            drivers_kconfig.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+
     def add_kernelsu(self):
         logger.info("=== Adding KernelSU ===")
         self._chdir(self.work_dir)
-        setup_ref = self.config.sukisu_commit
-        script_ref = setup_ref
-        raw_base = KSU_REPO_CONFIG["repo_url"].rstrip("/").removesuffix(".git").replace(
-            "https://github.com/", "https://raw.githubusercontent.com/", 1
-        )
-        setup_url = f"{raw_base}/{script_ref}/kernel/setup.sh"
-        setup_script = self.work_dir / "sukisu_setup.sh"
-        logger.info(f"SukiSU setup.sh from exact commit {script_ref}")
-        subprocess.run(["curl", "-fLSs", setup_url, "-o", str(setup_script)],
-                       cwd=self.work_dir, env=self.env, check=True)
-        # The GKI integration lives on the upstream `builtin` branch, which
-        # carries the KernelSU-side SUSFS support natively (Kconfig menu,
-        # reboot dispatch, setuid/selinux hooks). Passing the resolved builtin
-        # commit checks out that branch at the pinned revision.
-        subprocess.run(["bash", str(setup_script), setup_ref], cwd=self.work_dir,
-                       env=self.env, check=True)
-        self._require_path(self.work_dir / "common/drivers/kernelsu", "KernelSU driver symlink")
-        self._require_path(self.work_dir / "KernelSU", "KernelSU checkout")
-        # Upstream setup.sh reports success even when its requested checkout fails.
-        # Verify the actual revision instead of silently building the default branch.
         ksu_dir = self.work_dir / "KernelSU"
-        requested = subprocess.run(
-            ["git", "-C", str(ksu_dir), "rev-parse", "--verify", f"{setup_ref}^{{commit}}"],
-            capture_output=True, text=True, check=True,
-        ).stdout.strip()
-        actual = subprocess.run(
-            ["git", "-C", str(ksu_dir), "rev-parse", "HEAD"],
-            capture_output=True, text=True, check=True,
-        ).stdout.strip()
-        if actual != requested:
-            raise RuntimeError(f"SukiSU checkout mismatch: requested {requested}, got {actual}")
-        self._verified_checkouts[ksu_dir] = actual
+        # Clone directly from KSU_REPO_CONFIG at the resolved commit rather than
+        # running upstream setup.sh, which hardcodes an obsolete GitHub URL and
+        # runs `git pull` on detached checkouts.
+        self._clone_source("SukiSU", ksu_dir, KSU_REPO_CONFIG["repo_url"], self.config.sukisu_commit)
+        self._wire_kernelsu_driver(ksu_dir)
+        self._require_path(self.work_dir / "common/drivers/kernelsu", "KernelSU driver symlink")
+        self._require_path(ksu_dir, "KernelSU checkout")
         uapi = self._read_ksu_uapi_version()
         logger.info("SukiSU kernel UAPI: %s; the manager must use the same UAPI",
                     uapi if uapi is not None else "unset")
