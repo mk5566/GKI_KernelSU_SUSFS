@@ -226,6 +226,17 @@ class ModeTests(unittest.TestCase):
         self.assertIn('GKI_TEST_NETWORK=1', tests)
         self.assertIn('--sources "$GKI_WORKSPACE/sources.json"', compile_step)
 
+    def test_workflow_protects_hosted_runner_resources_during_lto(self):
+        text = (REPO_ROOT / ".github/workflows/kernel-build.yml").read_text(encoding="utf-8")
+        self.assertIn("/usr/local/lib/android", text)
+        self.assertIn("systemctl stop systemd-oomd", text)
+        self.assertIn("modprobe zram", text)
+        self.assertIn("swapon -p 100", text)
+        self.assertIn("swapon -p 10", text)
+        self.assertNotRegex(text, r"vm\.swappiness=10\b")
+        self.assertIn("nice -n 10 ionice -c 2 -n 7", text)
+        self.assertIn('MALLOC_ARENA_MAX: "2"', text)
+
     def test_defconfig_is_bbrv3_lz4_and_no_kpm(self):
         with tempfile.TemporaryDirectory() as d:
             builder = KernelBuilder(BuildConfig(), d)
