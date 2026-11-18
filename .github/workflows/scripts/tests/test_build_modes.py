@@ -236,6 +236,7 @@ class ModeTests(unittest.TestCase):
         self.assertNotRegex(text, r"vm\.swappiness=10\b")
         self.assertIn("nice -n 10 ionice -c 2 -n 7", text)
         self.assertIn('MALLOC_ARENA_MAX: "2"', text)
+        self.assertIn("sudo install -d -o", text)
 
     def test_defconfig_is_bbrv3_lz4_and_no_kpm(self):
         with tempfile.TemporaryDirectory() as d:

@@ -116,7 +116,7 @@ jobs:
           fi
 
           if [ -d /mnt ] && [ "$(df -BG --output=avail /mnt | tail -1 | tr -dc '0-9')" -ge 10 ]; then
-            mkdir -p /mnt/gki-tmp
+            sudo install -d -o "$(id -u)" -g "$(id -g)" -m 1777 /mnt/gki-tmp
             echo "TMPDIR=/mnt/gki-tmp" >> "$GITHUB_ENV"
           fi
 
