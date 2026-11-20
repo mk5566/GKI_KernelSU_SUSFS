@@ -36,17 +36,27 @@ case "${1:-}" in
       sudo systemctl stop systemd-oomd || true
     fi
 
-    # Prefer compressed in-RAM zram swap (priority 100) so LTO/DWARF pages
-    # compress at RAM bandwidth instead of saturating disk IOPS.
+    # Protect the Actions runner, VM agent, and system logging from kernel OOM
+    # kill so memory exhaustion terminates the build step rather than severing
+    # runner communication with GitHub.
+    for proc_pattern in 'Runner\.Listener' 'Runner\.Worker' 'waagent' 'WALinuxAgent' 'systemd-journald'; do
+      for pid in $(pgrep -f "$proc_pattern" 2>/dev/null || true); do
+        echo -900 | sudo tee "/proc/$pid/oom_score_adj" >/dev/null 2>&1 || true
+      done
+    done
+
+    # Cap compressed in-RAM zram swap at 1/4 RAM (max 4 GiB, prefer low-CPU lz4)
+    # so LTO keeps maximum physical RAM for its active working set and runner
+    # processes without CPU starvation on zstd compression.
     zram_active=0
     if sudo modprobe zram 2>/dev/null; then
       mem_kb="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
-      zram_bytes="$(( mem_kb * 1024 * 3 / 4 ))"
-      max_zram="$(( 12 * 1024 * 1024 * 1024 ))"
+      zram_bytes="$(( mem_kb * 1024 / 4 ))"
+      max_zram="$(( 4 * 1024 * 1024 * 1024 ))"
       if [ "$zram_bytes" -gt "$max_zram" ]; then
         zram_bytes="$max_zram"
       fi
-      zram_dev="$(sudo zramctl --find --size "$zram_bytes" --algorithm zstd 2>/dev/null || sudo zramctl --find --size "$zram_bytes" --algorithm lz4 2>/dev/null || true)"
+      zram_dev="$(sudo zramctl --find --size "$zram_bytes" --algorithm lz4 2>/dev/null || sudo zramctl --find --size "$zram_bytes" --algorithm zstd 2>/dev/null || true)"
       if [ -n "$zram_dev" ]; then
         sudo mkswap "$zram_dev"
         sudo swapon -p 100 "$zram_dev"
@@ -63,14 +73,17 @@ case "${1:-}" in
     root_avail_g="$(df -BG --output=avail / | tail -1 | tr -dc '0-9')"
 
     swap_size="16G"
-    if [ "${mnt_avail_g:-0}" -ge 18 ]; then
+    if [ "${mnt_avail_g:-0}" -ge 32 ]; then
+      swap_path="/mnt/gki-link.swap"
+      swap_size="20G"
+    elif [ "${mnt_avail_g:-0}" -ge 18 ]; then
       swap_path="/mnt/gki-link.swap"
     elif [ "${mnt_avail_g:-0}" -ge 14 ]; then
       swap_path="/mnt/gki-link.swap"
       swap_size="12G"
     else
       swap_path="/tmp/gki-link.swap"
-      if [ "${root_avail_g:-0}" -lt 48 ]; then
+      if [ "${root_avail_g:-0}" -lt 54 ]; then
         swap_size="12G"
       fi
     fi
@@ -84,15 +97,15 @@ case "${1:-}" in
     sudo mkswap "$swap_path"
     sudo swapon -p 10 "$swap_path"
 
-    # Keep runner/system executable pages in RAM instead of thrashing file
-    # cache with low swappiness during LTO.
+    # Avoid aggressively swapping out idle runner/system pages (swappiness=100)
+    # while still allowing cold LTO allocations to page out under pressure.
     if [ "$zram_active" -eq 1 ]; then
-      sudo sysctl -w vm.swappiness=100 vm.page-cluster=0
+      sudo sysctl -w vm.swappiness=20 vm.page-cluster=0
     else
-      sudo sysctl -w vm.swappiness=60
+      sudo sysctl -w vm.swappiness=20
     fi
     if [ "$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)" -ge 4194304 ]; then
-      sudo sysctl -w vm.min_free_kbytes=131072
+      sudo sysctl -w vm.min_free_kbytes=65536
     fi
 
     if [ -d /mnt ] && [ "$(df -BG --output=avail /mnt | tail -1 | tr -dc '0-9')" -ge 10 ]; then
