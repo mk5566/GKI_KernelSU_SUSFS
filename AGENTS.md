@@ -71,7 +71,7 @@ of the selected certified build manifest. Python/runner major versions are
 reviewed host choices, not kernel compiler substitutions. Do not import every
 patch in SukiSU_patch; only the documented LZ4KD source slice is selected.
 
-The SukiSU source now uses the canonical Nova repository and manager package.
-Read the actual checked-out UAPI; do not spoof it or assume an older manager is
-compatible. The static observations in `docs/UPSTREAM_STATUS.md` are review
-notes, not a generated lock or proof that a kernel has compiled.
+The SukiSU source uses `https://git.zako.shirkneko.top:20004/shirkneko/SukiSU.git`
+(`builtin` branch). Read the actual checked-out UAPI; do not spoof it or assume
+an older manager is compatible. The static observations in `docs/UPSTREAM_STATUS.md`
+are review notes, not a generated lock or proof that a kernel has compiled.

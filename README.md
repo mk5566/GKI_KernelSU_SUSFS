@@ -31,9 +31,9 @@ same SukiSU **`builtin` branch HEAD**, then pin its exact commit for that run.
 These labels do not currently select a stable release versus a development
 branch. Manager compatibility requires the kernel's actual UAPI version, not
 merely a matching channel label. The build records that UAPI in `BUILD_INFO.md`.
-The current canonical source is **SukiSU-Nova/SukiSU-Nova**, `builtin`, not the
-old forge URL. The observed source uses manager package `com.sukisu.nova` and
-UAPI 6; do not assume an older Ultra manager is compatible with a new kernel.
+The configured source is `https://git.zako.shirkneko.top:20004/shirkneko/SukiSU.git`
+(`builtin` branch), which declares kernel UAPI 6; do not assume an older
+manager is compatible with a new kernel without checking the recorded UAPI.
 
 Successful runs upload `boot.img` and `AnyKernel3.zip`, plus a separate
 `kernel-evidence-RUN_ID-RUN_ATTEMPT` bundle. Artifact names include the run attempt

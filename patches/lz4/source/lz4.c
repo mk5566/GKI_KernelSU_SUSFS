@@ -2599,8 +2599,8 @@ int LZ4_decompress_fast(const char* source, char* dest, int originalSize)
 
 /*===== Instantiate a few more decoding cases, used more than once. =====*/
 
-LZ4_FORCE_O2 /* Exported, an obsolete API function. */
-int LZ4_decompress_safe_withPrefix64k(const char* source, char* dest, int compressedSize, int maxOutputSize)
+LZ4_FORCE_O2 /* Internal linkage: keep private from exported GKI lib/lz4 symbols. */
+static __maybe_unused int LZ4_decompress_safe_withPrefix64k(const char* source, char* dest, int compressedSize, int maxOutputSize)
 {
     return LZ4_decompress_generic(source, dest, compressedSize, maxOutputSize,
                                   decode_full_block, withPrefix64k,
@@ -2617,7 +2617,7 @@ static int LZ4_decompress_safe_partial_withPrefix64k(const char* source, char* d
 }
 
 /* Another obsolete API function, paired with the previous one. */
-int LZ4_decompress_fast_withPrefix64k(const char* source, char* dest, int originalSize)
+static __maybe_unused int LZ4_decompress_fast_withPrefix64k(const char* source, char* dest, int originalSize)
 {
     return LZ4_decompress_unsafe_generic(
                 (const BYTE*)source, (BYTE*)dest, originalSize,
@@ -2893,27 +2893,27 @@ int LZ4_decompress_fast_usingDict(const char* source, char* dest, int originalSi
 *  Obsolete Functions
 ***************************************************/
 /* obsolete compression functions */
-int LZ4_compress_limitedOutput(const char* source, char* dest, int inputSize, int maxOutputSize)
+static __maybe_unused int LZ4_compress_limitedOutput(const char* source, char* dest, int inputSize, int maxOutputSize)
 {
     return LZ4_compress_default(source, dest, inputSize, maxOutputSize);
 }
-int LZ4_compress(const char* src, char* dest, int srcSize)
+static __maybe_unused int LZ4_compress(const char* src, char* dest, int srcSize)
 {
     return LZ4_compress_default(src, dest, srcSize, LZ4_compressBound(srcSize));
 }
-int LZ4_compress_limitedOutput_withState (void* state, const char* src, char* dst, int srcSize, int dstSize)
+static __maybe_unused int LZ4_compress_limitedOutput_withState (void* state, const char* src, char* dst, int srcSize, int dstSize)
 {
     return LZ4_compress_fast_extState(state, src, dst, srcSize, dstSize, 1);
 }
-int LZ4_compress_withState (void* state, const char* src, char* dst, int srcSize)
+static __maybe_unused int LZ4_compress_withState (void* state, const char* src, char* dst, int srcSize)
 {
     return LZ4_compress_fast_extState(state, src, dst, srcSize, LZ4_compressBound(srcSize), 1);
 }
-int LZ4_compress_limitedOutput_continue (LZ4_stream_t* LZ4_stream, const char* src, char* dst, int srcSize, int dstCapacity)
+static __maybe_unused int LZ4_compress_limitedOutput_continue (LZ4_stream_t* LZ4_stream, const char* src, char* dst, int srcSize, int dstCapacity)
 {
     return LZ4_compress_fast_continue(LZ4_stream, src, dst, srcSize, dstCapacity, 1);
 }
-int LZ4_compress_continue (LZ4_stream_t* LZ4_stream, const char* source, char* dest, int inputSize)
+static __maybe_unused int LZ4_compress_continue (LZ4_stream_t* LZ4_stream, const char* source, char* dest, int inputSize)
 {
     return LZ4_compress_fast_continue(LZ4_stream, source, dest, inputSize, LZ4_compressBound(inputSize), 1);
 }
@@ -2924,20 +2924,20 @@ They are only provided here for compatibility with older user programs.
 - LZ4_uncompress is totally equivalent to LZ4_decompress_fast
 - LZ4_uncompress_unknownOutputSize is totally equivalent to LZ4_decompress_safe
 */
-int LZ4_uncompress (const char* source, char* dest, int outputSize)
+static __maybe_unused int LZ4_uncompress (const char* source, char* dest, int outputSize)
 {
     return LZ4_decompress_fast(source, dest, outputSize);
 }
-int LZ4_uncompress_unknownOutputSize (const char* source, char* dest, int isize, int maxOutputSize)
+static __maybe_unused int LZ4_uncompress_unknownOutputSize (const char* source, char* dest, int isize, int maxOutputSize)
 {
     return LZ4_decompress_safe(source, dest, isize, maxOutputSize);
 }
 
 /* Obsolete Streaming functions */
 
-int LZ4_sizeofStreamState(void) { return sizeof(LZ4_stream_t); }
+static __maybe_unused int LZ4_sizeofStreamState(void) { return sizeof(LZ4_stream_t); }
 
-int LZ4_resetStreamState(void* state, char* inputBuffer)
+static __maybe_unused int LZ4_resetStreamState(void* state, char* inputBuffer)
 {
     (void)inputBuffer;
     LZ4_resetStream((LZ4_stream_t*)state);
@@ -2945,14 +2945,14 @@ int LZ4_resetStreamState(void* state, char* inputBuffer)
 }
 
 #if !defined(LZ4_STATIC_LINKING_ONLY_DISABLE_MEMORY_ALLOCATION)
-void* LZ4_create (char* inputBuffer)
+static __maybe_unused void* LZ4_create (char* inputBuffer)
 {
     (void)inputBuffer;
     return LZ4_createStream();
 }
 #endif
 
-char* LZ4_slideInputBuffer (void* state)
+static __maybe_unused char* LZ4_slideInputBuffer (void* state)
 {
     /* avoid const char * -> char * conversion warning */
     return (char *)(uptrval)((LZ4_stream_t*)state)->internal_donotuse.dictionary;

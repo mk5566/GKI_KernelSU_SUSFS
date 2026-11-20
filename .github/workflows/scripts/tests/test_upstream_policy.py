@@ -282,12 +282,12 @@ class SelectionAndWorkflowTests(unittest.TestCase):
         text = (REPO_ROOT / ".github/workflows/kernel-build.yml").read_text()
         self.assertLess(text.index("- name: Resolve current dependencies once"),
                         text.index("- name: Install kernel build dependencies"))
-        self.assertNotIn("zako.shirkneko", text)
+        self.assertIn('from config import KSU_REPO_CONFIG', text)
         self.assertIn("check-latest: true", text)
         self.assertIn("python-version: '3.12'", text)
 
     def test_supported_sources_use_canonical_urls_without_changing_family(self):
-        self.assertEqual(KSU_REPO_CONFIG, {"repo_url": "https://github.com/SukiSU-Nova/SukiSU-Nova.git", "branch": "builtin"})
+        self.assertEqual(KSU_REPO_CONFIG, {"repo_url": "https://git.zako.shirkneko.top:20004/shirkneko/SukiSU.git", "branch": "builtin"})
         self.assertEqual(SUKISU_PATCH_REPO_CONFIG["repo_url"], "https://github.com/SukiSU-Nova/SukiSU_patch.git")
         self.assertEqual(ANYKERNEL_CONFIG, {"repo_url": "https://github.com/WildKernels/AnyKernel3.git", "branch": "gki-2.0"})
         self.assertEqual(SUSFS_REPO_CONFIG["branch"], "gki-android13-5.15")

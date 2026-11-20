@@ -25,7 +25,7 @@ again, records exact revisions, and stops on unsupported port drift.
 | Component | Current observation | Selection used by the builder |
 | --- | --- | --- |
 | Certified GKI | `android13-5.15-2026-09_r5`, kernel `5.15.211`, release date 2026-11-17, build `16941857`, commit `538eb7b24b584a0c2d880f744587b35517e837e3` | Newest published certified monthly tag/respin for Android 13 5.15; not an arbitrary November branch or uncertified point tag |
-| SukiSU | Canonical `SukiSU-Nova/SukiSU-Nova`, `builtin`; observed `4bec532dd447e2852aa8932afa768255350c103a` (2026-11-16) | Query supported branch once, fetch the exact resulting commit |
+| SukiSU | `https://git.zako.shirkneko.top:20004/shirkneko/SukiSU.git`, `builtin`; observed `8c6c52a03ea7184444925ed56476440649701d5a` (2026-11-20) | Query supported branch once, fetch the exact resulting commit |
 | SUSFS | `simonpunk/susfs4ksu`, `gki-android13-5.15`; observed `c1d1da42b74771944207ec45aaceff9c57e84985` (2026-11-15); header reports v2.4.0 | Only the Android 13 / 5.15 branch and its matching primary patch |
 | LZ4 | Latest stable v1.11.1, commit `aa4647fad575d01a874aaaadcdbe8e6a40e072f5` | Retain private reviewed port; require latest release label, peeled commit, and both original upstream source hashes to match |
 | BBRv3 | Official `google/bbr` v3 endpoint resolves to `90210de4b779d40496dee0b89081780eeddf2a60` | Retain reviewed 5.15 adaptation; require a live v3 HEAD match at resolution |
@@ -43,9 +43,7 @@ it is not a release-tag selector. The `dev` label has the same source selector.
 
 - [AOSP published certified releases](https://source.android.com/docs/core/architecture/kernel/gki-android13-5_15-release-builds)
 - [Selected GKI tag](https://android.googlesource.com/kernel/common/+/refs/tags/android13-5.15-2026-09_r5)
-- [SukiSU's own current setup script](https://raw.githubusercontent.com/SukiSU-Nova/SukiSU-Nova/builtin/kernel/setup.sh)
-- [SukiSU builtin head](https://github.com/SukiSU-Nova/SukiSU-Nova/commit/builtin.patch)
-- [Observed SukiSU UAPI header](https://raw.githubusercontent.com/SukiSU-Nova/SukiSU-Nova/4bec532dd447e2852aa8932afa768255350c103a/kernel/include/uapi/supercall.h)
+- [SukiSU builtin repository](https://git.zako.shirkneko.top:20004/shirkneko/SukiSU.git) (`builtin` branch)
 - [SUSFS branch API](https://gitlab.com/api/v4/projects/simonpunk%2Fsusfs4ksu/repository/branches/gki-android13-5.15)
 - [Observed SUSFS version header](https://gitlab.com/simonpunk/susfs4ksu/-/raw/c1d1da42b74771944207ec45aaceff9c57e84985/kernel_patches/include/linux/susfs.h)
 - [Official LZ4 release](https://github.com/lz4/lz4/releases/tag/v1.11.1)
@@ -89,9 +87,9 @@ it is not a release-tag selector. The `dev` label has the same source selector.
 
 ## Compatibility boundaries and migration notes
 
-**SukiSU migration:** the observed Nova source changes its manager package to
-`com.sukisu.nova` and declares kernel UAPI 6. The builder reads the actual checked
-out header, not a hardcoded version. Do not assume an older Ultra manager's
+**SukiSU upstream:** the configured `https://git.zako.shirkneko.top:20004/shirkneko/SukiSU.git`
+`builtin` source declares kernel UAPI 6. The builder reads the actual checked
+out header, not a hardcoded version. Do not assume an older manager's
 package/signature/UAPI is accepted. No manager installation or phone operation
 is performed by this repository update.
 
