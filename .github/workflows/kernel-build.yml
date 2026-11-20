@@ -23,122 +23,47 @@ jobs:
     timeout-minutes: 180
     env:
       GKI_WORKSPACE: /tmp/gki-build
+      PYTHONUTF8: "1"
+      GIT_TERMINAL_PROMPT: "0"
       INPUT_SUKISU_CHANNEL: ${{ inputs.sukisu_channel }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          python-version: '3.x'
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
           check-latest: true
-      - name: Install kernel build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential git curl zip unzip xz-utils openssl rsync bc bison flex \
-            libssl-dev libelf-dev lz4 kmod zstd cpio
-          sudo apt-get clean
-          sudo rm -rf \
-            /var/lib/apt/lists/* \
-            /usr/local/lib/android \
-            /opt/ghc \
-            /usr/local/.ghcup \
-            /usr/share/swift \
-            /usr/share/dotnet \
-            /opt/hostedtoolcache/CodeQL \
-            /usr/local/share/boost \
-            /usr/local/share/chromium
-          if command -v docker >/dev/null 2>&1; then
-            sudo docker system prune -af --volumes || true
-          fi
-          df -h / /tmp /mnt || true
-      - name: Reserve memory for full LTO with GKI BTF metadata
+      - name: Run fast offline regression checks
         shell: bash
         run: |
-          set -euo pipefail
-          # Prevent Ubuntu 24.04 systemd-oomd from killing the runner service cgroup
-          # on memory/swap PSI pressure during full LTO linking.
-          if systemctl is-active --quiet systemd-oomd 2>/dev/null; then
-            sudo systemctl stop systemd-oomd || true
-          fi
-
-          # Prefer compressed in-RAM zram swap (priority 100) so LTO/DWARF pages
-          # compress at RAM bandwidth instead of saturating disk IOPS.
-          zram_active=0
-          if sudo modprobe zram 2>/dev/null; then
-            mem_kb="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
-            zram_bytes="$(( mem_kb * 1024 * 3 / 4 ))"
-            max_zram="$(( 12 * 1024 * 1024 * 1024 ))"
-            if [ "$zram_bytes" -gt "$max_zram" ]; then
-              zram_bytes="$max_zram"
-            fi
-            zram_dev="$(sudo zramctl --find --size "$zram_bytes" --algorithm zstd 2>/dev/null || sudo zramctl --find --size "$zram_bytes" --algorithm lz4 2>/dev/null || true)"
-            if [ -n "$zram_dev" ]; then
-              sudo mkswap "$zram_dev"
-              sudo swapon -p 100 "$zram_dev"
-              zram_active=1
-            fi
-          fi
-
-          # Provision backing disk swap (priority 10) on /mnt when space allows so /
-          # stays clear for GKI_WORKSPACE.
-          mnt_avail_g=0
-          if [ -d /mnt ]; then
-            mnt_avail_g="$(df -BG --output=avail /mnt | tail -1 | tr -dc '0-9')"
-          fi
-          root_avail_g="$(df -BG --output=avail / | tail -1 | tr -dc '0-9')"
-
-          swap_size="16G"
-          if [ "${mnt_avail_g:-0}" -ge 18 ]; then
-            swap_path="/mnt/gki-link.swap"
-          elif [ "${mnt_avail_g:-0}" -ge 14 ]; then
-            swap_path="/mnt/gki-link.swap"
-            swap_size="12G"
-          else
-            swap_path="/tmp/gki-link.swap"
-            if [ "${root_avail_g:-0}" -lt 48 ]; then
-              swap_size="12G"
-            fi
-          fi
-          sudo fallocate -l "$swap_size" "$swap_path"
-          sudo chmod 600 "$swap_path"
-          sudo mkswap "$swap_path"
-          sudo swapon -p 10 "$swap_path"
-
-          # Keep runner/system executable pages in RAM instead of thrashing file
-          # cache with low swappiness during LTO.
-          if [ "$zram_active" -eq 1 ]; then
-            sudo sysctl -w vm.swappiness=100 vm.page-cluster=0
-          else
-            sudo sysctl -w vm.swappiness=60
-          fi
-          if [ "$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)" -ge 4194304 ]; then
-            sudo sysctl -w vm.min_free_kbytes=131072
-          fi
-
-          if [ -d /mnt ] && [ "$(df -BG --output=avail /mnt | tail -1 | tr -dc '0-9')" -ge 10 ]; then
-            sudo install -d -o "$(id -u)" -g "$(id -g)" -m 1777 /mnt/gki-tmp
-            echo "TMPDIR=/mnt/gki-tmp" >> "$GITHUB_ENV"
-          fi
-
-          df -h / /tmp /mnt || true
-          free -h
-          swapon --show || true
+          python3 -X utf8 -m unittest discover -s .github/workflows/scripts/tests -q
+          bash -n .github/workflows/scripts/ci_runner.sh
+          git diff --check
       - name: Resolve current dependencies once
         shell: bash
         run: |
           set -euo pipefail
           python3 .github/workflows/scripts/build.py --resolve-only \
             --sukisu-channel "$INPUT_SUKISU_CHANNEL" --workspace "$GKI_WORKSPACE"
+      - name: Install kernel build dependencies
+        shell: bash
+        run: bash .github/workflows/scripts/ci_runner.sh dependencies
+      - name: Reserve memory for full LTO with GKI BTF metadata
+        shell: bash
+        run: bash .github/workflows/scripts/ci_runner.sh memory
       - name: Run builder tests
         shell: bash
         run: |
           set -euo pipefail
           commit="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sukisu_commit"])' "$GKI_WORKSPACE/sources.json")"
+          repo_url="$(python3 -c 'import sys; sys.path.insert(0,".github/workflows/scripts"); from config import KSU_REPO_CONFIG; print(KSU_REPO_CONFIG["repo_url"])')"
           git init "$RUNNER_TEMP/sukisu-upstream"
-          git -C "$RUNNER_TEMP/sukisu-upstream" fetch --depth=1 https://git.zako.shirkneko.top:20004/shirkneko/SukiSU.git "$commit"
+          git -C "$RUNNER_TEMP/sukisu-upstream" fetch --depth=1 "$repo_url" "$commit"
           git -C "$RUNNER_TEMP/sukisu-upstream" checkout --detach FETCH_HEAD
+          test "$(git -C "$RUNNER_TEMP/sukisu-upstream" rev-parse HEAD)" = "$commit"
           GKI_TEST_NETWORK=1 GKI_TEST_SOURCES="$GKI_WORKSPACE/sources.json" \
-            SUKISU_TEST_SOURCE="$RUNNER_TEMP/sukisu-upstream" \
+            GKI_REQUIRE_NATIVE=1 GKI_TEST_SANITIZERS=1 SUKISU_TEST_SOURCE="$RUNNER_TEMP/sukisu-upstream" \
             python3 -m unittest discover -s .github/workflows/scripts/tests -v
       - name: Integrate the resolved source stack and compile
         shell: bash
@@ -163,33 +88,45 @@ jobs:
           name="$(tr -d '\r\n' < "$GKI_WORKSPACE/artifact_stem.txt")"
           test -n "$name"
           echo "name=$name" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: ${{ steps.publish.outputs.name }}
+          name: ${{ steps.publish.outputs.name }}-attempt-${{ github.run_attempt }}
+          compression-level: 1
           path: |
             artifacts/boot.img
             artifacts/AnyKernel3.zip
           if-no-files-found: error
       - name: Upload successful build evidence
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: kernel-evidence-${{ github.run_id }}
-          path: /tmp/gki-build/evidence/
+          name: kernel-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.GKI_WORKSPACE }}/evidence/
           include-hidden-files: true
           if-no-files-found: error
       - name: Summarize verified build
         run: cat "$GKI_WORKSPACE/evidence/BUILD_INFO.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Record runner resource diagnostics
+        if: always()
+        shell: bash
+        run: |
+          { df -h; free -h; swapon --show; } > "$RUNNER_TEMP/gki-runner-resources.txt" 2>&1
       - name: Upload failure diagnostics
         # Paths follow GKI_WORKSPACE; the build subdirectory is the builder's
         # configured family name (scripts/config.py ANDROID_FAMILY).
-        if: failure()
-        uses: actions/upload-artifact@v7
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: kernel-failed-${{ github.run_id }}
+          name: kernel-failed-${{ github.run_id }}-${{ github.run_attempt }}
           include-hidden-files: true
           path: |
             ${{ env.GKI_WORKSPACE }}/BUILD_INFO.md
+            ${{ runner.temp }}/gki-runner-resources.txt
             ${{ env.GKI_WORKSPACE }}/build.log
+            ${{ env.GKI_WORKSPACE }}/preflight.log
+            ${{ env.GKI_WORKSPACE }}/precompile.config
+            ${{ env.GKI_WORKSPACE }}/CONFIG_DIFF.json
+            ${{ env.GKI_WORKSPACE }}/PATCH_REPORT.json
+            ${{ env.GKI_WORKSPACE }}/BUILD_TIMINGS.json
             ${{ env.GKI_WORKSPACE }}/sources.json
             ${{ env.GKI_WORKSPACE }}/GKI-reference.symvers
             ${{ env.GKI_WORKSPACE }}/CONFIG_REPORT.json

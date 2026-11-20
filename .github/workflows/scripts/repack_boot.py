@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from integrity import sha256
 
 
 def repack_boot(base, image, output, tools):
@@ -27,10 +28,10 @@ def repack_boot(base, image, output, tools):
         subprocess.run([sys.executable, str(tools / "unpack_bootimg.py"),
                         "--boot_img", str(output), "--out", str(verify)],
                        check=True, capture_output=True)
-        if (verify / "kernel").read_bytes() != image.read_bytes():
+        if sha256(verify / "kernel") != sha256(image):
             raise RuntimeError("Repacked kernel differs from the compiled Image")
         ramdisk = Path(temporary) / "ramdisk"
-        if ramdisk.exists() and (verify / "ramdisk").read_bytes() != ramdisk.read_bytes():
+        if ramdisk.exists() and sha256(verify / "ramdisk") != sha256(ramdisk):
             raise RuntimeError("Repacking changed the device ramdisk")
     return output
 

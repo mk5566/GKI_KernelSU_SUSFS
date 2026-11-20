@@ -107,13 +107,24 @@ class CertifiedArtifactTests(unittest.TestCase):
                 self.assertEqual(reference.read_text(encoding="utf-8"), reference_text)
                 request.assert_called_once_with(self.symvers_url, timeout=60)
 
+    def test_certified_export_policy_drift_is_fatal_even_with_matching_crc(self):
+        reference_text = "0x12345678 alloc_pages vmlinux EXPORT_SYMBOL\n"
+        self.responses[self.symvers_url] = reference_text.encode()
+        with tempfile.TemporaryDirectory() as temp, patch("urllib.request.urlopen", side_effect=self.urlopen):
+            built, reference = Path(temp)/"built.symvers", Path(temp)/"reference.symvers"
+            for changed in (reference_text.replace("EXPORT_SYMBOL", "EXPORT_SYMBOL_GPL"),
+                            reference_text.rstrip() + " VENDOR_PRIVATE\n"):
+                built.write_text(changed)
+                with self.subTest(row=changed), self.assertRaisesRegex(RuntimeError, "metadata mismatch"):
+                    verify_gki_abi(self.build_id, built, reference)
+
     def test_invalid_or_unavailable_reference_is_not_replaced_or_skipped(self):
         with tempfile.TemporaryDirectory() as temp:
             built = Path(temp) / "built.symvers"
             built.write_text("0x12345678\talloc_pages\tvmlinux\tEXPORT_SYMBOL\n", encoding="utf-8")
             reference = Path(temp) / "reference.symvers"
             with patch("urllib.request.urlopen", return_value=io.BytesIO(b"<html>Login</html>")):
-                with self.assertRaisesRegex(RuntimeError, "Empty GKI symbol"):
+                with self.assertRaisesRegex(RuntimeError, "Malformed GKI symbol"):
                     verify_gki_abi(self.build_id, built, reference)
             error = urllib.error.HTTPError(self.symvers_url, 501, "Not implemented", {}, io.BytesIO())
             self.addCleanup(error.close)

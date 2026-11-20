@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -21,6 +22,7 @@ from target import (GKITarget, KSU_URL, choose_gki_tag, choose_manifest_branch,
                   peeled_commit, resolve_sukisu, resolve_susfs, resolve_sukisu_patch,
                   certified_releases)
 from abi import compare_symvers, read_symvers
+from upstream_policy import expected_reviewed_ports, expected_actions
 
 
 class ResolverTests(unittest.TestCase):
@@ -29,7 +31,7 @@ class ResolverTests(unittest.TestCase):
                             ("resolve_sukisu_patch", "2" * 40),
                             ("resolve_anykernel", "3" * 40),
                             ("resolve_branch", "4" * 40),
-                            ("check_reviewed_upstreams", None)):
+                            ("check_reviewed_upstreams", {"reviewed_ports": expected_reviewed_ports(), "actions": expected_actions()})):
             mock = patch(f"build.{name}", return_value=value)
             mock.start()
             self.addCleanup(mock.stop)
@@ -211,7 +213,7 @@ class ModeTests(unittest.TestCase):
         self.assertIn("artifacts/boot.img", text)
         self.assertIn("artifacts/AnyKernel3.zip", text)
         self.assertIn("Upload successful build evidence", text)
-        self.assertIn("path: /tmp/gki-build/evidence/", text)
+        self.assertIn("path: ${{ env.GKI_WORKSPACE }}/evidence/", text)
         self.assertIn("include-hidden-files: true", text)
         self.assertNotIn("  push:", text)
         self.assertNotIn("  schedule:", text)
@@ -221,7 +223,9 @@ class ModeTests(unittest.TestCase):
         tests, compile_step = text.split("- name: Integrate the resolved source stack and compile", 1)
         self.assertEqual(KSU_URL, KSU_REPO_CONFIG["repo_url"])
         self.assertIn('--resolve-only', tests)
-        self.assertIn(f'fetch --depth=1 {KSU_REPO_CONFIG["repo_url"]} "$commit"', tests)
+        self.assertIn('from config import KSU_REPO_CONFIG', tests)
+        self.assertIn('fetch --depth=1 "$repo_url" "$commit"', tests)
+        self.assertIn('rev-parse HEAD)" = "$commit"', tests)
         self.assertIn('GKI_TEST_SOURCES="$GKI_WORKSPACE/sources.json"', tests)
         self.assertIn('SUKISU_TEST_SOURCE="$RUNNER_TEMP/sukisu-upstream"', tests)
         self.assertIn('GKI_TEST_NETWORK=1', tests)
@@ -229,6 +233,7 @@ class ModeTests(unittest.TestCase):
 
     def test_workflow_protects_hosted_runner_resources_during_lto(self):
         text = (REPO_ROOT / ".github/workflows/kernel-build.yml").read_text(encoding="utf-8")
+        text += (REPO_ROOT / ".github/workflows/scripts/ci_runner.sh").read_text(encoding="utf-8")
         self.assertIn("/usr/local/lib/android", text)
         self.assertIn("systemctl stop systemd-oomd", text)
         self.assertIn("modprobe zram", text)
@@ -355,19 +360,24 @@ class ModeTests(unittest.TestCase):
             self.assertEqual(builder.env["PATH"].split(os.pathsep)[0], str(clang_bin))
 
     def test_create_anykernel_zips_copies_image_directly(self):
-        with tempfile.TemporaryDirectory() as root:
+        with tempfile.TemporaryDirectory(prefix="gki space '") as root:
             builder = KernelBuilder(BuildConfig(), root)
             image_src = builder._kernel_image_path()
             image_src.parent.mkdir(parents=True, exist_ok=True)
             image_src.write_bytes(b"dummy kernel image")
             builder.anykernel_dir.mkdir(parents=True, exist_ok=True)
-            (builder.workspace / "AnyKernel3.zip").touch()
-            with patch.object(builder, "_chdir"), patch.object(builder, "_run_cmd") as run_cmd:
+            (builder.anykernel_dir / "anykernel.sh").write_text("fixture")
+            previous = Path.cwd()
+            paths = builder.create_anykernel_zips()
+            self.assertEqual(Path.cwd(), previous)
+            with zipfile.ZipFile(paths[0]) as archive:
+                self.assertEqual(archive.read("Image"), image_src.read_bytes())
+                self.assertIn("anykernel.sh", archive.namelist())
+            self.assertFalse((builder.anykernel_dir / "Image").exists())
+            before = Path(paths[0]).read_bytes()
+            with self.assertRaisesRegex(RuntimeError, "stale"):
                 builder.create_anykernel_zips()
-                cp_calls = [c.args[0] for c in run_cmd.call_args_list if c.args[0].startswith("cp ")]
-                self.assertEqual(len(cp_calls), 1)
-                self.assertIn(f"cp {image_src} {builder.anykernel_dir}/Image", cp_calls)
-                self.assertFalse((builder.work_dir / "Image").exists())
+            self.assertEqual(Path(paths[0]).read_bytes(), before)
 
     def test_write_build_info_reuses_cached_compiler_version(self):
         with tempfile.TemporaryDirectory() as root:

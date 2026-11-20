@@ -1,6 +1,5 @@
 """Resolve the newest official android13-5.15 stable and the SukiSU channel."""
-import json
-import logging
+import hashlib
 import os
 import re
 import subprocess
@@ -10,7 +9,10 @@ import xml.etree.ElementTree as ET
 from abi import artifact_url
 from dataclasses import dataclass
 from config import (KSU_REPO_CONFIG, SUSFS_REPO_CONFIG, SUKISU_PATCH_REPO_CONFIG, ANYKERNEL_CONFIG,
-                    LZ4_RELEASE, BBR_REVISION)
+                    LZ4_RELEASE, LZ4_REVISION, LZ4_REPO_URL, LZ4_UPSTREAM_SHA256,
+                    BBR_REVISION, BBR_REPO_CONFIG, ACTION_PINS)
+from upstream_policy import (fetch_bytes, latest_release, expected_reviewed_ports,
+                             expected_actions, verify_workflow_pins)
 
 
 GKI_URL = "https://android.googlesource.com/kernel/common"
@@ -31,7 +33,10 @@ def parse_refs(output):
     refs = {}
     for line in output.splitlines():
         sha, ref = line.split("\t", 1)
-        refs[ref.removeprefix("refs/tags/")] = sha
+        key = ref.removeprefix("refs/tags/")
+        if key in refs and refs[key] != sha:
+            raise RuntimeError(f"Conflicting remote ref: {ref}")
+        refs[key] = sha
     return refs
 
 
@@ -81,6 +86,8 @@ def certified_releases(html):
         tag = re.search(r"gki-certified-boot-(android13-5\.15-\d{4}-\d{2}_r\d+)\.zip", row)
         build = re.search(r"ci\.android\.com/builds/submitted/(\d+)/kernel_aarch64/latest", row)
         if tag and build:
+            if tag[1] in releases and releases[tag[1]] != build[1]:
+                raise RuntimeError(f"Conflicting certified build IDs for {tag[1]}")
             releases[tag[1]] = build[1]
     if not releases:
         raise RuntimeError("AOSP release page contains no certified android13-5.15 releases")
@@ -140,34 +147,44 @@ def resolve_anykernel():
     return resolve_branch(ANYKERNEL_CONFIG)
 
 
-def check_reviewed_upstreams(strict=False):
-    """Check whether upstream ports have newer releases; warn by default so builds remain reliable."""
-    try:
-        bbr = resolve_branch({"repo_url": "https://github.com/google/bbr.git", "branch": "v3"})
-        request = urllib.request.Request(
-            "https://api.github.com/repos/lz4/lz4/releases/latest",
-            headers={"Accept": "application/vnd.github+json", "User-Agent": "gki-builder"})
-        with urllib.request.urlopen(request, timeout=30) as response:
-            release = json.load(response)
-        tag = release.get("tag_name", "")
-        if (release.get("draft") or release.get("prerelease")
-                or not re.fullmatch(r"v\d+\.\d+\.\d+", tag)):
-            if strict:
-                raise RuntimeError("Invalid upstream LZ4 stable release")
-            logging.warning("Invalid upstream LZ4 stable release payload: %s", tag)
-            return
-        if bbr != BBR_REVISION or tag != LZ4_RELEASE:
-            msg = (
-                f"Reviewed ports need updating: BBR {BBR_REVISION} -> {bbr}; "
-                f"LZ4 {LZ4_RELEASE} -> {tag}. Rebase and validate patches before building.")
-            if strict:
-                raise RuntimeError(msg)
-            logging.warning("%s (building with reviewed ports: BBR %s, LZ4 %s)",
-                            msg, BBR_REVISION, LZ4_RELEASE)
-    except Exception as exc:
-        if strict:
-            raise
-        logging.warning("Unable to check upstream port releases: %s", exc)
+def check_reviewed_upstreams(strict=True):
+    """Fail closed on unreviewed upstream drift; never import a newer port blindly.
+
+    Each successful fresh resolution proves freshness at observation time. An
+    existing source lock replays the same revisions without chasing moving refs.
+    The old warning-only API is deliberately no longer supported.
+    """
+    if strict is not True:
+        raise RuntimeError("Warning-only upstream checks are disabled; strict=True is mandatory")
+    verify_workflow_pins()
+    bbr = resolve_branch(BBR_REPO_CONFIG)
+    if bbr != BBR_REVISION:
+        raise RuntimeError(f"Reviewed BBR port is stale: {BBR_REVISION} -> {bbr}. "
+                           "Review/rebase the android13-5.15 port and revalidate KMI; no fallback.")
+    tag = latest_release("lz4/lz4")
+    if tag != LZ4_RELEASE:
+        raise RuntimeError(f"Reviewed LZ4 port is stale: {LZ4_RELEASE} -> {tag}. "
+                           "Review the private crypto port before building; no fallback.")
+    refs = parse_refs(_git("ls-remote", "--tags", LZ4_REPO_URL,
+                           f"refs/tags/{tag}", f"refs/tags/{tag}^{{}}"))
+    commit = peeled_commit(refs, tag)
+    if commit != LZ4_REVISION:
+        raise RuntimeError(f"LZ4 release tag moved or differs from reviewed commit: {commit}")
+    for path, expected in LZ4_UPSTREAM_SHA256.items():
+        url = f"https://raw.githubusercontent.com/lz4/lz4/{commit}/{path}"
+        actual = hashlib.sha256(fetch_bytes(url)).hexdigest()
+        if actual != expected:
+            raise RuntimeError(f"LZ4 upstream source hash mismatch: {path}: {actual} != {expected}")
+    for repo, (version, expected) in ACTION_PINS.items():
+        current = latest_release(repo)
+        if current != version:
+            raise RuntimeError(f"Reviewed action {repo} is stale: {version} -> {current}. "
+                               "Review the release and update the full SHA pin and ACTION_PINS together.")
+        refs = parse_refs(_git("ls-remote", "--tags", f"https://github.com/{repo}.git",
+                               f"refs/tags/{version}", f"refs/tags/{version}^{{}}"))
+        if peeled_commit(refs, version) != expected:
+            raise RuntimeError(f"Action release tag moved or pin mismatches upstream: {repo}@{version}")
+    return {"reviewed_ports": expected_reviewed_ports(), "actions": expected_actions()}
 
 
 def resolve_sukisu(channel):

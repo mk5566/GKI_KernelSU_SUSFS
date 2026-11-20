@@ -4,19 +4,25 @@ import subprocess
 import logging
 import re
 import sys
-import json
+import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Sequence
 from dataclasses import dataclass, field
 from config import (ANDROID_FAMILY, BuildConfig, KSU_REPO_CONFIG, SUSFS_REPO_CONFIG,
                    SUKISU_PATCH_REPO_CONFIG, ANYKERNEL_CONFIG, REPO_TOOL_CONFIG, REPO_ROOT,
                    REPO_SYNC_PROJECTS)
 from patch_plan import make_patch_plan
+from kernel_profile import KernelProfile
 from abi import verify_gki_abi
 from repack_boot import repack_boot
-from evidence import write_sources, collect_evidence, sha256
+from evidence import collect_evidence
+from source_lock import write_sources
+from upstream_policy import validate_upstream_status
+from integrity import sha256, atomic_json
+from build_runtime import ShellCommand, log_excerpt, validate_build_environment
+from config_checks import ConfigPolicy, config_delta, unquote_kconfig_string
 
 logger = logging.getLogger(__name__)
 
@@ -54,13 +60,6 @@ def apply_release_date_suffix(script, suffix):
     return script[:match.start()] + replacement + script[match.end():]
 
 
-def unquote_kconfig_string(value):
-    value = value.strip()
-    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
-        return value[1:-1]
-    return value
-
-
 def ensure_cmdline_tokens(cmdline, tokens):
     """Keep existing parameters and make each requested token appear once.
 
@@ -94,117 +93,11 @@ class BuildResult:
     success: bool
     config: BuildConfig
     message: str = ""
-    artifacts: list = field(default_factory=list)
-    build_time: Optional[float] = None
+    artifacts: list[str] = field(default_factory=list)
+    build_time: float | None = None
 
 
-class ShellCommand:
-    def __init__(self, cwd: Optional[str] = None, env: Optional[dict] = None):
-        self.cwd = cwd
-        self.env = env or os.environ.copy()
-
-    def run(self, cmd: str, check: bool = True, capture_output: bool = False,
-            shell: bool = True, timeout: Optional[int] = None) -> subprocess.CompletedProcess:
-        logger.info(f"Running: {cmd}")
-        try:
-            return subprocess.run(cmd, shell=shell, cwd=self.cwd, env=self.env,
-                                capture_output=capture_output, text=True, timeout=timeout, check=check)
-        except subprocess.CalledProcessError as e:
-            output = e.stderr or e.stdout or str(e)
-            logger.error(f"Command failed (exit {e.returncode}): {output}")
-            raise
-        except subprocess.TimeoutExpired:
-            logger.error(f"Command timed out: {cmd}")
-            raise
-
-
-class KernelBuilder:
-    KERNEL_CONFIG_UPDATES = {
-        "CONFIG_KSU": "y",
-        "CONFIG_KPROBES": "y",
-        "CONFIG_KRETPROBES": "y",
-        "CONFIG_HAVE_SYSCALL_TRACEPOINTS": "y",
-        "CONFIG_KSU_DEBUG": "n",
-        # Mount-only SUSFS on the upstream `builtin` branch, which carries the
-        # KernelSU-side integration natively. Only mount hiding is enabled;
-        # every other declared SUSFS sub-option is forced off in
-        # configure_kernel (see the declared-symbol scan below).
-        "CONFIG_KSU_SUSFS": "y",
-        "CONFIG_KSU_SUSFS_SUS_MOUNT": "y",
-        "CONFIG_KPM": "n",
-        "CONFIG_TMPFS_XATTR": "y",
-        "CONFIG_TMPFS_POSIX_ACL": "y",
-        "CONFIG_IP_NF_TARGET_TTL": "y",
-        "CONFIG_IP6_NF_TARGET_HL": "y",
-        "CONFIG_IP6_NF_MATCH_HL": "y",
-        "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE": "y",
-        "CONFIG_CC_OPTIMIZE_FOR_SIZE": None,
-        # Preserve certified DWARF/BTF defaults: BTF module metadata changes
-        # struct module and its transitive vendor symbol CRCs. It is not logging.
-    }
-
-    # BBRv3 is the default. Stock BBRv1 stays built in as the fallback.
-    # The KABI patch keeps icsk_ca_priv at 104 bytes so vendor modules still load.
-    NETWORK_CONFIG = {
-        "CONFIG_TCP_CONG_ADVANCED": "y",
-        "CONFIG_TCP_CONG_BBR": "y",
-        "CONFIG_TCP_CONG_BBR3": "y",
-        "CONFIG_DEFAULT_BBR3": "y",
-        "CONFIG_DEFAULT_BBR": "n",
-        "CONFIG_DEFAULT_CUBIC": "n",
-        "CONFIG_DEFAULT_TCP_CONG": '"bbr3"',
-        "CONFIG_NET_SCH_FQ": "y",
-    }
-
-    # android13-5.15 already builds MGLRU, lazy RCU, menu, and TEO. It has
-    # no cpuidle default-governor choice, and menu is rated above TEO, so
-    # the built-in command line selects TEO. Bootloader arguments stay
-    # appended through CONFIG_CMDLINE_EXTEND.
-    #
-    # Lazy RCU stays at the certified default. Turning it on requires
-    # rcu_nocbs=all, which offloads every CPU, including the boot CPU, while
-    # the offload threads are not created until early_initcall. That pair
-    # stalled fastboot boot and the bootloader returned to the flashed kernel.
-    RUNTIME_CONFIG = {
-        "CONFIG_LRU_GEN": "y",
-        "CONFIG_LRU_GEN_ENABLED": "y",
-        "CONFIG_RCU_EXPERT": "y",
-        "CONFIG_RCU_NOCB_CPU": "y",
-        "CONFIG_RCU_LAZY": "y",
-        "CONFIG_RCU_LAZY_DEFAULT_OFF": "y",
-        "CONFIG_CPU_IDLE": "y",
-        "CONFIG_CPU_IDLE_GOV_MENU": "y",
-        "CONFIG_CPU_IDLE_GOV_TEO": "y",
-        "CONFIG_CMDLINE_EXTEND": "y",
-        "CONFIG_CMDLINE_FROM_BOOTLOADER": "n",
-        "CONFIG_CMDLINE_FORCE": "n",
-    }
-    CMDLINE_TOKENS = (
-        "cpuidle.governor=teo",
-    )
-    # Human-readable names for the settings this profile is about. The final
-    # .config check is the authoritative assertion; this only makes the log
-    # readable, so it must not become a second place that names a symbol.
-    CONFIG_SUMMARY_LABELS = {
-        "CONFIG_KSU": "KernelSU",
-        "CONFIG_KSU_SUSFS": "SUSFS",
-        "CONFIG_KSU_SUSFS_SUS_MOUNT": "SUSFS mount hiding",
-        "CONFIG_KSU_SUSFS_TRY_UMOUNT": "SUSFS try_umount",
-        "CONFIG_KSU_SUSFS_SUS_SU": "SUSFS sus_su",
-        "CONFIG_TCP_CONG_BBR3": "BBRv3",
-        "CONFIG_TCP_CONG_BBR": "BBRv1",
-        "CONFIG_DEFAULT_TCP_CONG": "Default TCP cong",
-        "CONFIG_ZRAM": "ZRAM",
-        "CONFIG_ZRAM_DEF_COMP_LZ4": "ZRAM lz4 default",
-        "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE": "Optimize for performance",
-        "CONFIG_DEBUG_INFO_BTF": "GKI BTF metadata",
-        "CONFIG_LRU_GEN_ENABLED": "Multi-gen LRU",
-        "CONFIG_RCU_LAZY": "Lazy RCU",
-        "CONFIG_RCU_LAZY_DEFAULT_OFF": "Lazy RCU default off",
-        "CONFIG_CPU_IDLE_GOV_TEO": "TEO cpuidle governor",
-        "CONFIG_CPU_IDLE_GOV_MENU": "Menu cpuidle governor",
-    }
-
+class KernelBuilder(KernelProfile):
     def __init__(self, config: BuildConfig, workspace: str):
         self.config = config
         self.workspace = Path(workspace).resolve()
@@ -216,6 +109,9 @@ class KernelBuilder:
         self.sukisu_patch_dir = self.workspace / "SukiSU_patch"
         self.anykernel_dir = self.workspace / "AnyKernel3"
         self.mkbootimg_dir = self.work_dir / "tools/mkbootimg"
+        self.patch_plan = make_patch_plan()
+        self.patch_records = []
+        self.phase_timings = {}
         self.applied_bbr_patches = []
         self.applied_tweak_patches = []
         self.applied_integration_patches = []
@@ -232,15 +128,26 @@ class KernelBuilder:
         self.env.setdefault("GIT_TERMINAL_PROMPT", "0")
         self.shell.env = self.env
 
-    def _run_cmd(self, cmd: str, **kwargs) -> subprocess.CompletedProcess:
+    def _run_cmd(self, cmd: str | Sequence[str], **kwargs) -> subprocess.CompletedProcess[str]:
         return self.shell.run(cmd, **kwargs)
 
     def _chdir(self, path: Path):
-        os.chdir(path)
         self.shell.cwd = str(path)
 
     def _preflight(self):
         self.config.validate()
+        validate_upstream_status(self.config)
+        validate_build_environment(self.env)
+        if self.workspace == REPO_ROOT or REPO_ROOT in self.workspace.parents:
+            raise RuntimeError("Build workspace must be outside the source checkout")
+        stale = [name for name in (
+            "boot.img", "Image", "AnyKernel3.zip", "BUILD_INFO.md", "build.log",
+            "preflight.log", "precompile.config", "CONFIG_REPORT.json", "CONFIG_DIFF.json",
+            "PATCH_REPORT.json", "BUILD_TIMINGS.json", "checkouts.json", "GKI-reference.symvers",
+            "susfs4ksu", "SukiSU_patch", "AnyKernel3", "git-repo",
+        ) if (self.workspace / name).exists() or (self.workspace / name).is_symlink()]
+        if stale:
+            raise RuntimeError("Use a fresh workspace; preserving existing files: " + ", ".join(stale))
         if (self.workspace / "evidence").exists():
             raise RuntimeError("Use a fresh workspace; previous successful evidence must be preserved")
         if any(self.work_dir.iterdir()):
@@ -250,16 +157,15 @@ class KernelBuilder:
             raise RuntimeError(f"Missing required tools: {', '.join(missing)}")
 
     def _ensure_git_identity(self):
-        def _has(key: str) -> bool:
-            result = subprocess.run(["git", "config", "--global", key],
-                                    capture_output=True, text=True)
-            return result.returncode == 0 and bool(result.stdout.strip())
-
-        if not _has("user.email"):
-            self._run_cmd('git config --global user.email "gki-builder@localhost"', check=True)
-        if not _has("user.name"):
-            self._run_cmd('git config --global user.name "GKI Builder"', check=True)
-        self._run_cmd("git config --global --add safe.directory '*'", check=False)
+        # repo init needs an identity, not a permanent global Git mutation or a
+        # safe.directory='*' exemption. Append process-scoped config entries.
+        count = int(self.env.get("GIT_CONFIG_COUNT", "0"))
+        for key, value in (("user.name", "GKI Builder"), ("user.email", "gki-builder@localhost")):
+            self.env[f"GIT_CONFIG_KEY_{count}"] = key
+            self.env[f"GIT_CONFIG_VALUE_{count}"] = value
+            count += 1
+        self.env["GIT_CONFIG_COUNT"] = str(count)
+        self.shell.env = self.env
 
     def _clone_source(self, name, dest, url, commit):
         if dest.exists():
@@ -319,11 +225,21 @@ class KernelBuilder:
         # --check pass duplicates that work and adds no atomicity guarantee.
         result = subprocess.run(
             ["git", "apply", "--whitespace=nowarn", str(patch_path.resolve())],
-            cwd=self.shell.cwd, capture_output=True, text=True)
+            cwd=self.shell.cwd, env=self.env, capture_output=True, text=True)
         if result.returncode:
             context = (result.stderr or result.stdout).strip()
             raise RuntimeError(f"Selected patch failed: {patch_path.name}\n{context}")
         self.applied_integration_patches.append(patch_path.name)
+        resolved = patch_path.resolve()
+        anchor = REPO_ROOT if resolved.is_relative_to(REPO_ROOT) else self.workspace
+        self.patch_records.append({
+            "sequence": len(self.patch_records) + 1,
+            "path": resolved.relative_to(anchor).as_posix(),
+            "origin": "builder" if anchor == REPO_ROOT else "workspace",
+            "sha256": sha256(resolved),
+            "target": Path(self.shell.cwd).relative_to(self.workspace).as_posix(),
+        })
+        atomic_json(self.workspace / "PATCH_REPORT.json", {"applied": self.patch_records})
         return True
 
     def _kernel_image_path(self) -> Path:
@@ -404,8 +320,9 @@ class KernelBuilder:
         if not re.fullmatch(r"[0-9a-f]{40}", self.config.manifest_commit):
             raise RuntimeError("Matching manifest must be pinned to a commit")
         self._run_cmd(
-            "$REPO init --depth=1 -u https://android.googlesource.com/kernel/manifest "
-            f"-b {self.config.manifest_commit} --repo-rev={self.config.repo_commit} --no-clone-bundle", check=True)
+            [self.env["REPO"], "init", "--depth=1", "-u",
+             "https://android.googlesource.com/kernel/manifest", "-b", self.config.manifest_commit,
+             f"--repo-rev={self.config.repo_commit}", "--no-clone-bundle"], check=True)
         # Freeze the source AND every required tool to the certified build.
         local_manifests = self.work_dir / ".repo/local_manifests"
         local_manifests.mkdir(parents=True, exist_ok=True)
@@ -420,8 +337,8 @@ class KernelBuilder:
             ET.tostring(manifest, encoding="unicode") + "\n", encoding="utf-8")
         logger.info("Syncing kernel sources...")
         # One kernel, shallow, and only the projects build.sh actually needs.
-        self._run_cmd("$REPO sync -c -j4 --no-tags --fail-fast --no-clone-bundle " +
-                      " ".join(REPO_SYNC_PROJECTS), check=True)
+        self._run_cmd([self.env["REPO"], "sync", "-c", "-j4", "--no-tags", "--fail-fast",
+                       "--no-clone-bundle", *REPO_SYNC_PROJECTS], check=True)
 
         self._require_path(self.work_dir / "common", "kernel common/ directory after repo sync")
         kernel_ver = self._read_kernel_version()
@@ -535,7 +452,7 @@ class KernelBuilder:
         self._chdir(self.work_dir)
         ksu_dir = self.work_dir / "KernelSU"
         # Clone directly from KSU_REPO_CONFIG at the resolved commit rather than
-        # running upstream setup.sh, which hardcodes an obsolete GitHub URL and
+        # running upstream setup.sh, which performs a mutable git pull and
         # runs `git pull` on detached checkouts.
         self._clone_source("SukiSU", ksu_dir, KSU_REPO_CONFIG["repo_url"], self.config.sukisu_commit)
         self._wire_kernelsu_driver(ksu_dir)
@@ -582,10 +499,11 @@ class KernelBuilder:
 
     def apply_zram_patches(self):
         logger.info("=== Applying ZRAM (LZ4KD) patches ===")
-        self._chdir(self.work_dir / "common")
+        common = self.work_dir / "common"
+        self._chdir(common)
 
         # Ensure the original kernel Kconfig has not been corrupted.
-        lib_kconfig = Path("lib/Kconfig")
+        lib_kconfig = (common / "lib/Kconfig")
         if (not lib_kconfig.exists()
                 or "config ASSOCIATIVE_ARRAY" not in lib_kconfig.read_text()):
             raise RuntimeError(
@@ -598,15 +516,15 @@ class KernelBuilder:
         for src, dst in [
             (
                 self.sukisu_patch_dir / "other/zram/lz4k/include/linux/lz4kd.h",
-                Path("include/linux/lz4kd.h"),
+                (common / "include/linux/lz4kd.h"),
             ),
             (
                 self.sukisu_patch_dir / "other/zram/lz4k/lib/lz4kd",
-                Path("lib/lz4kd"),
+                (common / "lib/lz4kd"),
             ),
             (
                 self.sukisu_patch_dir / "other/zram/lz4k/crypto/lz4kd.c",
-                Path("crypto/lz4kd.c"),
+                (common / "crypto/lz4kd.c"),
             ),
         ]:
             if not src.exists():
@@ -619,20 +537,20 @@ class KernelBuilder:
         # The reviewed ZRAM slice omits LZ4K and the upstream module CRC
         # bypass. Builtin provider handling only returns the normal EEXIST
         # result for OEM attempts to load zram/zsmalloc a second time.
-        for patch in make_patch_plan().zram:
+        for patch in self.patch_plan.zram:
             self._apply_patch_file(patch)
         self._verify_zram_backends()
 
         # Verify that the patch was applied and the kernel Kconfig survived.
         required_markers = {
-            Path("lib/Kconfig"): [
+            (common / "lib/Kconfig"): [
                 "config ASSOCIATIVE_ARRAY",
                 "config LZ4KD_COMPRESS",
             ],
-            Path("lib/Makefile"): [
+            (common / "lib/Makefile"): [
                 "CONFIG_LZ4KD_COMPRESS",
             ],
-            Path("crypto/Kconfig"): [
+            (common / "crypto/Kconfig"): [
                 "config CRYPTO_LZ4KD",
             ],
         }
@@ -657,7 +575,7 @@ class KernelBuilder:
         if not common_dir.exists():
             raise RuntimeError(f"kernel common/ directory missing: {common_dir}")
         self._chdir(common_dir)
-        plan = make_patch_plan()
+        plan = self.patch_plan
         shutil.copytree(REPO_ROOT / "patches/lz4/source", common_dir / "crypto/lz4_111",
                         dirs_exist_ok=True)
         for patch in plan.lz4:
@@ -740,7 +658,9 @@ class KernelBuilder:
                 if not mod_list_file.is_file():
                     continue
                 lines = mod_list_file.read_text(encoding="utf-8").splitlines()
-                filtered = [l for l in lines if not any(x in l for x in ["zram", "zsmalloc"])]
+                filtered = [line for line in lines if not (
+                    line.strip() and not line.lstrip().startswith("#")
+                    and Path(line.strip()).name in {"zram.ko", "zsmalloc.ko"})]
                 if filtered != lines:
                     content = "".join(line + "\n" for line in filtered)
                     mod_list_file.write_text(content, encoding="utf-8", newline="\n")
@@ -826,71 +746,26 @@ class KernelBuilder:
            "CONFIG_TCP_CONG_BBR3" not in makefile or "config TCP_CONG_BBR3" not in kconfig:
             raise RuntimeError("BBRv3 must be added beside stock BBRv1")
         if "icsk_ca_priv[160" in header or "icsk_ca_priv[104" not in header:
-            raise RuntimeError("BBRv3 changed icsk_ca_priv; vendor modules would fail to load")
+            raise RuntimeError("BBRv3 changed the frozen 104-byte icsk_ca_priv layout")
 
-    def _parse_config(self, path: Path, what: str = "generated .config") -> dict:
-        self._require_path(path, what)
-        values = {}
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if line.startswith("CONFIG_"):
-                key, value = line.split("=", 1)
-                if key in values:
-                    raise RuntimeError(f"Final .config has duplicate assignment: {key}")
-                values[key] = value
-            elif line.startswith("# CONFIG_") and line.endswith(" is not set"):
-                key = line[2:-11]
-                if key in values:
-                    raise RuntimeError(f"Final .config has duplicate assignment: {key}")
-                values[key] = "n"
-        return values
+    # Compatibility wrappers keep callers/tests independent of policy location.
+    _parse_config = staticmethod(ConfigPolicy.parse)
+    _verify_runtime_config = staticmethod(ConfigPolicy._verify_runtime_config)
+    _verify_susfs_config = staticmethod(ConfigPolicy._verify_susfs_config)
 
-    def _verify_generated_config(self, path, stage=None):
-        values = self._parse_config(path)
-        # Every expectation below comes from one of the profile dicts, except
-        # the zram settings (which live with the zram defconfig edits) and the
-        # certified metadata/integrity settings guarded by the project rules.
-        expected = {
-            "CONFIG_ZRAM": "y", "CONFIG_ZSMALLOC": "y",
-            "CONFIG_CRYPTO_LZ4KD": "y", "CONFIG_LZ4KD_COMPRESS": "y",
-            "CONFIG_LZ4KD_DECOMPRESS": "y", "CONFIG_ZRAM_DEF_COMP_LZ4": "y",
-            "CONFIG_ZRAM_DEF_COMP": '"lz4"', "CONFIG_ZRAM_WRITEBACK": "y",
-            "CONFIG_CRYPTO_LZ4": "y",
-            "CONFIG_LZ4_COMPRESS": "y", "CONFIG_LZ4_DECOMPRESS": "y",
-            "CONFIG_MODVERSIONS": "y", "CONFIG_CFI_CLANG": "y",
-            "CONFIG_LTO_CLANG_FULL": "y",
-            "CONFIG_DEBUG_INFO": "y", "CONFIG_DEBUG_INFO_BTF": "y",
-            "CONFIG_DEBUG_INFO_BTF_MODULES": "y",
-            "CONFIG_DEBUG_INFO_DWARF4": "y", "CONFIG_SECURITY_SELINUX": "y",
-            "CONFIG_MODULE_SIG_FORCE": "n",
-            "CONFIG_LRU_GEN_STATS": "n", "CONFIG_LTO_CLANG_THIN": "n",
-            "CONFIG_CFI_PERMISSIVE": "n",
-        }
-        # The root/logging/performance, network and runtime profiles are
-        # asserted after Kconfig resolves dependencies, not from defconfig text.
-        expected.update({key: value or "n" for key, value in self.KERNEL_CONFIG_UPDATES.items()})
-        expected.update(self.NETWORK_CONFIG)
-        expected.update(self.RUNTIME_CONFIG)
-        for symbol in ("BIC", "HTCP", "WESTWOOD", "VEGAS", "VENO", "HYBLA",
-                       "ILLINOIS", "DCTCP", "CDG", "NV", "CUBIC"):
-            expected[f"CONFIG_TCP_CONG_{symbol}"] = "n"
-        for symbol in ("LZO", "LZORLE", "LZ4KD", "LZ4HC", "ZSTD", "DEFLATE", "842"):
-            expected[f"CONFIG_ZRAM_DEF_COMP_{symbol}"] = "n"
-        for key, want in expected.items():
-            got = values.get(key, "n")
-            if got != want:
-                raise RuntimeError(f"Final .config mismatch: {key}={got}, expected {want}")
-        self._verify_runtime_config(values)
-        self._verify_susfs_config(values)
+    def _verify_generated_config(self, path: Path, stage: str | None = None):
+        report = ConfigPolicy.verify(path)
         if stage:
-            self.config_checks[stage] = {
-                "status": "passed", "sha256": sha256(path), "expected": expected,
-                "actual": {key: values.get(key, "n") for key in expected},
-                "cmdline": unquote_kconfig_string(values.get("CONFIG_CMDLINE", "")),
-            }
-            (self.workspace / "CONFIG_REPORT.json").write_text(
-                json.dumps(self.config_checks, indent=2) + "\n", encoding="utf-8")
-        logger.info("Generated .config verified: BBRv3 default, BBRv1 built in, "
-                    "ZRAM lz4 default, KPM off, MGLRU on, lazy RCU off, TEO default")
+            if stage not in ("precompile", "final"):
+                raise ValueError(f"Unknown config verification stage: {stage}")
+            snapshot = self.workspace / "precompile.config"
+            if stage == "precompile":
+                shutil.copy2(path, snapshot)
+            elif snapshot.is_file():
+                atomic_json(self.workspace / "CONFIG_DIFF.json", config_delta(snapshot, path))
+            self.config_checks[stage] = report
+            atomic_json(self.workspace / "CONFIG_REPORT.json", self.config_checks)
+        logger.info("Generated .config verified: %s", stage or "unrecorded check")
 
     def configure_build_fragment(self):
         # Extra root symbols preclude an exact export-set check. Frozen GKI
@@ -903,30 +778,10 @@ class KernelBuilder:
         )) + "\n", encoding="utf-8")
         self.env["GKI_BUILD_CONFIG_FRAGMENT"] = str(fragment)
 
-    # Error patterns that identify the failing translation unit or link step.
-    # The full build output always goes to build.log; the excerpt below is
-    # what surfaces in the step summary and BUILD_INFO so the next failure
-    # is attributable without re-running the job.
-    BUILD_ERROR_PATTERNS = (
-        "error:", "Error ", "ERROR", "undefined", "FAILED", "failed",
-        "ld.lld", "No such file", "*** ",
-    )
     BUILD_LOG_NAME = "build.log"
 
     def _build_log_path(self) -> Path:
         return self.workspace / self.BUILD_LOG_NAME
-
-    @staticmethod
-    def _error_excerpt(output: str, limit: int = 60) -> str:
-        lines = output.splitlines()
-        flagged = [line for line in lines
-                   if any(token in line for token in KernelBuilder.BUILD_ERROR_PATTERNS)]
-        tail = lines[-limit:]
-        excerpt = [line for line in flagged if line not in tail] + tail
-        seen = set()
-        unique = [line for line in excerpt if not (line in seen or seen.add(line))]
-        text = "\n".join(unique[-limit:])
-        return text[:6000]
 
     def _run_kernel_build(self, config_only=False):
         """Let AOSP select all tools, flags and output paths for both stages."""
@@ -941,7 +796,7 @@ class KernelBuilder:
             # before compilation without exporting any setup state to Python.
             preflight.write_text(fragment.read_text(encoding="utf-8") +
                                  "\nPOST_DEFCONFIG_CMDS='make -C \"${KERNEL_DIR}\" "
-                                 "O=\"${OUT_DIR}\" ${TOOL_ARGS} olddefconfig "
+                                 "O=\"${OUT_DIR}\" \"${TOOL_ARGS[@]}\" olddefconfig "
                                  "|| exit $?; exit 0'\n",
                                  encoding="utf-8", newline="\n")
             env["GKI_BUILD_CONFIG_FRAGMENT"] = str(preflight)
@@ -949,7 +804,8 @@ class KernelBuilder:
         # compile log is never buffered in RAM during full LTO and progress is
         # visible in real time.
         cmd = ["bash", "build/build.sh"]
-        with self._build_log_path().open("w", encoding="utf-8", buffering=1) as log_file, \
+        log_path = self.workspace / "preflight.log" if config_only else self._build_log_path()
+        with log_path.open("w", encoding="utf-8", buffering=1) as log_file, \
                 subprocess.Popen(
                     cmd, cwd=self.work_dir, env=env,
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -962,8 +818,7 @@ class KernelBuilder:
                 logger.info("[build.sh] %s", line)
             returncode = proc.wait()
         if config_only and returncode != 0:
-            log_text = self._build_log_path().read_text(encoding="utf-8", errors="replace")
-            raise subprocess.CalledProcessError(returncode, cmd, output=log_text, stderr="")
+            raise subprocess.CalledProcessError(returncode, cmd, output=log_excerpt(log_path), stderr="")
         return subprocess.CompletedProcess(cmd, returncode, "", "")
 
     def build_kernel(self) -> bool:
@@ -975,15 +830,13 @@ class KernelBuilder:
             result = self._run_kernel_build()
 
             if result.returncode != 0:
-                log_text = self._build_log_path().read_text(encoding="utf-8", errors="replace")
-                self.build_error_excerpt = self._error_excerpt(log_text)
+                self.build_error_excerpt = log_excerpt(self._build_log_path())
                 logger.error("Kernel compile failed: exit %d\n%s",
                              result.returncode, self.build_error_excerpt)
                 return False
             image_path = self._kernel_image_path()
             if not image_path.exists():
-                logger.error(f"Compile reported success but Image is missing: {image_path}")
-                return False
+                raise RuntimeError(f"Compile reported success but Image is missing: {image_path}")
             final_config = (self.work_dir / "out" /
                             "android13-5.15" /
                             "common/.config")
@@ -998,7 +851,8 @@ class KernelBuilder:
             logger.info(f"=== Kernel compile succeeded: {image_path} ===")
             return True
         except Exception as e:
-            logger.error(f"Compile error: {e}")
+            self.build_error_excerpt = str(e)[:6000]
+            logger.exception("Compile or post-compile verification failed: %s", e)
             return False
 
     def _verify_kernel_release(self):
@@ -1012,36 +866,6 @@ class KernelBuilder:
             raise RuntimeError(
                 f"Kernel release must keep GKI commit {short} and end with {suffix}, got {release}")
         logger.info("Kernel release: %s", release)
-
-    def _verify_runtime_config(self, values):
-        cmdline = unquote_kconfig_string(values.get("CONFIG_CMDLINE", ""))
-        tokens = cmdline.split()
-        for token in self.CMDLINE_TOKENS:
-            prefix = token.split("=", 1)[0] + "="
-            if tokens.count(token) != 1 or any(part.startswith(prefix) and part != token for part in tokens):
-                raise RuntimeError(
-                    f"Final .config command line must contain {token} once, got: {cmdline}")
-        if any(part.startswith(("rcu_nocbs=", "rcutree.enable_rcu_lazy="))
-               for part in tokens):
-            raise RuntimeError(
-                "Final .config mismatch: lazy RCU and callback offload stay "
-                "at the certified default")
-
-    def _verify_susfs_config(self, config_or_values):
-        if isinstance(config_or_values, dict):
-            values = config_or_values
-        else:
-            values = self._parse_config(config_or_values, "compiled kernel .config")
-        for symbol in ("CONFIG_KSU", "CONFIG_KPROBES", "CONFIG_KRETPROBES",
-                       "CONFIG_HAVE_SYSCALL_TRACEPOINTS", "CONFIG_KSU_SUSFS", "CONFIG_KSU_SUSFS_SUS_MOUNT"):
-            if values.get(symbol) != "y":
-                raise RuntimeError(f"Built-in SukiSU requires {symbol}=y in the compiled config")
-        enabled = {key for key, val in values.items()
-                   if key.startswith("CONFIG_KSU_SUSFS") and val in ("y", "m")}
-        expected = {key for key, value in self.KERNEL_CONFIG_UPDATES.items()
-                    if key.startswith("CONFIG_KSU_SUSFS") and value == "y"}
-        if enabled != expected:
-            raise RuntimeError(f"SUSFS profile mismatch: expected {sorted(expected)}, got {sorted(enabled)}")
 
     def prepare_boot_images(self) -> list:
         logger.info("=== Preparing boot image ===")
@@ -1062,28 +886,28 @@ class KernelBuilder:
         shutil.copy2(image_src, self.workspace / "Image")
         return [str(dest)]
 
-    def create_anykernel_zips(self) -> list:
+    def create_anykernel_zips(self) -> list[str]:
         logger.info("=== Creating AnyKernel3 zip ===")
-        self._chdir(self.work_dir)
-        ak3_dir = self.anykernel_dir
-
         image_src = self._kernel_image_path()
         self._require_path(image_src, "compiled kernel Image")
-        self._run_cmd(f"cp {image_src} {ak3_dir}/Image", check=True)
-
         zip_path = self.workspace / "AnyKernel3.zip"
-        self._chdir(ak3_dir)
-        self._run_cmd(f"zip -qr '{zip_path}' . -x '.git' -x '.git/*' -x '*/.git/*'", check=True)
-        self._run_cmd(f"rm -f {ak3_dir}/Image", check=False)
-        self._chdir(self.work_dir)
-        if not zip_path.exists():
+        staged = self.anykernel_dir / "Image"
+        if zip_path.exists() or zip_path.is_symlink() or staged.exists() or staged.is_symlink():
+            raise RuntimeError("Refusing to merge a stale AnyKernel3 archive or overwrite its Image")
+        shutil.copy2(image_src, staged)
+        try:
+            subprocess.run(["zip", "-qr", str(zip_path), ".", "-x", ".git", "-x", ".git/*",
+                            "-x", "*/.git/*"], cwd=self.anykernel_dir, env=self.env, check=True)
+        finally:
+            staged.unlink(missing_ok=True)
+        if not zip_path.is_file() or not zip_path.stat().st_size:
             raise RuntimeError(f"AnyKernel3 zip was not created: {zip_path}")
         return [str(zip_path)]
 
-    def _read_ksu_uapi_version(self) -> Optional[int]:
+    def _read_ksu_uapi_version(self) -> int | None:
         # Older layouts declare the version with DECLARE() in kernel/include
-        # or as a C constant in uapi/; the current `builtin` branch carries no
-        # versioned UAPI header, in which case None is reported as "unset".
+        # or as a C constant in uapi/. Nova builtin currently declares UAPI 6;
+        # historical unversioned trees are reported as "unset", never spoofed.
         for relative in ("kernel/include/uapi/supercall.h", "uapi/supercall.h"):
             header = self.work_dir / "KernelSU" / relative
             if not header.is_file():
@@ -1147,17 +971,21 @@ class KernelBuilder:
             f"- Repo tool exact commit: `{self.config.repo_commit}`",
             f"- Kernel source: `{self._git_head(self.work_dir / 'common')}`",
             f"- SukiSU channel: {self.config.sukisu_channel}",
-            f"- SukiSU tag: {self.config.sukisu_tag or 'none (upstream HEAD)'}",
+            f"- SukiSU tag: {self.config.sukisu_tag or 'none (exact source commit)'}",
+            f"- Source selection policy: {self.config.upstream_status.get('policy', 'not resolved')}",
+            f"- Upstream resolution completed (UTC): {self.config.upstream_status.get('checked_at_utc', 'not resolved')}",
+            f"- Explicit commit overrides: {', '.join(self.config.upstream_status.get('explicit_commit_overrides', [])) or 'none'}",
             f"- SukiSU exact commit: `{self.config.sukisu_commit}`",
             f"- SukiSU checkout: `{self._git_head(self.work_dir / 'KernelSU')}`",
             f"- SukiSU kernel UAPI: {self._read_ksu_uapi_version()}",
             f"- SUSFS exact commit: `{self.config.susfs_commit}`",
             f"- LZ4KD helper source commit: `{self.config.sukisu_patch_commit}`",
             f"- AnyKernel3 exact commit: `{self.config.anykernel_commit}`",
-            "- TCP: BBRv3 default, stock BBRv1 built in, other congestion algorithms off",
-            "- Multi-gen LRU: enabled by default; statistics off",
+            "- TCP: BBRv3 default, stock BBRv1 built in, Reno retained; optional alternatives off",
+            "- Multi-gen LRU: compiled default-on; statistics off (runtime policy not tested)",
             "- RCU: certified lazy-off default; no CPU is callback-offloaded",
-            "- CPU idle: TEO default, menu governor built in",
+            "- CPU idle: TEO configured default, menu built in (runtime selection not tested)",
+            "- FQ qdisc: built in; runtime interface qdisc selection is not enforced",
             f"- Applied BBR patches: {', '.join(self.applied_bbr_patches) or 'none'}",
             f"- Applied tweak patches: {', '.join(self.applied_tweak_patches) or 'none'}",
             f"- Other integration patches: {', '.join(self.applied_integration_patches)}",
@@ -1167,6 +995,7 @@ class KernelBuilder:
             "- KPM: disabled",
             "- cpufreq governors and I/O schedulers: certified GKI defaults preserved",
             f"- Certified GKI symbol CRCs matched: {self.abi_symbol_count}",
+            "- CRC scope: frozen export presence, CRCs, type and namespace; not complete binary KMI or device validation",
             f"- Boot packaging: {'device base image repacked' if self.config.base_boot else 'generic ramdisk-less GKI header v4; device ramdisk must be in init_boot'}",
             f"- Compiler: {compiler_version}",
             f"- Configuration checks: {', '.join(self.config_checks) or 'not completed'}",
@@ -1186,52 +1015,69 @@ class KernelBuilder:
         logger.info(f"Wrote build info: {info_path}")
         return info_path
 
+    def _phase(self, name, operation):
+        start = time.monotonic()
+        status = "failed"
+        try:
+            result = operation()
+            status = "failed" if result is False else "passed"
+            return result
+        finally:
+            self.phase_timings[name] = {
+                "status": status, "elapsed_seconds": round(time.monotonic() - start, 6)}
+            atomic_json(self.workspace / "BUILD_TIMINGS.json", self.phase_timings)
+
     def build(self, preflight_only: bool = False) -> BuildResult:
-        import time
-        start_time = time.time()
+        start_time = time.monotonic()
+        admitted = False
+        lock_owned = False
+        lock = self.workspace / ".build.lock"
         logger.info("=" * 50)
         logger.info(f"Starting GKI kernel build - {self.config.config_name}")
         logger.info("=" * 50)
         try:
+            # Exclusive creation also protects two local processes using one workspace.
+            with lock.open("x", encoding="utf-8") as stream:
+                lock_owned = True
+                stream.write(f"pid={os.getpid()}\n")
             self._preflight()
+            admitted = True
             write_sources(self.config, self.workspace)
             (self.workspace / "artifact_stem.txt").write_text(self.config.artifact_stem + "\n", encoding="utf-8")
-            self.clone_repositories()
-            self.setup_repo_tool()
-            self.init_and_sync_kernel()
-            self.configure_kernel_toolchain()
-            self.add_kernelsu()
-            self.apply_susfs_patches()
-            self.apply_feature_patches()
-            self.apply_zram_patches()
-            self.configure_kernel()
-            self.configure_kernel_name()
+            self._phase("clone_repositories", self.clone_repositories)
+            self._phase("setup_repo_tool", self.setup_repo_tool)
+            self._phase("init_and_sync_kernel", self.init_and_sync_kernel)
+            self._phase("configure_kernel_toolchain", self.configure_kernel_toolchain)
+            self._phase("add_kernelsu", self.add_kernelsu)
+            self._phase("apply_susfs_patches", self.apply_susfs_patches)
+            self._phase("apply_feature_patches", self.apply_feature_patches)
+            self._phase("apply_zram_patches", self.apply_zram_patches)
+            self._phase("configure_kernel", self.configure_kernel)
+            self._phase("configure_kernel_name", self.configure_kernel_name)
             self.show_kernel_config()
-            self.configure_build_fragment()
-            self._verify_source_mode()
-            (self.workspace / "checkouts.json").write_text(
-                json.dumps(self.verify_checkouts(reuse_verified=False), indent=2) + "\n",
-                encoding="utf-8")
+            self._phase("configure_build_fragment", self.configure_build_fragment)
+            self._phase("verify_source_mode", self._verify_source_mode)
+            atomic_json(self.workspace / "checkouts.json", self.verify_checkouts(reuse_verified=False))
             logger.info("Patch report: GKI %s %s; SukiSU %s; SUSFS %s; BBR %s; tweaks %s; integration count=%d",
                         self.config.kernel_version, self.config.gki_commit, self.config.sukisu_commit,
                         self.config.susfs_commit, self.applied_bbr_patches, self.applied_tweak_patches,
                         len(self.applied_integration_patches))
-            self.generate_and_verify_config()
+            self._phase("generate_and_verify_config", self.generate_and_verify_config)
             if preflight_only:
                 info = self.write_build_info(success=True, message="Source and generated config preflight passed")
                 return BuildResult(success=True, config=self.config, message="Preflight passed",
-                                   artifacts=[str(info)], build_time=time.time() - start_time)
-            if not self.build_kernel():
-                build_time = time.time() - start_time
+                                   artifacts=[str(info)], build_time=time.monotonic() - start_time)
+            if not self._phase("compile_and_crc", self.build_kernel):
+                build_time = time.monotonic() - start_time
                 message = "Kernel compile failed"
                 if self.build_error_excerpt:
                     message += "\n" + self.build_error_excerpt
                 self.write_build_info(build_time=build_time, success=False, message=message)
                 return BuildResult(success=False, config=self.config, message=message, build_time=build_time)
             artifacts = []
-            artifacts.extend(self.create_anykernel_zips())
-            artifacts.extend(self.prepare_boot_images())
-            build_time = time.time() - start_time
+            artifacts.extend(self._phase("package_anykernel", self.create_anykernel_zips))
+            artifacts.extend(self._phase("package_boot", self.prepare_boot_images))
+            build_time = time.monotonic() - start_time
             self.write_build_info(artifacts=artifacts, build_time=build_time, success=True)
             evidence = collect_evidence(self.workspace, self.config.config_name, self.abi_symbol_count)
             artifacts.append(str(evidence))
@@ -1240,7 +1086,11 @@ class KernelBuilder:
         except Exception as e:
             logger.exception(f"Build failed: {e}")
             try:
-                self.write_build_info(build_time=time.time() - start_time, success=False, message=str(e))
+                if admitted:
+                    self.write_build_info(build_time=time.monotonic() - start_time, success=False, message=str(e))
             except Exception:
                 pass
-            return BuildResult(success=False, config=self.config, message=str(e), build_time=time.time() - start_time)
+            return BuildResult(success=False, config=self.config, message=str(e), build_time=time.monotonic() - start_time)
+        finally:
+            if lock_owned:
+                lock.unlink(missing_ok=True)

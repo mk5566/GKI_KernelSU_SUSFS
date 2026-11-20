@@ -33,7 +33,7 @@ test "$BUILD_CONFIG" = common/build.config.gki.aarch64
 test "$INSTALL_MOD_STRIP" = 1
 KERNEL_DIR=common
 OUT_DIR="$PWD/out/android13-5.15/common"
-TOOL_ARGS=LLVM=1
+TOOL_ARGS=(LLVM=1 LLVM_IAS=1 "HOSTCFLAGS=-O2 -pipe")
 source "$BUILD_CONFIG"
 source "$GKI_BUILD_CONFIG_FRAGMENT"
 make() {
@@ -45,15 +45,23 @@ make() {
             sed -i 's/CONFIG_DEBUG_INFO_BTF_MODULES=y/# CONFIG_DEBUG_INFO_BTF_MODULES is not set/' "$OUT_DIR/.config"
         fi
     elif [[ "$*" == *olddefconfig* ]]; then
+        printf '%s\\n' "$@" > "$PWD/olddefconfig.args"
         return "${GKI_TEST_OLDDEFCONFIG_STATUS:-0}"
     else
         return 9
     fi
 }
-make ${TOOL_ARGS} gki_defconfig
+make "${TOOL_ARGS[@]}" gki_defconfig
 eval ${POST_DEFCONFIG_CMDS}
 touch compiled
 """
+
+    def test_preflight_preserves_every_certified_tool_argument(self):
+        self.builder.generate_and_verify_config()
+        args = (self.builder.work_dir / "olddefconfig.args").read_text().splitlines()
+        self.assertEqual(args[-4:], ["LLVM=1", "LLVM_IAS=1", "HOSTCFLAGS=-O2 -pipe", "olddefconfig"])
+        self.assertTrue((self.builder.workspace / "preflight.log").is_file())
+        self.assertFalse((self.builder.work_dir / "compiled").exists())
 
     def setUp(self):
         directory = tempfile.TemporaryDirectory()

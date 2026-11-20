@@ -8,3 +8,17 @@ slim-payload/
 /boot.img
 /AnyKernel3.zip
 /Image
+
+# Resolve/build outputs belong in a fresh external workspace.
+/sources.json
+/evidence/
+/BUILD_INFO.md
+/BUILD_TIMINGS.json
+/CONFIG_REPORT.json
+/CONFIG_DIFF.json
+/PATCH_REPORT.json
+/checkouts.json
+/GKI-reference.symvers
+/precompile.config
+/build.log
+/preflight.log

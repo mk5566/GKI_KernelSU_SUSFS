@@ -216,38 +216,16 @@ class DependencyTests(unittest.TestCase):
             self.assertEqual((config.susfs_commit, config.sukisu_patch_commit, config.anykernel_commit),
                              ("1" * 40, "2" * 40, "3" * 40))
 
-    def test_reviewed_ports_must_match_current_stable_upstream(self):
-        for commit, release, valid in (
-            (BBR_REVISION, {"tag_name": LZ4_RELEASE}, True),
-            ("a" * 40, {"tag_name": LZ4_RELEASE}, False),
-            (BBR_REVISION, {"tag_name": "v99.0.0"}, False),
-            (BBR_REVISION, {"tag_name": LZ4_RELEASE, "prerelease": True}, False),
-            (BBR_REVISION, {}, False),
-        ):
-            with self.subTest(commit=commit, release=release), \
-                 patch("target.resolve_branch", return_value=commit), \
-                 patch("target.urllib.request.urlopen", side_effect=lambda *args, **kwargs: io.BytesIO(json.dumps(release).encode())):
-                if valid:
-                    check_reviewed_upstreams()
-                    check_reviewed_upstreams(strict=True)
-                else:
-                    with patch("target.logging.warning") as warn:
-                        check_reviewed_upstreams(strict=False)
-                        warn.assert_called()
-                    with self.assertRaises(RuntimeError):
-                        check_reviewed_upstreams(strict=True)
-
-    def test_upstream_check_failure_logs_warning_and_allows_build(self):
-        with patch("target.resolve_branch", side_effect=Exception("network error")), \
-             patch("target.logging.warning") as warn:
+    def test_warning_only_upstream_checks_are_no_longer_permitted(self):
+        with self.assertRaisesRegex(RuntimeError, "Warning-only upstream checks are disabled"):
             check_reviewed_upstreams(strict=False)
-            warn.assert_called_with("Unable to check upstream port releases: %s",
-                                    warn.call_args.args[1])
-        with patch("target.resolve_branch", side_effect=Exception("network error")):
-            with self.assertRaisesRegex(Exception, "network error"):
-                check_reviewed_upstreams(strict=True)
 
-    def test_strict_upstreams_flag_enforces_failure_on_drift(self):
+    def test_upstream_check_failure_is_fatal(self):
+        with patch("target.resolve_branch", side_effect=RuntimeError("network error")):
+            with self.assertRaisesRegex(RuntimeError, "network error"):
+                check_reviewed_upstreams()
+
+    def test_default_and_legacy_flag_both_require_strict_freshness(self):
         with patch("build.check_reviewed_upstreams") as check, \
              patch("build.resolve_gki"), patch("build.resolve_sukisu", return_value=("", "a" * 40)), \
              patch("build.resolve_susfs", return_value="b" * 40), \
@@ -258,7 +236,7 @@ class DependencyTests(unittest.TestCase):
              patch("build.KernelBuilder") as builder:
             builder.return_value.build.return_value.success = True
             main([])
-            check.assert_called_with(strict=False)
+            check.assert_called_with(strict=True)
             check.reset_mock()
             main(["--strict-upstreams"])
             check.assert_called_with(strict=True)
