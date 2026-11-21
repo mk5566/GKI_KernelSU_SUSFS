@@ -10,6 +10,7 @@ import json
 import re
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -58,11 +59,54 @@ def fetch_bytes(url: str, *, attempts: int = 3) -> bytes:
     raise AssertionError("unreachable")
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _latest_release_redirect(repository: str, *, attempts: int = 3) -> str:
+    """Resolve the latest stable release tag via GitHub's web redirect when the API is rate-limited."""
+    url = f"https://github.com/{repository}/releases/latest"
+    opener = urllib.request.build_opener(_NoRedirectHandler)
+    request = urllib.request.Request(url, method="HEAD",
+                                     headers={"User-Agent": "gki-certified-source-resolver"})
+    expected_prefix = f"https://github.com/{repository}/releases/tag/"
+    for attempt in range(attempts):
+        try:
+            with opener.open(request, timeout=30) as response:
+                raise RuntimeError(f"Expected redirect for {url}, got HTTP {response.status}")
+        except urllib.error.HTTPError as exc:
+            location = exc.headers.get("Location", "") if exc.headers else ""
+            code = exc.code
+            exc.close()
+            if code in (301, 302, 303, 307, 308):
+                resolved = urllib.parse.urljoin(url, location)
+                if not resolved.lower().startswith(expected_prefix.lower()):
+                    raise RuntimeError(f"Unexpected release redirect for {repository}: {location}")
+                tag = resolved[len(expected_prefix):]
+                if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag):
+                    raise RuntimeError(f"Invalid upstream stable release tag: {repository}: {tag}")
+                return tag
+            retry = code in (429, 500, 502, 503, 504)
+            if not retry or attempt + 1 == attempts:
+                raise RuntimeError(f"Cannot verify upstream {url}: HTTP {code}; no stale fallback") from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            if attempt + 1 == attempts:
+                raise RuntimeError(f"Cannot verify upstream {url}; no stale fallback: {exc}") from exc
+        time.sleep(2 ** attempt)
+    raise AssertionError("unreachable")
+
+
 def latest_release(repository: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
         raise ValueError("Invalid GitHub repository identifier")
-    data = json.loads(fetch_bytes(f"https://api.github.com/repos/{repository}/releases/latest"),
-                      object_pairs_hook=_unique_object, parse_constant=_reject_constant)
+    try:
+        data = json.loads(fetch_bytes(f"https://api.github.com/repos/{repository}/releases/latest"),
+                          object_pairs_hook=_unique_object, parse_constant=_reject_constant)
+    except RuntimeError as exc:
+        if "HTTP 403;" not in str(exc) and "HTTP 429;" not in str(exc):
+            raise
+        return _latest_release_redirect(repository)
     if (not isinstance(data, dict) or data.get("draft") is not False
             or data.get("prerelease") is not False
             or not isinstance(data.get("tag_name"), str)

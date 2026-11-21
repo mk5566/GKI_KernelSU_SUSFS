@@ -113,6 +113,40 @@ class FetchProtocolTests(unittest.TestCase):
         with patch("upstream_policy.fetch_bytes", return_value=json.dumps(valid).encode()):
             self.assertEqual(latest_release("lz4/lz4"), LZ4_RELEASE)
 
+    def test_latest_release_falls_back_to_web_redirect_on_api_rate_limit(self):
+        class FakeOpener:
+            def __init__(self, location, code=302):
+                self.location = location
+                self.code = code
+                self.calls = 0
+
+            def open(self, req, timeout=30):
+                self.calls += 1
+                raise urllib.error.HTTPError(
+                    req.full_url, self.code, "Found", {"Location": self.location}, io.BytesIO()
+                )
+
+        opener = FakeOpener(f"https://github.com/lz4/lz4/releases/tag/{LZ4_RELEASE}")
+        with patch("upstream_policy.fetch_bytes",
+                   side_effect=RuntimeError("Cannot verify upstream https://api.github.com/repos/lz4/lz4/releases/latest: HTTP 403; no stale fallback")), \
+             patch("upstream_policy.urllib.request.build_opener", return_value=opener):
+            self.assertEqual(latest_release("lz4/lz4"), LZ4_RELEASE)
+        self.assertEqual(opener.calls, 1)
+
+        bad_opener = FakeOpener("https://github.com/other/repo/releases/tag/v1.0.0")
+        with patch("upstream_policy.fetch_bytes",
+                   side_effect=RuntimeError("Cannot verify upstream https://api.github.com/repos/lz4/lz4/releases/latest: HTTP 429; no stale fallback")), \
+             patch("upstream_policy.urllib.request.build_opener", return_value=bad_opener):
+            with self.assertRaisesRegex(RuntimeError, "Unexpected release redirect"):
+                latest_release("lz4/lz4")
+
+        non_rate_limit = RuntimeError("Cannot verify upstream https://api.github.com/repos/lz4/lz4/releases/latest: HTTP 404; no stale fallback")
+        with patch("upstream_policy.fetch_bytes", side_effect=non_rate_limit), \
+             patch("upstream_policy.urllib.request.build_opener") as build_opener:
+            with self.assertRaisesRegex(RuntimeError, "HTTP 404"):
+                latest_release("lz4/lz4")
+            build_opener.assert_not_called()
+
     def test_response_size_is_bounded(self):
         with patch("upstream_policy.MAX_RESPONSE_BYTES", 16), \
              patch("upstream_policy.urllib.request.urlopen", return_value=io.BytesIO(b"x" * 17)):
