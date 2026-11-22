@@ -29,93 +29,110 @@ case "${1:-}" in
     df -h / /tmp /mnt || true
     ;;
   memory)
-    set -euo pipefail
-    # Prevent Ubuntu 24.04 systemd-oomd from killing the runner service cgroup
-    # on memory/swap PSI pressure during full LTO linking.
-    if systemctl is-active --quiet systemd-oomd 2>/dev/null; then
-      sudo systemctl stop systemd-oomd || true
-    fi
-
-    # Protect the Actions runner, VM agent, and system logging from kernel OOM
-    # kill so memory exhaustion terminates the build step rather than severing
-    # runner communication with GitHub.
-    for proc_pattern in 'Runner\.Listener' 'Runner\.Worker' 'waagent' 'WALinuxAgent' 'systemd-journald'; do
-      for pid in $(pgrep -f "$proc_pattern" 2>/dev/null || true); do
-        echo -900 | sudo tee "/proc/$pid/oom_score_adj" >/dev/null 2>&1 || true
-      done
-    done
-
-    # Cap compressed in-RAM zram swap at 1/4 RAM (max 4 GiB, prefer low-CPU lz4)
-    # so LTO keeps maximum physical RAM for its active working set and runner
-    # processes without CPU starvation on zstd compression.
-    zram_active=0
-    if sudo modprobe zram 2>/dev/null; then
-      mem_kb="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
-      zram_bytes="$(( mem_kb * 1024 / 4 ))"
-      max_zram="$(( 4 * 1024 * 1024 * 1024 ))"
-      if [ "$zram_bytes" -gt "$max_zram" ]; then
-        zram_bytes="$max_zram"
-      fi
-      zram_dev="$(sudo zramctl --find --size "$zram_bytes" --algorithm lz4 2>/dev/null || sudo zramctl --find --size "$zram_bytes" --algorithm zstd 2>/dev/null || true)"
-      if [ -n "$zram_dev" ]; then
-        sudo mkswap "$zram_dev"
-        sudo swapon -p 100 "$zram_dev"
-        zram_active=1
-      fi
-    fi
-
-    # Provision backing disk swap (priority 10) on /mnt when space allows so /
-    # stays clear for GKI_WORKSPACE.
+    # Prefer a separate backing disk when the runner provides one.
     mnt_avail_g=0
-    if [ -d /mnt ]; then
+    if mountpoint -q /mnt; then
       mnt_avail_g="$(df -BG --output=avail /mnt | tail -1 | tr -dc '0-9')"
     fi
     root_avail_g="$(df -BG --output=avail / | tail -1 | tr -dc '0-9')"
 
-    swap_size="16G"
-    if [ "${mnt_avail_g:-0}" -ge 32 ]; then
-      swap_path="/mnt/gki-link.swap"
-      swap_size="20G"
-    elif [ "${mnt_avail_g:-0}" -ge 18 ]; then
-      swap_path="/mnt/gki-link.swap"
-    elif [ "${mnt_avail_g:-0}" -ge 14 ]; then
-      swap_path="/mnt/gki-link.swap"
-      swap_size="12G"
+    swap_size=16G
+    if (( mnt_avail_g >= 32 )); then
+      swap_path=/mnt/gki-link.swap
+      swap_size=20G
+    elif (( mnt_avail_g >= 14 )); then
+      swap_path=/mnt/gki-link.swap
+      if (( mnt_avail_g < 18 )); then
+        swap_size=12G
+      fi
     else
-      swap_path="/tmp/gki-link.swap"
-      if [ "${root_avail_g:-0}" -lt 54 ]; then
-        swap_size="12G"
+      swap_path=/tmp/gki-link.swap
+      if (( root_avail_g < 54 )); then
+        swap_size=12G
       fi
     fi
-    if [ -e "$swap_path" ] || [ -L "$swap_path" ]; then
+    if [[ -e "$swap_path" || -L "$swap_path" ]]; then
       echo "Refusing to replace existing swap: $swap_path" >&2
       exit 1
     fi
-    # Private permissions before allocation, not after writing to a public file.
     sudo install -m 600 /dev/null "$swap_path"
     sudo fallocate -l "$swap_size" "$swap_path"
     sudo mkswap "$swap_path"
     sudo swapon -p 10 "$swap_path"
+    echo "GKI_CI_SWAP_LIMIT=$swap_size" >> "$GITHUB_ENV"
 
-    # Avoid aggressively swapping out idle runner/system pages (swappiness=100)
-    # while still allowing cold LTO allocations to page out under pressure.
-    if [ "$zram_active" -eq 1 ]; then
-      sudo sysctl -w vm.swappiness=20 vm.page-cluster=0
-    else
-      sudo sysctl -w vm.swappiness=20
-    fi
-    if [ "$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)" -ge 4194304 ]; then
-      sudo sysctl -w vm.min_free_kbytes=65536
-    fi
-
-    if [ -d /mnt ] && [ "$(df -BG --output=avail /mnt | tail -1 | tr -dc '0-9')" -ge 10 ]; then
+    if mountpoint -q /mnt && [ "$(df -BG --output=avail /mnt | tail -1 | tr -dc '0-9')" -ge 10 ]; then
       sudo install -d -o "$(id -u)" -g "$(id -g)" -m 1777 /mnt/gki-tmp
       echo "TMPDIR=/mnt/gki-tmp" >> "$GITHUB_ENV"
     fi
 
     df -h / /tmp /mnt || true
     free -h
-    swapon --show || true
+    swapon --show
     ;;
-  *) echo "Usage: $0 dependencies|memory" >&2; exit 2 ;;
+  build)
+    shift
+    if [[ ! -r /sys/fs/cgroup/cgroup.controllers ]] ||
+       ! grep -qw memory /sys/fs/cgroup/cgroup.controllers; then
+      echo "Kernel build requires a cgroup v2 memory controller" >&2
+      exit 1
+    fi
+    : "${GKI_CI_SWAP_LIMIT:?Run CI disk swap provisioning before the build}"
+    resources="$RUNNER_TEMP/gki-runner-resources.txt"
+    unit="gki-build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.scope"
+    group="/sys/fs/cgroup/system.slice/$unit"
+    started="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+
+    sample_resources() {
+      {
+        date -u '+[runner resources] %FT%TZ'
+        awk '/^(MemAvailable|SwapFree):/' /proc/meminfo
+        df -Ph "$GKI_WORKSPACE" "${TMPDIR:-/tmp}" /
+        for counter in memory.current memory.peak memory.swap.current memory.events memory.pressure io.pressure; do
+          if [[ -r "$group/$counter" ]]; then
+            awk -v name="$counter" '{ print name ": " $0 }' "$group/$counter"
+          fi
+        done
+      } 2>&1 | tee -a "$resources"
+    }
+
+    sample_resources
+    # Leave headroom for the runner and OS, and reclaim inside the build scope
+    # before it reaches the hard limit. Drop root before running the builder.
+    sudo -n --preserve-env systemd-run --scope --slice=system.slice --unit="$unit" \
+      --expand-environment=no \
+      --property=MemoryHigh=75% --property=MemoryMax=85% \
+      --property="MemorySwapMax=$GKI_CI_SWAP_LIMIT" --property=OOMPolicy=kill \
+      --property=CPUWeight=25 --property=IOWeight=25 --property=TimeoutStopSec=3s \
+      /usr/bin/setpriv --reuid="$(id -u)" --regid="$(id -g)" --init-groups -- \
+      /usr/bin/env "HOME=$HOME" "PATH=$PATH" "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}" \
+      nice -n 10 ionice -c 2 -n 7 python3 .github/workflows/scripts/build.py "$@" &
+    build_pid=$!
+    (
+      while true; do
+        sleep 30 >/dev/null &
+        timer_pid=$!
+        trap 'kill "$timer_pid" 2>/dev/null || true; exit' TERM
+        wait "$timer_pid"
+        sample_resources || true
+      done
+    ) &
+    monitor_pid=$!
+    trap 'kill "$monitor_pid" 2>/dev/null || true; wait "$monitor_pid" || true' EXIT
+    trap 'sudo -n systemctl stop "$unit" || true; exit 130' INT
+    trap 'sudo -n systemctl stop "$unit" || true; exit 143' TERM
+
+    result=0
+    wait "$build_pid" || result=$?
+    sample_resources || true
+    if (( result != 0 )); then
+      {
+        sudo -n journalctl -k --since "$started" --no-pager \
+          --grep 'oom-kill|[Oo]ut of memory|Killed process' || true
+        sudo -n journalctl -u "$unit" --since "$started" --no-pager || true
+      } 2>&1 | tee -a "$resources" || true
+    fi
+    exit "$result"
+    ;;
+  *) echo "Usage: $0 dependencies|memory|build [build arguments]" >&2; exit 2 ;;
 esac

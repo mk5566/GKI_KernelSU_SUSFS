@@ -117,7 +117,7 @@ class BootValidationTests(unittest.TestCase):
 class ProcessAndWorkspaceTests(unittest.TestCase):
     def test_runner_provisioning_refuses_local_and_self_hosted_execution(self):
         helper = REPO_ROOT / ".github/workflows/scripts/ci_runner.sh"
-        for mode in ("dependencies", "memory"):
+        for mode in ("dependencies", "memory", "build"):
             for hosted in ({}, {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "self-hosted"}):
                 with self.subTest(mode=mode, env=hosted):
                     result = subprocess.run(["bash", str(helper), mode],

@@ -97,6 +97,10 @@ are not overwritten to simulate a clean build. Ambient toolchain overrides and
 build-stage bypasses are rejected. `ci_runner.sh` deliberately refuses ordinary
 local or persistent/self-hosted machines because it removes preinstalled tools
 and configures host swap.
+On GitHub Actions, the builder runs in a dedicated systemd scope with RAM and
+swap limits so the runner has memory headroom during full LTO. Resource samples
+appear in the live job log and are included in failure diagnostics when the
+runner can upload them.
 
 `sources.json` is schema 2. It includes canonical origins, supported refs,
 selection methods, resolution timestamp, checked port releases/hashes, and

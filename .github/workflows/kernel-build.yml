@@ -49,7 +49,7 @@ jobs:
       - name: Install kernel build dependencies
         shell: bash
         run: bash .github/workflows/scripts/ci_runner.sh dependencies
-      - name: Reserve memory for full LTO with GKI BTF metadata
+      - name: Provision disk swap for full LTO
         shell: bash
         run: bash .github/workflows/scripts/ci_runner.sh memory
       - name: Run builder tests
@@ -70,18 +70,9 @@ jobs:
         env:
           MALLOC_ARENA_MAX: "2"
         run: |
-          set -euo pipefail
-          if command -v choom >/dev/null 2>&1; then
-            choom -n +200 -- nice -n 10 ionice -c 2 -n 7 \
-              python3 .github/workflows/scripts/build.py \
-                --sources "$GKI_WORKSPACE/sources.json" \
-                --workspace "$GKI_WORKSPACE"
-          else
-            nice -n 10 ionice -c 2 -n 7 \
-              python3 .github/workflows/scripts/build.py \
-                --sources "$GKI_WORKSPACE/sources.json" \
-                --workspace "$GKI_WORKSPACE"
-          fi
+          bash .github/workflows/scripts/ci_runner.sh build \
+            --sources "$GKI_WORKSPACE/sources.json" \
+            --workspace "$GKI_WORKSPACE"
       - name: Publish boot.img and AnyKernel3.zip
         id: publish
         shell: bash
@@ -116,7 +107,7 @@ jobs:
         if: always()
         shell: bash
         run: |
-          { df -h; free -h; swapon --show; } > "$RUNNER_TEMP/gki-runner-resources.txt" 2>&1
+          { df -h; free -h; swapon --show; } >> "$RUNNER_TEMP/gki-runner-resources.txt" 2>&1
       - name: Upload failure diagnostics
         # Paths follow GKI_WORKSPACE; the build subdirectory is the builder's
         # configured family name (scripts/config.py ANDROID_FAMILY).
